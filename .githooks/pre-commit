@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fast gates only; the full suite is `make check`.
+# Enabled by `make setup` (git config core.hooksPath .githooks).
+exec make lint typecheck

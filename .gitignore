@@ -1,0 +1,37 @@
+# Secrets and local configuration: never commit
+.env
+.env.*
+!.env.example
+
+# Python
+CredentialingVenv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# Frontend
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Downloaded source datasets (OIG, NPPES, ...) are data, not code
+/data/
+
+# AI agent rules, settings and prompts: local only
+CLAUDE.md
+.claude/
+docs/product-brief.md
+
+# Tooling and OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log

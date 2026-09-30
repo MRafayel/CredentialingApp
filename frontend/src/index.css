@@ -1,0 +1,56 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens. Components use the semantic names below (bg-surface, text-ink,
+ * text-status-positive...) and never raw hex values or Tailwind's default palette.
+ */
+:root {
+  --surface: #f6f7f9;
+  --raised: #ffffff;
+  --line: #e3e6eb;
+  --ink: #12161c;
+  --ink-muted: #5b6472;
+
+  --status-positive: #147a4b;
+  --status-caution: #8a5a00;
+  --status-negative: #c0362c;
+  --status-neutral: #5b6472;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #0e1116;
+    --raised: #161a21;
+    --line: #262c36;
+    --ink: #e8ebf0;
+    --ink-muted: #9aa3b2;
+
+    --status-positive: #4ade9a;
+    --status-caution: #f2c14e;
+    --status-negative: #ff7a70;
+    --status-neutral: #9aa3b2;
+  }
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+
+  --color-status-positive: var(--status-positive);
+  --color-status-caution: var(--status-caution);
+  --color-status-negative: var(--status-negative);
+  --color-status-neutral: var(--status-neutral);
+
+  /* System fonts only: no webfont requests leave the browser. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}

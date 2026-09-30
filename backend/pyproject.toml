@@ -1,0 +1,104 @@
+[project]
+name = "credentialing"
+version = "0.1.0"
+description = "Healthcare provider credential verification platform (backend)"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.142.1",
+    "pydantic-settings>=2.15.0",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+    "import-linter>=2.15",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+    "uv>=0.12.21",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13"]
+build-backend = "uv_build"
+
+# --- Ruff: the only linter and formatter -------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",  # pycodestyle, pyflakes
+    "I",            # import sorting
+    "N",            # naming
+    "UP",           # modern syntax
+    "B",            # likely bugs
+    "SIM", "C4",    # simplifications
+    "RUF",
+    "S",            # security (bandit)
+    "DTZ",          # naive datetimes are forbidden: every timestamp is tz-aware UTC
+    "T20",          # no print(); use logging
+    "G", "LOG",     # logging hygiene
+    "ASYNC",        # async pitfalls
+    "PT",           # pytest style
+    "TID",          # tidy imports
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is how pytest works
+
+# --- Mypy: strict, no exceptions ---------------------------------------------
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+
+# --- Pytest -------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config -m 'not live'"
+markers = [
+    "integration: needs a real database or other local infrastructure",
+    "live: calls a real third-party source; never runs by default",
+]
+
+# --- Import Linter: the architecture rules, enforced ---------------------------
+[tool.importlinter]
+root_package = "credentialing"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layers: main > adapters (api | infrastructure | connectors) > application > domain"
+type = "layers"
+layers = [
+    "credentialing.main",
+    "credentialing.api | credentialing.infrastructure | credentialing.connectors",
+    "credentialing.application",
+    "credentialing.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain and application are framework-free"
+type = "forbidden"
+source_modules = ["credentialing.domain", "credentialing.application"]
+forbidden_modules = [
+    "fastapi",
+    "starlette",
+    "uvicorn",
+    "httpx",
+    "httpx2",
+    "pydantic_settings",
+    "sqlalchemy",
+    "asyncpg",
+    "psycopg",
+    "supabase",
+]
