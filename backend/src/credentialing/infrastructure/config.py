@@ -3,9 +3,14 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["local", "test", "staging", "production"]
+
+# The local development database started by `make db-start`. Not a secret: it only exists on a
+# developer machine. Every deployed environment must set CREDENTIALING_DATABASE_URL.
+_LOCAL_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
 
 
 class Settings(BaseSettings):
@@ -23,6 +28,7 @@ class Settings(BaseSettings):
 
     environment: Environment = "local"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    database_url: SecretStr = SecretStr(_LOCAL_DATABASE_URL)
 
 
 @lru_cache

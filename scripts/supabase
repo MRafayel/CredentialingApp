@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Runs the pinned Supabase CLI, downloading it into .tools/ on first use.
+# Nothing is installed globally.
+#
+# To upgrade: change VERSION and replace each checksum with the output of
+#   curl -s https://registry.npmjs.org/@supabase/cli-<platform>/<version> | grep -o '"integrity":"[^"]*"'
+set -euo pipefail
+
+VERSION="2.118.0"
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)
+    PLATFORM="darwin-arm64"
+    INTEGRITY="sha512-48W7wkHIVNgwSz4zr+xsC94la1PytCpudOw5w9qJWAISyBWRXMFBCEMb9aVIEG8S9OcLb4X1KZy4PPA/T+f7NQ=="
+    ;;
+  Darwin-x86_64)
+    PLATFORM="darwin-x64"
+    INTEGRITY="sha512-r6z41S0ycJiy2cO6sbJA7kPCodpAus6b3Km+qyn2zYlnTLN0nbscYnKxrZf/rJNR+S+sdpOZXgdQjGc/z5jvXw=="
+    ;;
+  Linux-x86_64)
+    PLATFORM="linux-x64"
+    INTEGRITY="sha512-nHm27uv15iu4xIQZRC++CS4uKYU9HuFn9HiOf407620OQ3cCp70fLT59grFlYQ+bqM7Zrv/GmEZHdgR8UO65RA=="
+    ;;
+  Linux-aarch64 | Linux-arm64)
+    PLATFORM="linux-arm64"
+    INTEGRITY="sha512-gYjOTnsYgwC68suoFALaXo87KvluXMjdWuo26a7hyD8vLeRJrmX+dpdxgegckQ7wxz8V1iotSBQU6Hd44FEDqw=="
+    ;;
+  *)
+    echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTALL_DIR="$ROOT/.tools/supabase-$VERSION"
+BIN="$INSTALL_DIR/bin/supabase"
+TARBALL="$ROOT/.tools/cache/cli-$PLATFORM-$VERSION.tgz"
+
+checksum_ok() {
+  [ -f "$TARBALL" ] &&
+    [ "sha512-$(openssl dgst -sha512 -binary "$TARBALL" | base64 | tr -d '\n')" = "$INTEGRITY" ]
+}
+
+if [ ! -x "$BIN" ]; then
+  mkdir -p "$ROOT/.tools/cache"
+  if ! checksum_ok; then
+    echo "Downloading Supabase CLI $VERSION ($PLATFORM, about 50 MB)..." >&2
+    # Resumes a partial download, so an interrupted run can simply be repeated.
+    curl --fail --location --silent --show-error --continue-at - --retry 5 --retry-delay 3 \
+      --output "$TARBALL" \
+      "https://registry.npmjs.org/@supabase/cli-$PLATFORM/-/cli-$PLATFORM-$VERSION.tgz"
+  fi
+  if ! checksum_ok; then
+    echo "Checksum mismatch for the Supabase CLI download; refusing to run it." >&2
+    rm -f "$TARBALL"
+    exit 1
+  fi
+  mkdir -p "$INSTALL_DIR"
+  tar -xzf "$TARBALL" -C "$INSTALL_DIR" --strip-components=1
+  rm -f "$TARBALL"
+fi
+
+cd "$ROOT"
+exec "$BIN" "$@"

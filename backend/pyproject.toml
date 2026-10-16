@@ -5,6 +5,7 @@ description = "Healthcare provider credential verification platform (backend)"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.142.1",
+    "psycopg[binary,pool]>=3.3.6",
     "pydantic-settings>=2.15.0",
     "uvicorn>=0.54.0",
 ]
@@ -100,5 +101,6 @@ forbidden_modules = [
     "sqlalchemy",
     "asyncpg",
     "psycopg",
+    "psycopg_pool",
     "supabase",
 ]

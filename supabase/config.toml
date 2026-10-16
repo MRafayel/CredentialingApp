@@ -1,0 +1,50 @@
+# Local development database. Start with `make db-start`.
+#
+# Only PostgreSQL runs. We use Supabase as plain Postgres, so its other services stay off until
+# a decision needs one (turning one on is a one-line change here).
+# Full reference: https://supabase.com/docs/guides/local-development/cli/config
+
+# Names every container, network and volume (supabase_*_credentialing), which keeps this stack
+# separate from any other Docker project on the machine.
+project_id = "credentialing"
+
+[db]
+# Host ports. 5432 is deliberately not used: other local projects commonly occupy it.
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[db.migrations]
+enabled = true
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+# The Studio dashboard mounts a project folder into Docker. On macOS that needs Docker Desktop to
+# be allowed to read the Documents folder (System Settings > Privacy & Security > Files and
+# Folders > Docker). Grant that, then set this to true.
+[studio]
+enabled = false
+port = 54323
+
+[api]
+enabled = false
+
+[auth]
+enabled = false
+
+[realtime]
+enabled = false
+
+[storage]
+enabled = false
+
+[edge_runtime]
+enabled = false
+
+[analytics]
+enabled = false
+
+[local_smtp]
+enabled = false

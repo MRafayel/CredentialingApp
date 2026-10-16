@@ -1,0 +1,3 @@
+-- Development seed data, loaded by `make db-reset` after all migrations.
+-- Made-up tenant data only: organizations, users, rosters.
+-- Real public datasets (OIG list, NPPES) are loaded by their own sync commands, not from here.

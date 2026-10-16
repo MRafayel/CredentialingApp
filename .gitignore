@@ -30,6 +30,7 @@ CLAUDE.md
 docs/product-brief.md
 
 # Tooling and OS
+.tools/
 .DS_Store
 .idea/
 .vscode/*
