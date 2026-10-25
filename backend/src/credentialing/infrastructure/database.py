@@ -1,10 +1,25 @@
 """PostgreSQL connection pool. The only module that knows how connections are configured."""
 
+from contextlib import AbstractAsyncContextManager
+from typing import Protocol
+
 from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
 type Pool = AsyncConnectionPool[AsyncConnection[TupleRow]]
+
+
+class ConnectionSource(Protocol):
+    """What repositories need from a pool: a connection lent for one block.
+
+    The pool satisfies it in production; tests pass a single connection inside a rolled-back
+    transaction, so repository writes never reach the development data.
+    """
+
+    def connection(self) -> AbstractAsyncContextManager[AsyncConnection[TupleRow]]:
+        """Lend a connection for the duration of an ``async with`` block."""
+        ...
 
 
 def create_pool(database_url: str, *, max_size: int = 10) -> Pool:
