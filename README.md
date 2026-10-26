@@ -17,6 +17,24 @@ make check    # lint, architecture contracts, types, tests, UI build
 
 `make help` lists every command.
 
+Local data comes from the public sources themselves, never from the repository:
+
+```sh
+make db-start && make db-reset    # local Postgres with the schema and a made-up dev organization
+make sync SOURCE=oig_leie         # download the federal exclusion list (SOURCE=all for every source)
+```
+
+Until authentication is in place, local API calls name their organization in a header. The
+seeded development organization is `00000000-0000-0000-0000-000000000001`:
+
+```sh
+curl -X POST localhost:8000/providers -H 'X-Organization-Id: 00000000-0000-0000-0000-000000000001' \
+  -H 'content-type: application/json' \
+  -d '{"entity_kind": "individual", "person_name": {"last": "Sampleperson", "first": "Avery"}}'
+```
+
+The header is accepted only when `CREDENTIALING_ENVIRONMENT=local`.
+
 ## Layout
 
 ```

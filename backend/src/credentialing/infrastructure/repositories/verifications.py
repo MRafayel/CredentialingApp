@@ -168,3 +168,21 @@ class PostgresVerificationRepository:
             )
             rows = await cursor.fetchall()
         return [row.to_domain() for row in rows]
+
+    async def history_all(
+        self, organization_id: UUID, provider_id: UUID
+    ) -> Sequence[VerificationResult]:
+        """Return every result for this provider across credential types, newest first."""
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_VerificationRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                {_SELECT:q}
+                where organization_id = {organization_id} and provider_id = {provider_id}
+                order by created_at desc, id desc
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]

@@ -6,8 +6,8 @@ opens the "blocked" pages from the same city without trouble, so most blocks tar
 of client (a script's TLS fingerprint, no JavaScript) rather than the location; a retry with
 honest identification and full standard headers changed nothing except Minnesota. Sites that
 dropped the connection at DNS/TCP level (no HTTP answer at all) may be network-level geo
-filters and still need a browser check. Nothing here is implemented yet. Sample files are not
-kept in the repository.
+filters and still need a browser check. Implemented so far: New York (connector `ny_omig`)
+and the federal OIG list (section at the end). Sample files are not kept in the repository.
 
 Nevada's OMIG publishes a directory of other states' lists at
 https://www.omig.nv.gov/provider-enrollment--termination/provider-exclusions-sanctions-and-press-releases/provider-exclusions-sanctions-and-press-releases/
@@ -38,8 +38,9 @@ https://www.omig.nv.gov/provider-enrollment--termination/provider-exclusions-san
    `robots-disallowed` (Nevada; California's API path), `blocked-for-clients` (WAF or bot
    manager), `javascript-portal` (Illinois, Vermont), `source-outage` (Mississippi today). Only
    `automated` sources get a fetcher; the rest become manual-verification steps with the
-   official link until the owner decides otherwise. We never bypass a block, a challenge or
-   robots.txt, and we never impersonate a browser from a script. The brief allows *permitted*
+   official link until the owner decides otherwise. Scripts send a fixed standard browser
+   User-Agent (owner decision 2026-10-26, configurable via `CREDENTIALING_USER_AGENT`); we still
+   never bypass CAPTCHAs, interactive challenges or robots.txt. The brief allows *permitted*
    browser automation as a strategy; whether to use a real browser for the firewall-blocked
    sites is an owner decision, taken per source and recorded in its access policy.
 5. **Failure outcomes are distinct results** (project invariant 3): a 403 from a WAF, a 404
@@ -189,6 +190,7 @@ User-Agent:
 - Columns: `PROVIDER_NAME, LICENSE_NUMBER, NPI_Number, PROVIDER_TYPE, EXCLUSION_EFFECTIVE_DATE`. No DOB, address, reason, end date.
 - Quality: individuals and entities in one name field ("LAST FIRST M  MD", fixed-width padding); 420 rows embed AKA/DBA; trailing spaces in provider type; NPI on 2,350 rows, all 10 digits; licence on 6,072; dates MM/DD/YYYY 1982–2026; ASCII, CRLF, exactly 4 tabs per row.
 - Access: F5 cookie set but not required; no challenge; robots.txt 404 on apps host; disclaimer limits use to "intended use", silent on automation.
+- Implemented (2026-10-25): 9,161 rows, 9,145 distinct records, none skipped; 7,852 individuals and 1,293 organizations. Provider types are Title Case with about 400 distinct values; only a type ending in an entity noun ("Dental Practice", "Home Care Agency") and carrying no person-role word ("Clinic Employee", "Owner-Pharmacy", "Physician Practice") hints at an organization. Professional corporations of one person ("LAST FIRST MD PC", and the padded "LAST FIRST PC   MD") are read as that person, with the corporation name as an alias (89 rows).
 
 ### New Jersey (Treasury DORES medical debarment)
 - Landing: https://www.nj.gov/treasury/revenue/debarment/debarsearch-medical.shtml
@@ -363,6 +365,10 @@ User-Agent:
 - Alabama, Maine, Nebraska, Tennessee, Louisiana, Florida, the Texas portal and Idaho's document
   host fail in the owner's browser too: network-level filtering; the owner will use a VPN later.
 - Indiana is in scope as termination history.
+- 2026-10-26: the HTTP fetcher sends a fixed standard browser User-Agent instead of the product
+  identity with a contact address (configurable via `CREDENTIALING_USER_AGENT`). A User-Agent
+  alone does not pass fingerprint-based firewalls; CAPTCHAs, interactive challenges and
+  robots.txt are still never bypassed.
 
 ## Still open
 
@@ -371,3 +377,25 @@ the New Jersey Comptroller URL; Maryland's sanction-code legend; Delaware's Exce
 North Dakota QSPs without NPI top out at "potential match"; parser dependencies (xlsx reader,
 layout-aware PDF parser) when implementation starts; deduplication of state rows that mirror
 the federal OIG list.
+
+## Federal: OIG LEIE (observed 2026-10-25)
+
+- File: `https://oig.hhs.gov/exclusions/downloadables/UPDATED.csv` ("Updated LEIE Database
+  (CSV)"), linked from https://oig.hhs.gov/exclusions/leie-database-supplement-downloads/ (the
+  old `exclusions_list.asp` answers 301 to it). Monthly supplement files (`YYMMexcl.csv`,
+  `YYMMrein.csv`) exist; the full file is the one to use. robots.txt: 404.
+- `200`, `text/csv`, 10,802,977 bytes, 84,093 rows, ASCII, CRLF, no BOM, 18 columns:
+  `LASTNAME, FIRSTNAME, MIDNAME, BUSNAME, GENERAL, SPECIALTY, UPIN, NPI, DOB, ADDRESS, CITY,
+  STATE, ZIP, EXCLTYPE, EXCLDATE, REINDATE, WAIVERDATE, WVRSTATE`. Cells with commas are quoted.
+- Validators: `Last-Modified` only (no ETag). `If-Modified-Since` returns 304, so a poll costs
+  one request until the next release (`conditional-get`).
+- Cadence: monthly; each file includes "all actions taken during the prior month". Reinstated
+  parties are removed, so a vanished row is the reinstatement signal (`REINDATE` is `0` on
+  every row).
+- Quality: dates `YYYYMMDD`, `0` as the empty value for NPI, REINDATE and WAIVERDATE; NPI on
+  8,924 rows (all check-digit valid); DOB on 79,766 rows (sensitive, stored under the DOB
+  rule); ZIP codes lost their leading zeros; 3,466 businesses in `BUSNAME`, never together with
+  a person name; "NA" and "NULL" occur as real name values. 72 rows repeat another row's
+  identity (same name, NPI, date), typically a second statutory basis on the same day.
+- First sync: 84,093 rows parsed, none skipped, 84,021 distinct records stored; the next poll
+  was a single 304.

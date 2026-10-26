@@ -14,7 +14,7 @@ export UV_PROJECT_ENVIRONMENT := $(VENV)
 # Pinned Supabase CLI, kept in .tools/ (downloaded on first use).
 SUPABASE := ./scripts/supabase
 
-.PHONY: help setup setup-backend setup-frontend api web fmt lint typecheck test test-integration check build backend-add
+.PHONY: help setup setup-backend setup-frontend api web fmt lint typecheck test test-integration test-live check build backend-add sync
 .PHONY: db-start db-stop db-status db-reset db-new
 
 help: ## List available commands
@@ -73,10 +73,17 @@ test: ## Fast offline backend tests
 test-integration: ## Backend tests against the local database (needs `make db-start`)
 	cd backend && $(BIN)/pytest -m integration
 
+test-live: ## Smoke tests against the real public sources (network; never part of check)
+	cd backend && $(BIN)/pytest -m live
+
 build: ## Production build of the UI
 	cd frontend && pnpm build
 
 check: lint typecheck test test-integration build ## Everything that must pass before work is called done (needs `make db-start`)
+
+sync: ## Fetch a source: make sync SOURCE=oig_leie (or SOURCE=all; FORCE=1 re-parses)
+	@test -n "$(SOURCE)" || (echo "Usage: make sync SOURCE=oig_leie (or SOURCE=all)" && exit 1)
+	$(BIN)/python -m credentialing.cli sync $(if $(filter all,$(SOURCE)),--all,$(SOURCE)) $(if $(FORCE),--force)
 
 backend-add: ## Add a backend dependency: make backend-add PKG=name [DEV=1]
 	@test -n "$(PKG)" || (echo "Usage: make backend-add PKG=name [DEV=1]" && exit 1)

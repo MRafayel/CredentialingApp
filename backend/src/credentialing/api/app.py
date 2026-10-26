@@ -5,7 +5,8 @@ from contextlib import AbstractAsyncContextManager
 
 from fastapi import FastAPI
 
-from credentialing.api import health
+from credentialing.api import health, providers, verifications
+from credentialing.api.errors import register_error_handlers
 
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
@@ -15,8 +16,10 @@ def create_app(*, expose_docs: bool, lifespan: Lifespan | None = None) -> FastAP
 
     Args:
         expose_docs: Serve the interactive OpenAPI pages. Off outside local development.
-        lifespan: Opens resources on startup and releases them on shutdown. Supplied by the
-            composition root, so this layer never learns what those resources are.
+        lifespan: Opens resources on startup, puts the
+            :class:`~credentialing.api.container.AppContainer` on ``app.state.container``,
+            and releases them on shutdown. Supplied by the composition root, so this layer
+            never learns what those resources are.
     """
     app = FastAPI(
         title="Credentialing API",
@@ -25,5 +28,8 @@ def create_app(*, expose_docs: bool, lifespan: Lifespan | None = None) -> FastAP
         openapi_url="/openapi.json" if expose_docs else None,
         lifespan=lifespan,
     )
+    register_error_handlers(app)
     app.include_router(health.router)
+    app.include_router(providers.router)
+    app.include_router(verifications.router)
     return app

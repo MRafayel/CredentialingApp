@@ -182,3 +182,21 @@ async def test_schema_rejects_a_finding_on_a_check_that_could_not_run(
                 from verifications where id = {blocked.id}
                 """
             )
+
+
+async def test_history_all_spans_credential_types_newest_first(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresVerificationRepository(database)
+    organization_id, provider_id = await _provider(database, db_connection)
+    exclusion_result = _result(organization_id, provider_id)
+    license_result = _result(organization_id, provider_id, minutes_later=3).model_copy(
+        update={"credential_type": CredentialType.STATE_LICENSE}
+    )
+    for result in (exclusion_result, license_result):
+        await repository.add(result)
+
+    history = await repository.history_all(organization_id, provider_id)
+
+    assert history == [license_result, exclusion_result]
+    assert await repository.history_all(uuid4(), provider_id) == []

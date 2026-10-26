@@ -5,6 +5,7 @@ description = "Healthcare provider credential verification platform (backend)"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.142.1",
+    "httpx2>=2.13.1",
     "psycopg[binary,pool]>=3.3.6",
     "pydantic-settings>=2.15.0",
     "uvicorn>=0.54.0",
@@ -12,7 +13,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.13.1",
     "import-linter>=2.15",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
@@ -78,10 +78,11 @@ root_package = "credentialing"
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
-name = "Layers: main > adapters (api | infrastructure | connectors) > application > domain"
+name = "Layers: entry points > bootstrap > adapters (api | infrastructure | connectors) > application > domain"
 type = "layers"
 layers = [
-    "credentialing.main",
+    "credentialing.main | credentialing.cli",
+    "credentialing.bootstrap",
     "credentialing.api | credentialing.infrastructure | credentialing.connectors",
     "credentialing.application",
     "credentialing.domain",

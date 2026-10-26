@@ -5,6 +5,7 @@ from typing import Final
 from psycopg import sql
 from psycopg.rows import class_row
 
+from credentialing.domain.enums import Outcome
 from credentialing.domain.models import SourceSnapshot
 from credentialing.domain.types import SourceId
 from credentialing.infrastructure.database import ConnectionSource
@@ -46,5 +47,19 @@ class PostgresSnapshotRepository:
         ):
             await cursor.execute(
                 t"{_SELECT:q} where source_id = {source_id} order by fetched_at desc, id limit 1"
+            )
+            return await cursor.fetchone()
+
+    async def latest_completed(self, source_id: SourceId) -> SourceSnapshot | None:
+        """Return the source's most recent ``COMPLETED`` snapshot: the list checks rely on."""
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(SourceSnapshot)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                {_SELECT:q} where source_id = {source_id} and outcome = {Outcome.COMPLETED.value}
+                order by fetched_at desc, id limit 1
+                """
             )
             return await cursor.fetchone()

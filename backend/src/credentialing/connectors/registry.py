@@ -15,7 +15,10 @@ class DuplicateSourceError(ValueError):
 
 
 class ConnectorRegistry:
-    """Connectors by source id, selectable by credential type and jurisdiction."""
+    """Connectors by source id, selectable by credential type and jurisdiction.
+
+    Implements :class:`~credentialing.domain.ports.ConnectorDirectory`.
+    """
 
     def __init__(self) -> None:
         self._connectors: dict[SourceId, Connector] = {}
@@ -30,6 +33,14 @@ class ConnectorRegistry:
     def get(self, source_id: SourceId) -> Connector | None:
         """Return the connector for ``source_id``, if one is registered."""
         return self._connectors.get(source_id)
+
+    def bulk_connectors(self) -> list[BulkListConnector]:
+        """Every registered bulk-list connector, ordered by source id."""
+        return [
+            connector
+            for _, connector in sorted(self._connectors.items())
+            if isinstance(connector, BulkListConnector)
+        ]
 
     def bulk_connectors_for(
         self, credential_type: CredentialType, jurisdiction: StateCode

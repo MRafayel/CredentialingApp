@@ -15,7 +15,7 @@ from credentialing.domain.models import (
     SourceSnapshot,
     VerificationResult,
 )
-from credentialing.domain.types import Npi, SourceId
+from credentialing.domain.types import Npi, SourceId, StateCode
 
 
 class Clock(Protocol):
@@ -51,6 +51,10 @@ class SnapshotRepository(Protocol):
 
     async def latest(self, source_id: SourceId) -> SourceSnapshot | None:
         """Return the source's most recent snapshot, whatever its outcome."""
+        ...
+
+    async def latest_completed(self, source_id: SourceId) -> SourceSnapshot | None:
+        """Return the source's most recent ``COMPLETED`` snapshot: the list checks rely on."""
         ...
 
 
@@ -113,6 +117,12 @@ class VerificationRepository(Protocol):
         """Return every result for this provider and credential type, newest first."""
         ...
 
+    async def history_all(
+        self, organization_id: UUID, provider_id: UUID
+    ) -> Sequence[VerificationResult]:
+        """Return every result for this provider across credential types, newest first."""
+        ...
+
 
 @runtime_checkable
 class BulkListConnector(Protocol):
@@ -139,4 +149,22 @@ class LookupConnector(Protocol):
 
     async def verify(self, provider: Provider) -> VerificationResult:
         """Check one provider and return a normalized result with provenance."""
+        ...
+
+
+class ConnectorDirectory(Protocol):
+    """Where use cases find connectors: by source id or by capability, never by branching."""
+
+    def get(self, source_id: SourceId) -> BulkListConnector | LookupConnector | None:
+        """Return the connector for ``source_id``, if one is registered."""
+        ...
+
+    def bulk_connectors(self) -> Sequence[BulkListConnector]:
+        """Every registered bulk-list connector, ordered by source id."""
+        ...
+
+    def bulk_connectors_for(
+        self, credential_type: CredentialType, jurisdiction: StateCode
+    ) -> Sequence[BulkListConnector]:
+        """Bulk-list connectors covering this credential type in this jurisdiction."""
         ...

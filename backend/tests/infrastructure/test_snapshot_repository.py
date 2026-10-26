@@ -43,3 +43,14 @@ async def test_latest_returns_the_most_recent_snapshot_of_that_source(
 
 async def test_latest_is_none_for_a_source_never_fetched(database: ConnectionSource) -> None:
     assert await PostgresSnapshotRepository(database).latest("test_never_fetched") is None
+
+
+async def test_latest_completed_skips_later_failures(database: ConnectionSource) -> None:
+    repository = PostgresSnapshotRepository(database)
+    completed = _snapshot("test_exclusions", 48, Outcome.COMPLETED)
+    failed = _snapshot("test_exclusions", 1, Outcome.BLOCKED)
+    for snapshot in (completed, failed):
+        await repository.add(snapshot)
+
+    assert await repository.latest_completed("test_exclusions") == completed
+    assert await repository.latest_completed("test_never_fetched") is None
