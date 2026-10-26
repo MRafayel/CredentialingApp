@@ -2,6 +2,10 @@
 
 ``sync`` fetches public sources, stores a snapshot per fetch and updates their records. It
 prints one line per source and exits with 1 when any source could not be read.
+
+``sources`` shows every registered source: its links, its last fetch, how many records are
+current, how old the data is and when the next fetch is due. ``--json`` prints the same as
+JSON; ``--strict`` exits with 1 unless every source is ok.
 """
 
 import argparse
@@ -13,6 +17,7 @@ from collections.abc import Sequence
 from credentialing.application.errors import UnknownSourceError
 from credentialing.application.sync_source import SyncReport
 from credentialing.bootstrap import runtime
+from credentialing.cli.sources import show
 from credentialing.domain.enums import Outcome
 from credentialing.infrastructure.config import Settings, get_settings
 from credentialing.infrastructure.logging import configure_logging
@@ -29,11 +34,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     sync.add_argument(
         "--force", action="store_true", help="download and parse even if the source is unchanged"
     )
+    sources = commands.add_parser(
+        "sources", help="every source's links, last fetch, data age and next fetch"
+    )
+    sources.add_argument(
+        "--json", action="store_true", dest="as_json", help="machine-readable output"
+    )
+    sources.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit with 1 when any source is failing, overdue or never fetched",
+    )
     args = parser.parse_args(argv)
 
     settings = get_settings()
     configure_logging(settings.log_level)
+    if args.command == "sources":
+        return asyncio.run(_sources(settings, as_json=args.as_json, strict=args.strict))
     return asyncio.run(_sync(settings, args.source_id, every=args.all, force=args.force))
+
+
+async def _sources(settings: Settings, *, as_json: bool, strict: bool) -> int:
+    async with runtime(settings) as services:
+        now = services.clock.now()
+        statuses = await services.source_status.run()
+    color = not as_json and not settings.no_color and sys.stdout.isatty()
+    return show(statuses, now, out=sys.stdout, as_json=as_json, strict=strict, color=color)
 
 
 async def _sync(settings: Settings, source_id: str | None, *, every: bool, force: bool) -> int:

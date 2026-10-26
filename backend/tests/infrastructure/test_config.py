@@ -28,3 +28,18 @@ def test_user_agent_is_overridden_by_the_environment(monkeypatch: pytest.MonkeyP
 def test_user_agent_must_not_be_empty(value: str) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, user_agent=value)
+
+
+@pytest.mark.parametrize(("value", "expected"), [("1", True), ("0", True), ("", False)])
+def test_no_color_follows_the_standard_variable(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+) -> None:
+    monkeypatch.setenv("NO_COLOR", value)
+
+    assert Settings(_env_file=None).no_color is expected
+
+
+def test_colour_is_allowed_without_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    assert Settings(_env_file=None).no_color is False

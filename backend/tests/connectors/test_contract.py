@@ -62,6 +62,15 @@ def test_capabilities_validate(source_id: str) -> None:
 
 
 @pytest.mark.parametrize("source_id", _SOURCE_IDS)
+def test_capabilities_report_the_url_the_connector_downloads(source_id: str) -> None:
+    connector = _connector(source_id, ScriptedFetcher())
+    assert isinstance(connector, BulkListConnectorBase)
+
+    assert connector.capabilities.download_url == connector.download_url
+    assert connector.download_url.startswith("https://")
+
+
+@pytest.mark.parametrize("source_id", _SOURCE_IDS)
 async def test_the_fixture_parses_into_records_of_this_snapshot(source_id: str) -> None:
     body = fixture_bytes(CONNECTOR_FIXTURES[source_id])
 

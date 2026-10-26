@@ -7,9 +7,10 @@ import pytest
 from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 
+from credentialing.application.source_status import SourceHealth
 from credentialing.bootstrap import Services, build_services
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import Finding, MatchLevel, Outcome
+from credentialing.domain.enums import Finding, Freshness, MatchLevel, Outcome
 from credentialing.domain.models import FetchResult, SnapshotDiff, SourceSnapshot
 from credentialing.infrastructure.database import ConnectionSource
 from tests.fakes import FixedClock, ScriptedConnector, capabilities
@@ -115,3 +116,47 @@ async def test_check_exclusions_end_to_end(
     assert stored == result
     (view,) = await services.verification_history.expand([result])
     assert [record.npi for record in view.matched_records] == [NPI]
+
+
+async def test_source_status_over_the_real_repositories(database: ConnectionSource) -> None:
+    loaded = _snapshot(0)
+    failed = SourceSnapshot(
+        id=uuid4(),
+        source_id=SOURCE,
+        fetched_at=NOW + timedelta(hours=2),
+        outcome=Outcome.SOURCE_UNAVAILABLE,
+        source_url="https://example.test/list.csv",
+        note="synthetic timeout",
+    )
+    connector = ScriptedConnector(
+        capabilities(SOURCE),
+        FetchResult(
+            snapshot=loaded,
+            records=(
+                exclusion(source_id=SOURCE, snapshot_id=loaded.id, last="Alphaperson"),
+                exclusion(source_id=SOURCE, snapshot_id=loaded.id, last="Betaperson"),
+            ),
+        ),
+        FetchResult(snapshot=failed),
+    )
+    clock = FixedClock(NOW)
+    services = _services(database, connector, clock)
+
+    (never,) = await services.source_status.run()
+    await services.sync_source.run(SOURCE)
+    clock.current = NOW + timedelta(hours=1)
+    (ok,) = await services.source_status.run()
+    clock.current = NOW + timedelta(hours=2)
+    await services.sync_source.run(SOURCE)
+    clock.current = NOW + timedelta(hours=3)
+    (failing,) = await services.source_status.run()
+
+    assert never.health is SourceHealth.NEVER_FETCHED
+    assert never.current_records == 0
+    assert ok.health is SourceHealth.OK
+    assert (ok.current_records, ok.latest, ok.freshness) == (2, loaded, Freshness.CACHED)
+    assert ok.next_due == NOW + timedelta(days=7)
+    assert failing.health is SourceHealth.FAILING
+    assert (failing.latest, failing.latest_completed) == (failed, loaded)
+    assert failing.problem == "synthetic timeout"
+    assert failing.current_records == 2

@@ -53,6 +53,7 @@ def capabilities(
         poll_interval=timedelta(days=7),
         source_url=f"https://example.test/{source_id}",
         display_name=display_name,
+        download_url=f"https://example.test/{source_id}/list.csv",
     )
 
 
@@ -155,6 +156,9 @@ class InMemoryRecords:
 
     async def get_many(self, ids: Sequence[UUID]) -> Sequence[ExclusionRecord]:
         return [self.all[i] for i in ids if i in self.all]
+
+    async def count_current(self, source_id: SourceId) -> int:
+        return sum(1 for (source, _) in self.current if source == source_id)
 
 
 class InMemoryProviders:

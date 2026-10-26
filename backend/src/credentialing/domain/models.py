@@ -379,6 +379,8 @@ class ConnectorCapabilities(DomainModel):
     poll_interval: timedelta
     source_url: str
     display_name: str
+    download_url: str | None = None
+    """The file a bulk-list connector downloads; ``source_url`` is the page people read."""
 
 
 class FetchResult(DomainModel):

@@ -72,6 +72,9 @@ PERSON_ROLE_WORDS: Final = frozenset(
 """Words that make a provider type a person's role even when it ends in an entity noun
 ("Owner-Pharmacy", "Physician Practice"): then the name alone decides."""
 
+DOWNLOAD_URL: Final = "https://apps.omig.ny.gov/exclusions/tabdelimited.aspx"
+"""The file itself, as the connector fetches it."""
+
 CAPABILITIES: Final = ConnectorCapabilities(
     source_id="ny_omig",
     credential_type=CredentialType.EXCLUSION,
@@ -82,13 +85,14 @@ CAPABILITIES: Final = ConnectorCapabilities(
     poll_interval=timedelta(days=1),
     source_url="https://omig.ny.gov/medicaid-fraud/medicaid-exclusions",
     display_name="New York OMIG Medicaid Exclusion List",
+    download_url=DOWNLOAD_URL,
 )
 
 
 class NyOmigConnector(BulkListConnectorBase):
     """Downloads the OMIG tab-delimited export and maps each row into an exclusion record."""
 
-    download_url = "https://apps.omig.ny.gov/exclusions/tabdelimited.aspx"
+    download_url = DOWNLOAD_URL
 
     @property
     def capabilities(self) -> ConnectorCapabilities:

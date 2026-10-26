@@ -79,6 +79,9 @@ COLUMNS: Final = (
 )
 _DATE_FORMATS: Final = ("%Y%m%d",)
 
+DOWNLOAD_URL: Final = "https://oig.hhs.gov/exclusions/downloadables/UPDATED.csv"
+"""The file itself, as the connector fetches it."""
+
 CAPABILITIES: Final = ConnectorCapabilities(
     source_id="oig_leie",
     credential_type=CredentialType.EXCLUSION,
@@ -89,13 +92,14 @@ CAPABILITIES: Final = ConnectorCapabilities(
     poll_interval=timedelta(days=7),
     source_url="https://oig.hhs.gov/exclusions/leie-database-supplement-downloads/",
     display_name="HHS-OIG List of Excluded Individuals/Entities",
+    download_url=DOWNLOAD_URL,
 )
 
 
 class OigLeieConnector(BulkListConnectorBase):
     """Downloads the full LEIE file and maps each row into an exclusion record."""
 
-    download_url = "https://oig.hhs.gov/exclusions/downloadables/UPDATED.csv"
+    download_url = DOWNLOAD_URL
 
     @property
     def capabilities(self) -> ConnectorCapabilities:

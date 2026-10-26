@@ -16,6 +16,7 @@ from credentialing.api.app import create_app
 from credentialing.api.container import AppContainer
 from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.register_provider import RegisterProvider
+from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
 from credentialing.application.verification_history import VerificationHistory
 from credentialing.connectors.framework.http import Fetcher, HttpFetcher
@@ -46,11 +47,13 @@ class Services:
     """Every repository and use case, built over one database connection source."""
 
     registry: ConnectorRegistry
+    clock: Clock
     providers: PostgresProviderRepository
     snapshots: PostgresSnapshotRepository
     records: PostgresExclusionRecordRepository
     verifications: PostgresVerificationRepository
     sync_source: SyncSource
+    source_status: SourceStatusReport
     check_exclusions: CheckExclusions
     register_provider: RegisterProvider
     verification_history: VerificationHistory
@@ -87,11 +90,13 @@ def build_services(
     verifications = PostgresVerificationRepository(database)
     return Services(
         registry=registry,
+        clock=clock,
         providers=providers,
         snapshots=snapshots,
         records=records,
         verifications=verifications,
         sync_source=SyncSource(registry, snapshots, records, clock),
+        source_status=SourceStatusReport(registry, snapshots, records, DEFAULT_FRESHNESS, clock),
         check_exclusions=CheckExclusions(
             registry, providers, records, snapshots, verifications, DEFAULT_FRESHNESS, clock
         ),

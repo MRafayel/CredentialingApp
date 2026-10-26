@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Annotated, Final, Literal
 
-from pydantic import Field, SecretStr, StringConstraints
+from pydantic import BeforeValidator, Field, SecretStr, StringConstraints
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["local", "test", "staging", "production"]
@@ -17,6 +17,11 @@ DEFAULT_USER_AGENT: Final = (
 # The local development database started by `make db-start`. Not a secret: it only exists on a
 # developer machine. Every deployed environment must set CREDENTIALING_DATABASE_URL.
 _LOCAL_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+
+
+def _set_and_not_empty(value: object) -> object:
+    """The no-color.org rule: any non-empty value counts, whatever it says."""
+    return value != "" if isinstance(value, str) else value
 
 
 class Settings(BaseSettings):
@@ -41,6 +46,10 @@ class Settings(BaseSettings):
     """User-Agent sent to every source: a fixed standard browser string (owner decision,
     2026-10-26). A User-Agent alone does not pass fingerprint-based firewalls."""
     http_timeout_seconds: float = Field(default=60.0, gt=0)
+    no_color: Annotated[bool, BeforeValidator(_set_and_not_empty)] = Field(
+        default=False, validation_alias="NO_COLOR"
+    )
+    """The standard ``NO_COLOR`` variable (no prefix): set and not empty turns CLI colour off."""
 
 
 @lru_cache

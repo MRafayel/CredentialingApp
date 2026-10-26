@@ -22,6 +22,7 @@ Local data comes from the public sources themselves, never from the repository:
 ```sh
 make db-start && make db-reset    # local Postgres with the schema and a made-up dev organization
 make sync SOURCE=oig_leie         # download the federal exclusion list (SOURCE=all for every source)
+make sources                      # every source's links, last fetch, data age and next fetch (ARGS=--json)
 ```
 
 Until authentication is in place, local API calls name their organization in a header. The

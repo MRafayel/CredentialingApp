@@ -213,6 +213,16 @@ class PostgresExclusionRecordRepository:
             rows = await cursor.fetchall()
         return [row.to_domain() for row in rows]
 
+    async def count_current(self, source_id: SourceId) -> int:
+        """Return how many of the source's rows are current (``valid_to`` is null)."""
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                t"select count(*) from exclusion_records"
+                t" where source_id = {source_id} and valid_to is null"
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
 
 def _lock_key(source_id: str) -> int:
     """A stable signed 64-bit advisory lock key for one source."""

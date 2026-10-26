@@ -93,6 +93,10 @@ class ExclusionRecordRepository(Protocol):
         """Return the rows with these ids, current or not."""
         ...
 
+    async def count_current(self, source_id: SourceId) -> int:
+        """Return how many of the source's rows are current (``valid_to`` is null)."""
+        ...
+
 
 class VerificationRepository(Protocol):
     """Verification history: append-only, scoped to one organization."""

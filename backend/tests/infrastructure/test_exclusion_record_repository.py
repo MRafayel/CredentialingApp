@@ -195,3 +195,21 @@ async def test_find_candidates_ignores_rows_no_longer_listed(database: Connectio
 
 async def test_get_many_with_no_ids(database: ConnectionSource) -> None:
     assert await PostgresExclusionRecordRepository(database).get_many([]) == []
+
+
+async def test_count_current_counts_only_this_sources_open_rows(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    assert await repository.count_current(SOURCE) == 0
+    first_snapshot = await _snapshot(database)
+    rows = [exclusion(snapshot_id=first_snapshot, last=name) for name in ("Aaname", "Bbname")]
+    await repository.replace_current(SOURCE, first_snapshot, rows, NOW)
+    assert await repository.count_current(SOURCE) == 2
+
+    second_snapshot = await _snapshot(database)
+    kept = exclusion(snapshot_id=second_snapshot, last="Aaname", raw=rows[0].raw)
+    await repository.replace_current(SOURCE, second_snapshot, [kept], LATER)
+
+    assert await repository.count_current(SOURCE) == 1
+    assert await repository.count_current("test_other_list") == 0
