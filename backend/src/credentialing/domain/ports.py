@@ -41,6 +41,16 @@ class ProviderRepository(Protocol):
         """Return the organization's provider with this NPI, if any."""
         ...
 
+    async def list(
+        self, organization_id: UUID, *, query: str | None, limit: int, offset: int
+    ) -> tuple[Sequence[Provider], int]:
+        """Return one page of the organization's providers, newest first, and the total.
+
+        ``query`` matches last, first or organization name (case-insensitive substring) or
+        the exact NPI; ``None`` or blank lists everyone.
+        """
+        ...
+
 
 class SnapshotRepository(Protocol):
     """Fetches of public sources (shared reference data)."""
@@ -79,14 +89,34 @@ class ExclusionRecordRepository(Protocol):
           ``valid_to = now`` and the new one inserted as of ``now`` (changed).
 
         Current identities missing from ``records`` are closed with ``valid_to = now``
-        (removed). Rows are never deleted, so every version stays readable.
+        (removed). Rows are never deleted, so every version stays readable. Search keys
+        derived from the names are refreshed on unchanged rows when the domain's name
+        normalization has changed; that is derived data, not a new version.
         """
         ...
 
     async def find_candidates(
-        self, npi: Npi | None, last_name: str | None, organization_name: str | None
+        self,
+        npi: Npi | None,
+        last_name: str | None,
+        organization_name: str | None,
+        *,
+        license_numbers: Sequence[str] = (),
     ) -> Sequence[ExclusionRecord]:
-        """Current rows with this NPI, or this normalized last name or organization name."""
+        """Current rows with this NPI, normalized last or organization name, or licence number.
+
+        Organization names are compared without legal designators, licence numbers without
+        whitespace or case and in any state, so every record the matcher could weigh is found.
+        """
+        ...
+
+    async def search(self, query: str, *, limit: int) -> Sequence[ExclusionRecord]:
+        """Current rows matching a free-text lookup by name, NPI or licence, best first.
+
+        Every word of ``query`` must start a word of the row's names or identifiers; a
+        ten-digit query also matches the NPI exactly, and those rows come first. At most
+        ``limit`` rows, never more than 50.
+        """
         ...
 
     async def get_many(self, ids: Sequence[UUID]) -> Sequence[ExclusionRecord]:
@@ -113,6 +143,16 @@ class VerificationRepository(Protocol):
         source_id: SourceId,
     ) -> VerificationResult | None:
         """Return the most recent result for this provider, credential type and source."""
+        ...
+
+    async def latest_per_source(
+        self, organization_id: UUID, provider_id: UUID, credential_type: CredentialType
+    ) -> Sequence[VerificationResult]:
+        """Return the most recent result of each source for this provider and credential type.
+
+        One result per source, ordered by source id; results stored at the same moment are
+        settled by id, so the answer is stable.
+        """
         ...
 
     async def history(

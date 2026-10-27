@@ -200,3 +200,37 @@ async def test_history_all_spans_credential_types_newest_first(
 
     assert history == [license_result, exclusion_result]
     assert await repository.history_all(uuid4(), provider_id) == []
+
+
+async def test_latest_per_source_keeps_the_newest_result_of_each_source(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresVerificationRepository(database)
+    organization_id, provider_id = await _provider(database, db_connection)
+    other_organization, _ = await _provider(database, db_connection)
+    old = _result(organization_id, provider_id)
+    new = _result(organization_id, provider_id, minutes_later=5, outcome=Outcome.BLOCKED)
+    other = _result(organization_id, provider_id, minutes_later=1, source_id="test_another")
+    licence = _result(organization_id, provider_id, minutes_later=9).model_copy(
+        update={"credential_type": CredentialType.STATE_LICENSE}
+    )
+    tied = [
+        _result(organization_id, provider_id, minutes_later=2, source_id="test_tied").model_copy(
+            update={"id": UUID(int=index)}
+        )
+        for index in (1, 2)
+    ]
+    for result in (old, new, other, licence, *tied):
+        await repository.add(result)
+
+    latest = await repository.latest_per_source(
+        organization_id, provider_id, CredentialType.EXCLUSION
+    )
+
+    assert latest == [other, new, tied[1]]
+    assert (
+        await repository.latest_per_source(
+            other_organization, provider_id, CredentialType.EXCLUSION
+        )
+        == []
+    )

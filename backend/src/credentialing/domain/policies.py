@@ -1,10 +1,11 @@
-"""Domain policies: freshness windows and provider-to-record matching.
+"""Domain policies: freshness windows, provider-to-record matching and the verdict roll-up.
 
 Freshness numbers live only here. Matching is deterministic and explainable: every rule that
-fires leaves a piece of evidence, and the explanation is built from that evidence.
+fires leaves a piece of evidence, and the explanation is built from that evidence. The verdict
+is decided here once, so no screen ever derives a status of its own.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Final, Self
 
@@ -13,9 +14,12 @@ from pydantic import Field, model_validator
 from credentialing.domain.enums import (
     CredentialType,
     EntityKind,
+    Finding,
     Freshness,
     MatchField,
     MatchLevel,
+    Outcome,
+    Verdict,
     VerificationMethod,
 )
 from credentialing.domain.models import (
@@ -26,8 +30,10 @@ from credentialing.domain.models import (
     MatchResult,
     PersonName,
     Provider,
+    ProviderVerdict,
+    VerificationResult,
 )
-from credentialing.domain.names import normalize_name
+from credentialing.domain.names import normalize_name, normalize_organization_name
 from credentialing.domain.types import SourceId
 
 # --- Freshness -----------------------------------------------------------------------------
@@ -120,7 +126,8 @@ def match_provider_to_record(provider: Provider, record: ExclusionRecord) -> Mat
 
     Both NPIs present decides alone: equal is EXACT, different is NONE. Otherwise names
     decide (the record's aliases count as names). For organizations, equal names are
-    POTENTIAL. For individuals, equal last names where one first name is only the other's
+    POTENTIAL, compared without legal designators such as "Inc" or "LLC". For individuals,
+    equal last names where one first name is only the other's
     initial is AMBIGUOUS, and equal last and first names are POTENTIAL, then settled in this
     order, strongest identifier first:
 
@@ -132,6 +139,15 @@ def match_provider_to_record(provider: Provider, record: ExclusionRecord) -> Mat
        letter, are HIGH.
     3. License (same number and state): HIGH.
 
+    A licence that matches when the names do not (a licence-only candidate) is AMBIGUOUS, never
+    NONE and never a finding on its own; a date of birth that differs still rules it out. The
+    New York list showed why: licence numbers are unique only within a profession, not within
+    a state. 46 numbers were shared by different people, 42 of them across professions (a
+    chiropractor and a massage therapist with the same number), and 4 of those groups carried
+    two different NPIs, so a licence number alone cannot identify a person. ``License.kind``
+    is not compared yet because the sources name professions in different vocabularies;
+    comparing it once they are normalized is the refinement that can settle these cases.
+
     A name-only match is never EXACT.
     """
     if provider.npi and record.npi:
@@ -142,25 +158,26 @@ def match_provider_to_record(provider: Provider, record: ExclusionRecord) -> Mat
     if provider.entity_kind is not EntityKind.ORGANIZATION and provider.person_name:
         return _match_individual(provider, provider.person_name, record)
     if provider.organization_name:
-        return _match_organization(provider.organization_name, record)
+        return _match_organization(provider, provider.organization_name, record)
     return _result(MatchLevel.NONE, ())
 
 
 def candidate_keys(record: ExclusionRecord) -> frozenset[str]:
     """Normalized names under which ``record`` can be found as a candidate.
 
-    The last name, the organization name, and each alias both whole and word by word, so a
-    lookup by normalized last name or organization name finds every record the matcher could
-    match by name.
+    The last name, the organization name without its legal designators, and each alias whole,
+    without legal designators and word by word, so a lookup by normalized last name or
+    organization name finds every record the matcher could match by name.
     """
     keys: set[str] = set()
     if record.person_name:
         keys.add(normalize_name(record.person_name.last))
     if record.organization_name:
-        keys.add(normalize_name(record.organization_name))
+        keys.add(normalize_organization_name(record.organization_name))
     for alias in record.aliases:
         normalized = normalize_name(alias)
         keys.add(normalized)
+        keys.add(normalize_organization_name(alias))
         keys.update(normalized.split())
     keys.discard("")
     return frozenset(keys)
@@ -187,7 +204,7 @@ def _match_individual(provider: Provider, name: PersonName, record: ExclusionRec
                 MatchEvidence(field=MatchField.FIRST_NAME, matched=True, detail=f"alias {alias!r}"),
             ]
     if level is MatchLevel.NONE:
-        return _result(MatchLevel.NONE, tuple(evidence))
+        return _license_only(provider, record, evidence, MatchField.LAST_NAME)
 
     same_birth_date = False
     if provider.date_of_birth and record.date_of_birth:
@@ -260,38 +277,132 @@ def _matching_alias(aliases: tuple[str, ...], last: str, first: str) -> str | No
     return None
 
 
-def _match_organization(organization_name: str, record: ExclusionRecord) -> MatchResult:
-    wanted = normalize_name(organization_name)
+def _match_organization(
+    provider: Provider, organization_name: str, record: ExclusionRecord
+) -> MatchResult:
+    """Equal names after dropping legal designators are POTENTIAL; the evidence says so."""
+    wanted = normalize_organization_name(organization_name)
     if not wanted:
         return _result(MatchLevel.NONE, ())
-    if record.organization_name and normalize_name(record.organization_name) == wanted:
-        evidence = MatchEvidence(field=MatchField.ORGANIZATION_NAME, matched=True)
+    plain = normalize_name(organization_name)
+    names: list[tuple[str, str | None]] = (
+        [(record.organization_name, None)] if record.organization_name else []
+    )
+    names += [(alias, f"alias {alias!r}") for alias in record.aliases]
+    for name, via in names:
+        if normalize_organization_name(name) != wanted:
+            continue
+        notes = [via] if via else []
+        if normalize_name(name) != plain:
+            notes.append("legal suffix ignored")
+        evidence = MatchEvidence(
+            field=MatchField.ORGANIZATION_NAME, matched=True, detail="; ".join(notes) or None
+        )
         return _result(MatchLevel.POTENTIAL, (evidence,))
-    for alias in record.aliases:
-        if normalize_name(alias) == wanted:
-            evidence = MatchEvidence(
-                field=MatchField.ORGANIZATION_NAME, matched=True, detail=f"alias {alias!r}"
-            )
-            return _result(MatchLevel.POTENTIAL, (evidence,))
-    return _result(MatchLevel.NONE, ())
+    return _license_only(provider, record, [], MatchField.ORGANIZATION_NAME)
+
+
+_LICENSE_ONLY_NOTE: Final = (
+    "licence numbers are unique only within a profession, so a person must confirm"
+)
+
+
+def _license_only(
+    provider: Provider,
+    record: ExclusionRecord,
+    name_evidence: list[MatchEvidence],
+    name_field: MatchField,
+) -> MatchResult:
+    """The names did not match: a shared licence makes it AMBIGUOUS, otherwise NONE.
+
+    ``name_evidence`` is what the name comparison found; when it found nothing, the evidence
+    records ``name_field`` as not matched so the explanation says why a person must look.
+    """
+    listed = record.license
+    if listed is None or not any(_same_license(own, listed) for own in provider.licenses):
+        return _result(MatchLevel.NONE, tuple(name_evidence))
+    evidence = [
+        MatchEvidence(field=MatchField.LICENSE, matched=True, detail="same state and number"),
+        *(name_evidence or [MatchEvidence(field=name_field, matched=False)]),
+    ]
+    if provider.date_of_birth and record.date_of_birth:
+        same_birth_date = provider.date_of_birth == record.date_of_birth
+        evidence.append(MatchEvidence(field=MatchField.DATE_OF_BIRTH, matched=same_birth_date))
+        if not same_birth_date:
+            return _result(MatchLevel.NONE, tuple(evidence))
+    return _result(MatchLevel.AMBIGUOUS, tuple(evidence), note=_LICENSE_ONLY_NOTE)
+
+
+def license_key(number: str) -> str:
+    """A licence number as matching compares it: whitespace removed, upper case."""
+    return "".join(number.split()).upper()
 
 
 def _same_license(own: License, other: License) -> bool:
-    def number(value: str) -> str:
-        return "".join(value.split()).upper()
-
-    return own.state == other.state and number(own.number) == number(other.number)
+    return own.state == other.state and license_key(own.number) == license_key(other.number)
 
 
-def _result(level: MatchLevel, evidence: tuple[MatchEvidence, ...]) -> MatchResult:
-    return MatchResult(level=level, evidence=evidence, explanation=_explain(level, evidence))
+def _result(
+    level: MatchLevel, evidence: tuple[MatchEvidence, ...], *, note: str | None = None
+) -> MatchResult:
+    return MatchResult(level=level, evidence=evidence, explanation=_explain(level, evidence, note))
 
 
-def _explain(level: MatchLevel, evidence: tuple[MatchEvidence, ...]) -> str:
+def _explain(level: MatchLevel, evidence: tuple[MatchEvidence, ...], note: str | None) -> str:
     if not evidence:
         return f"{_LEVEL_LABELS[level]}: no identifying field matches."
     parts = []
     for item in evidence:
         part = f"{_FIELD_LABELS[item.field]} {'matches' if item.matched else 'differs'}"
         parts.append(f"{part} ({item.detail})" if item.detail else part)
-    return f"{_LEVEL_LABELS[level]}: {', '.join(parts)}."
+    ending = f"; {note}" if note else ""
+    return f"{_LEVEL_LABELS[level]}: {', '.join(parts)}{ending}."
+
+
+# --- Verdict -------------------------------------------------------------------------------
+
+
+def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderVerdict:
+    """Roll the latest result of each source up into the provider's verdict.
+
+    The most serious answer wins: a found record is LISTED; otherwise an ambiguous match is
+    NEEDS_REVIEW; otherwise a source that could not be checked is COULD_NOT_CHECK, never clean;
+    NO_RECORDS only when every source answered with none; NOT_CHECKED without results. Should
+    a source appear twice, its newest result counts.
+    """
+    newest: dict[str, VerificationResult] = {}
+    for result in latest_per_source:
+        kept = newest.get(result.source_id)
+        if kept is None or (result.created_at, str(result.id)) > (kept.created_at, str(kept.id)):
+            newest[result.source_id] = result
+    results = tuple(newest[source_id] for source_id in sorted(newest))
+
+    listed_in = tuple(r.source_id for r in results if r.finding is Finding.RECORD_FOUND)
+    review_in = tuple(r.source_id for r in results if r.finding is Finding.AMBIGUOUS)
+    unchecked = tuple(r.source_id for r in results if r.outcome is not Outcome.COMPLETED)
+    if listed_in:
+        verdict = Verdict.LISTED
+    elif review_in:
+        verdict = Verdict.NEEDS_REVIEW
+    elif unchecked:
+        verdict = Verdict.COULD_NOT_CHECK
+    elif results:
+        verdict = Verdict.NO_RECORDS
+    else:
+        verdict = Verdict.NOT_CHECKED
+
+    list_dates = [
+        r.provenance.source_updated_at
+        for r in results
+        if r.outcome is Outcome.COMPLETED and r.provenance.source_updated_at is not None
+    ]
+    return ProviderVerdict(
+        verdict=verdict,
+        sources_checked=len(results),
+        listed_in=listed_in,
+        review_in=review_in,
+        unchecked=unchecked,
+        oldest_list_updated_at=min(list_dates, default=None),
+        last_checked_at=max((r.created_at for r in results), default=None),
+        results=results,
+    )

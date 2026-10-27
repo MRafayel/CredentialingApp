@@ -34,6 +34,19 @@ class Finding(StrEnum):
     AMBIGUOUS = "ambiguous"
 
 
+class Verdict(StrEnum):
+    """A provider's answer across sources, most serious first.
+
+    ``COULD_NOT_CHECK`` is never clean: at least one source did not answer.
+    """
+
+    LISTED = "listed"
+    NEEDS_REVIEW = "needs_review"
+    COULD_NOT_CHECK = "could_not_check"
+    NO_RECORDS = "no_records"
+    NOT_CHECKED = "not_checked"
+
+
 class MatchLevel(StrEnum):
     """How strongly a source record is tied to a provider, from strongest to none."""
 

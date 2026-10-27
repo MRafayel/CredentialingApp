@@ -1,56 +1,349 @@
 @import 'tailwindcss';
 
 /*
- * Design tokens. Components use the semantic names below (bg-surface, text-ink,
- * text-status-positive...) and never raw hex values or Tailwind's default palette.
+ * Design tokens: near-monochrome, black and white first, one blue as the secondary colour.
+ * Components use the semantic names below (bg-surface, text-ink, text-status-listed...) and
+ * never raw hex values or Tailwind's default palette. Light theme only.
  */
 :root {
-  --surface: #f6f7f9;
-  --raised: #ffffff;
-  --line: #e3e6eb;
-  --ink: #12161c;
-  --ink-muted: #5b6472;
+  color-scheme: light;
 
-  --status-positive: #147a4b;
-  --status-caution: #8a5a00;
-  --status-negative: #c0362c;
-  --status-neutral: #5b6472;
-}
+  --page: #fafafb;
+  --surface: #ffffff;
+  --soft: #f3f4f6;
+  --line: #ececec;
+  --line-strong: #dcdfe6;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface: #0e1116;
-    --raised: #161a21;
-    --line: #262c36;
-    --ink: #e8ebf0;
-    --ink-muted: #9aa3b2;
+  /* Text. ink-muted is AA on page, surface, soft and the atmosphere; ink-faint is for icons only. */
+  --ink: #17191c;
+  --ink-muted: #636a77;
+  --ink-faint: #9a9fab;
+  /* Text on an ink fill: the primary button, the active segment. */
+  --on-ink: #ffffff;
 
-    --status-positive: #4ade9a;
-    --status-caution: #f2c14e;
-    --status-negative: #ff7a70;
-    --status-neutral: #9aa3b2;
+  /*
+   * The one blue, secondary: links, focus, the phone's active tab, selected states, the clear
+   * status and the atmosphere. --accent marks, --accent-strong is text, --accent-soft tints.
+   */
+  --accent: #2b5cf6;
+  --accent-strong: #1e49d6;
+  --accent-soft: #e9efff;
+
+  /* Status colours live in marks; the word next to a mark stays ink. */
+  --status-clear: var(--accent);
+  --status-review: #9a5b00;
+  --status-listed: #c0312f;
+  --status-blocked: #6b7280;
+
+  /*
+   * The soft circle behind a status mark, so a status reads from a distance. Only ever behind
+   * the mark, never behind the word. Each mark stays at least 4.2:1 on its tint.
+   */
+  --tint-clear: var(--accent-soft);
+  --tint-review: #fbefd9;
+  --tint-listed: #fbe9e8;
+  --tint-blocked: #eef0f3;
+
+  /*
+   * The atmosphere behind every page (Atmosphere.tsx): large, soft blobs of the blue family
+   * that fade into the page. Strongest at the edges and corners, white behind the content
+   * column, so ink and ink-muted stay AA wherever text sits on the page.
+   * blob-1 pale ice, blob-2 periwinkle, blob-3 the accent at low opacity, blob-4 white.
+   */
+  --blob-1: #d4e8ff;
+  --blob-2: #c4d0ff;
+  --blob-3: rgb(43 92 246 / 28%);
+  --blob-4: rgb(255 255 255 / 60%);
+  /* On a phone text spans the whole width and scrolls past every blob: the deeper blues step back. */
+  @media (width < 48rem) {
+    --blob-2: #cfd9ff;
+    --blob-3: rgb(43 92 246 / 15%);
   }
+  /* The verdict's faint status field, a tone over the atmosphere. */
+  --wash-clear: rgb(43 92 246 / 13%);
+  --wash-review: rgb(214 140 20 / 13%);
+  --wash-listed: rgb(220 60 55 / 11%);
+  --wash-blocked: rgb(107 114 128 / 9%);
+
+  --glass: rgb(255 255 255 / 74%);
+  /* The scrolled top bar's liquid glass: thinner than --glass, so the atmosphere reads through. */
+  --glass-bar: rgb(255 255 255 / 50%);
+  --glass-sheen: rgb(255 255 255 / 25%);
+  --glass-rim: rgb(0 0 0 / 6%);
+  --scrim: rgb(23 25 28 / 18%);
+
+  --skeleton: #f0f1f4;
+  --skeleton-shine: #f8f9fa;
 }
 
 @theme inline {
+  --color-page: var(--page);
   --color-surface: var(--surface);
-  --color-raised: var(--raised);
+  --color-soft: var(--soft);
   --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
   --color-ink: var(--ink);
   --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-on-ink: var(--on-ink);
 
-  --color-status-positive: var(--status-positive);
-  --color-status-caution: var(--status-caution);
-  --color-status-negative: var(--status-negative);
-  --color-status-neutral: var(--status-neutral);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-status-clear: var(--status-clear);
+  --color-status-review: var(--status-review);
+  --color-status-listed: var(--status-listed);
+  --color-status-blocked: var(--status-blocked);
+
+  --color-tint-clear: var(--tint-clear);
+  --color-tint-review: var(--tint-review);
+  --color-tint-listed: var(--tint-listed);
+  --color-tint-blocked: var(--tint-blocked);
+
+  --color-glass: var(--glass);
+  --color-glass-rim: var(--glass-rim);
+  --color-scrim: var(--scrim);
+
+  --radius-card: 16px;
+  /* A card in a list of cards: lookup results, roster rows. */
+  --radius-item: 14px;
+  --radius-hero: 24px;
+  --radius-control: 10px;
+
+  /*
+   * Depth carries information: content people scan (rows, result cards, the verdict) sits on
+   * --shadow-card and rises to --shadow-card-hover; chrome (bars, nav, panels, buttons) stays
+   * flat. --shadow-float is for things over the page: sheets and the phone tab bar.
+   * --shadow-glass is the top bar's floating glass pill (`glass-bar`).
+   */
+  --shadow-card:
+    0 0 0 1px rgb(17 25 40 / 5%), 0 2px 8px rgb(17 25 40 / 4%),
+    0 12px 32px -12px rgb(17 25 40 / 14%);
+  --shadow-card-hover:
+    0 0 0 1px rgb(17 25 40 / 6%), 0 4px 12px rgb(17 25 40 / 5%),
+    0 16px 40px -14px rgb(17 25 40 / 20%);
+  --shadow-float: 0 0 0 1px rgb(0 0 0 / 4%), 0 8px 40px rgb(0 0 0 / 10%);
+  /*
+   * The scrolled top bar's liquid glass: a specular top edge, a faint lower edge, a hairline
+   * and the card shadow.
+   */
+  --shadow-glass:
+    inset 0 1px 0 rgb(255 255 255 / 80%), inset 0 -1px 0 rgb(17 25 40 / 4%),
+    0 0 0 1px rgb(17 25 40 / 7%), 0 2px 8px rgb(17 25 40 / 4%),
+    0 12px 32px -12px rgb(17 25 40 / 14%);
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* System fonts only: no webfont requests leave the browser. */
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* The type scale: text-display, text-heading, ... Numbers add tabular-nums. */
+  --text-display: clamp(34px, calc(2.2vw + 20px), 48px);
+  --text-display--line-height: 1.08;
+  --text-display--letter-spacing: -0.02em;
+  --text-display--font-weight: 600;
+  --text-heading: clamp(24px, calc(0.6vw + 20px), 28px);
+  --text-heading--line-height: 1.15;
+  --text-heading--letter-spacing: -0.015em;
+  --text-heading--font-weight: 600;
+  --text-subheading: 20px;
+  --text-subheading--line-height: 1.3;
+  --text-subheading--letter-spacing: -0.01em;
+  --text-subheading--font-weight: 500;
+  --text-title: 16px;
+  --text-title--line-height: 1.35;
+  --text-title--font-weight: 600;
+  --text-body: 15px;
+  --text-body--line-height: 1.5;
+  --text-small: 13px;
+  --text-small--line-height: 1.45;
+  --text-caption: 12px;
+  --text-caption--line-height: 1.4;
+  --text-caption--letter-spacing: 0.01em;
+  --text-figure: clamp(24px, calc(0.6vw + 20px), 30px);
+  --text-figure--line-height: 1.1;
+  --text-figure--letter-spacing: -0.015em;
+  --text-figure--font-weight: 600;
+}
+
+/* A quiet section label above a group: small, spaced capitals, muted. */
+@utility text-label {
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/*
+ * The atmosphere's two layers (Atmosphere.tsx), each a few radial gradients that fade out
+ * well before their edge. The back layer holds the colour at the corners and the mid-left
+ * edge; the front layer lifts the content column with white and adds a cobalt glint at the
+ * top right. Each layer drifts on transform only, very slowly, and never carries meaning.
+ */
+@utility atmosphere-back {
+  background-image:
+    radial-gradient(
+      72% 64% at -4% -6%,
+      var(--blob-1) 0%,
+      color-mix(in oklab, var(--blob-1) 55%, transparent) 34%,
+      transparent 70%
+    ),
+    radial-gradient(
+      64% 60% at 106% -2%,
+      var(--blob-2) 0%,
+      color-mix(in oklab, var(--blob-2) 45%, transparent) 30%,
+      transparent 64%
+    ),
+    radial-gradient(
+      56% 50% at -8% 62%,
+      var(--blob-1) 0%,
+      color-mix(in oklab, var(--blob-1) 45%, transparent) 30%,
+      transparent 64%
+    ),
+    radial-gradient(
+      92% 84% at 106% 106%,
+      var(--blob-3) 0%,
+      color-mix(in oklab, var(--blob-3) 50%, transparent) 32%,
+      transparent 68%
+    );
+  @media (prefers-reduced-motion: no-preference) {
+    animation: atmosphere-drift-a 52s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+}
+
+@utility atmosphere-front {
+  background-image:
+    radial-gradient(
+      48% 56% at 50% 36%,
+      var(--blob-4) 0%,
+      color-mix(in oklab, var(--blob-4) 55%, transparent) 40%,
+      transparent 74%
+    ),
+    radial-gradient(
+      30% 36% at 108% -6%,
+      var(--blob-3) 0%,
+      color-mix(in oklab, var(--blob-3) 40%, transparent) 34%,
+      transparent 66%
+    );
+  @media (prefers-reduced-motion: no-preference) {
+    animation: atmosphere-drift-b 44s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+}
+
+@keyframes atmosphere-drift-a {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(3%, 2.5%, 0) scale(1.06);
+  }
+}
+
+@keyframes atmosphere-drift-b {
+  from {
+    transform: translate3d(0, 0, 0) scale(1.04);
+  }
+  to {
+    transform: translate3d(-3%, 3%, 0) scale(1);
+  }
+}
+
+/*
+ * The verdict's wash, tinted by its status through --tone-wash (see tones.ts). Both ellipses
+ * stay inside the box, so the tint fades out before any edge.
+ */
+@utility bg-wash-tone {
+  background-image:
+    radial-gradient(32% 46% at 32% 48%, var(--tone-wash), transparent 100%),
+    radial-gradient(30% 44% at 70% 54%, var(--tone-wash), transparent 100%);
+}
+
+/*
+ * The top bars' floating pill once the page scrolls (BarGlass in PageBar.tsx): thin white
+ * glass that lets the atmosphere and the content under it show through, with a faint diagonal
+ * sheen. It sits on its own layer behind the bar's content and fades in on opacity only.
+ */
+@utility glass-bar {
+  background-color: var(--glass-bar);
+  background-image: linear-gradient(135deg, var(--glass-sheen), transparent 70%);
+  box-shadow: var(--shadow-glass);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+}
+
+/* Skeletons are the one repeating motion: work under way right now. */
+@utility skeleton {
+  background-color: var(--skeleton);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--skeleton-shine) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: skeleton-shimmer 1.4s linear infinite;
+  }
+}
+
+/* The typing placeholder's caret; it only exists while the placeholder types. */
+@utility caret-blink {
+  animation: caret-blink 1s steps(1) infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+
+html {
+  background: var(--page);
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--surface);
+  background: var(--page);
   color: var(--ink);
   font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * The one focus ring, for every control and input: a 2 px accent outline 2 px out. Inputs
+ * keep their border as it is. In the base layer, so a component can still move it.
+ */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+/* While TypedPlaceholder types over a field, the field's own placeholder steps aside. */
+input[data-typing]::placeholder {
+  color: transparent;
+}
+
+::selection {
+  background: var(--accent-soft);
 }

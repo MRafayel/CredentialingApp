@@ -1,4 +1,4 @@
-"""The command line: ``python -m credentialing.cli sync oig_leie`` or ``... sources``."""
+"""The command line: ``python -m credentialing.cli sync oig_leie``, ``sources`` or ``openapi``."""
 
 from credentialing.cli.main import main
 

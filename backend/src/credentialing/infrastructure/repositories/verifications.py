@@ -22,12 +22,13 @@ from credentialing.domain.types import SourceId
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.jsonb import mapping_jsonb, models_jsonb
 
-_SELECT: Final = sql.SQL(
-    "select id, organization_id, provider_id, credential_type, source_id, outcome, finding,"
+_COLUMNS: Final = sql.SQL(
+    "id, organization_id, provider_id, credential_type, source_id, outcome, finding,"
     " match_level, match_evidence, match_explanation, matched_record_ids, summary, details,"
     " source_url, method, verified_at, source_updated_at, snapshot_id, raw_record_ref,"
-    " freshness, created_at from verifications"
+    " freshness, created_at"
 )
+_SELECT: Final = sql.SQL("select {} from verifications").format(_COLUMNS)
 
 
 class _VerificationRow(BaseModel):
@@ -149,6 +150,25 @@ class PostgresVerificationRepository:
             )
             row = await cursor.fetchone()
         return row.to_domain() if row else None
+
+    async def latest_per_source(
+        self, organization_id: UUID, provider_id: UUID, credential_type: CredentialType
+    ) -> Sequence[VerificationResult]:
+        """Return the most recent result of each source, ordered by source id, in one query."""
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_VerificationRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                select distinct on (source_id) {_COLUMNS:q} from verifications
+                where organization_id = {organization_id} and provider_id = {provider_id}
+                  and credential_type = {credential_type.value}
+                order by source_id, created_at desc, id desc
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]
 
     async def history(
         self, organization_id: UUID, provider_id: UUID, credential_type: CredentialType

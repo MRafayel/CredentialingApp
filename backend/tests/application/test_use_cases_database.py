@@ -10,7 +10,7 @@ from psycopg.rows import TupleRow
 from credentialing.application.source_status import SourceHealth
 from credentialing.bootstrap import Services, build_services
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import Finding, Freshness, MatchLevel, Outcome
+from credentialing.domain.enums import Finding, Freshness, MatchLevel, Outcome, Verdict
 from credentialing.domain.models import FetchResult, SnapshotDiff, SourceSnapshot
 from credentialing.infrastructure.database import ConnectionSource
 from tests.fakes import FixedClock, ScriptedConnector, capabilities
@@ -106,7 +106,11 @@ async def test_check_exclusions_end_to_end(
     await services.sync_source.run(SOURCE)
     clock.current = NOW + timedelta(hours=2)
 
-    (result,) = await services.check_exclusions.run(organization_id, provider.id)
+    verdict = await services.check_exclusions.run(organization_id, provider.id)
+
+    (result,) = verdict.results
+    assert verdict.verdict is Verdict.LISTED
+    assert await services.provider_verdict.run(organization_id, provider.id) == verdict
 
     assert result.finding is Finding.RECORD_FOUND
     assert result.match is not None

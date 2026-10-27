@@ -34,7 +34,16 @@ curl -X POST localhost:8000/providers -H 'X-Organization-Id: 00000000-0000-0000-
   -d '{"entity_kind": "individual", "person_name": {"last": "Sampleperson", "first": "Avery"}}'
 ```
 
-The header is accepted only when `CREDENTIALING_ENVIRONMENT=local`.
+The header is accepted only when `CREDENTIALING_ENVIRONMENT=local`. The UI sends it for the
+organization in `VITE_ORGANIZATION_ID` (default: the seeded one); copy `frontend/.env.example`
+to `frontend/.env.local` to change it.
+
+The UI's API types are generated from the backend's OpenAPI schema. After changing an endpoint:
+
+```sh
+make api-types    # regenerate frontend/src/lib/api-schema.d.ts (make lint fails while it is stale)
+make test-web     # frontend unit tests (or `pnpm test` inside frontend/)
+```
 
 ## Layout
 

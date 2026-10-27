@@ -93,6 +93,7 @@ CAPABILITIES: Final = ConnectorCapabilities(
     source_url="https://oig.hhs.gov/exclusions/leie-database-supplement-downloads/",
     display_name="HHS-OIG List of Excluded Individuals/Entities",
     download_url=DOWNLOAD_URL,
+    provider_type_fields=("SPECIALTY", "GENERAL"),
 )
 
 

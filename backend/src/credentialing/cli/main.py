@@ -6,14 +6,19 @@ prints one line per source and exits with 1 when any source could not be read.
 ``sources`` shows every registered source: its links, its last fetch, how many records are
 current, how old the data is and when the next fetch is due. ``--json`` prints the same as
 JSON; ``--strict`` exits with 1 unless every source is ok.
+
+``openapi`` prints the HTTP API's OpenAPI schema as JSON, without a server or a database;
+the frontend's API types are generated from it.
 """
 
 import argparse
 import asyncio
+import json
 import sys
 import time
 from collections.abc import Sequence
 
+from credentialing.api.app import create_app
 from credentialing.application.errors import UnknownSourceError
 from credentialing.application.sync_source import SyncReport
 from credentialing.bootstrap import runtime
@@ -45,13 +50,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="exit with 1 when any source is failing, overdue or never fetched",
     )
+    commands.add_parser("openapi", help="print the HTTP API's OpenAPI schema as JSON")
     args = parser.parse_args(argv)
 
+    if args.command == "openapi":
+        sys.stdout.write(openapi_json())
+        return 0
     settings = get_settings()
     configure_logging(settings.log_level)
     if args.command == "sources":
         return asyncio.run(_sources(settings, as_json=args.as_json, strict=args.strict))
     return asyncio.run(_sync(settings, args.source_id, every=args.all, force=args.force))
+
+
+def openapi_json() -> str:
+    """The API's OpenAPI schema, built from the routes alone (no lifespan, no database)."""
+    schema = create_app(expose_docs=True).openapi()
+    return json.dumps(schema, indent=2, ensure_ascii=False) + "\n"
 
 
 async def _sources(settings: Settings, *, as_json: bool, strict: bool) -> int:

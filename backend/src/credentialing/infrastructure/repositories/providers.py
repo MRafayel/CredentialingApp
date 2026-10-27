@@ -1,6 +1,8 @@
 """Providers in Postgres, always scoped by organization."""
 
+from collections.abc import Sequence
 from datetime import date, datetime
+from string.templatelib import Template
 from typing import Final
 from uuid import UUID
 
@@ -19,6 +21,12 @@ _SELECT: Final = sql.SQL(
     " organization_name, npi, date_of_birth, licenses, addresses, taxonomy_codes, created_at"
     " from providers"
 )
+
+
+def _like_pattern(text: str) -> str:
+    """A case-insensitive substring pattern with ``LIKE`` wildcards in ``text`` escaped."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 class _ProviderRow(BaseModel):
@@ -123,3 +131,31 @@ class PostgresProviderRepository:
             )
             row = await cursor.fetchone()
         return row.to_domain() if row else None
+
+    async def list(
+        self, organization_id: UUID, *, query: str | None, limit: int, offset: int
+    ) -> tuple[Sequence[Provider], int]:
+        """Return one page of the organization's providers, newest first, and the total."""
+        term = query.strip() if query else ""
+        where: Template = t"organization_id = {organization_id}"
+        if term:
+            pattern = _like_pattern(term)
+            where = t"""{where:q} and (
+                last_name ilike {pattern} or first_name ilike {pattern}
+                or organization_name ilike {pattern} or npi = {term}
+            )"""
+        async with self._database.connection() as connection:
+            count_cursor = await connection.execute(
+                t"select count(*) from providers where {where:q}"
+            )
+            counted = await count_cursor.fetchone()
+            async with connection.cursor(row_factory=class_row(_ProviderRow)) as cursor:
+                await cursor.execute(
+                    t"""
+                    {_SELECT:q} where {where:q}
+                    order by created_at desc, id desc limit {limit} offset {offset}
+                    """
+                )
+                rows = await cursor.fetchall()
+        total = int(counted[0]) if counted else 0
+        return [row.to_domain() for row in rows], total

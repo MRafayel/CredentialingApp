@@ -5,7 +5,7 @@ from contextlib import AbstractAsyncContextManager
 
 from fastapi import FastAPI
 
-from credentialing.api import health, providers, verifications
+from credentialing.api import exclusions, health, providers, sources, verifications
 from credentialing.api.errors import register_error_handlers
 
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
@@ -32,4 +32,6 @@ def create_app(*, expose_docs: bool, lifespan: Lifespan | None = None) -> FastAP
     app.include_router(health.router)
     app.include_router(providers.router)
     app.include_router(verifications.router)
+    app.include_router(sources.router)
+    app.include_router(exclusions.router)
     return app

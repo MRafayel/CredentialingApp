@@ -1,0 +1,46 @@
+.ill-accent {
+  stroke: var(--accent, currentColor);
+}
+
+/* Zero specificity, so a colour class passed by the caller still wins. */
+:where(.ill-clear) {
+  color: var(--status-clear);
+}
+:where(.ill-review) {
+  color: var(--status-review);
+}
+:where(.ill-listed) {
+  color: var(--status-listed);
+}
+:where(.ill-blocked),
+:where(.ill-unchecked) {
+  color: var(--status-blocked);
+}
+:where(.ill-muted) {
+  color: var(--ink-muted);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Gap of 2 and offset just past 1 keep round caps from leaving a dot before the draw starts. */
+  .ill-draw {
+    stroke-dasharray: 1 2;
+    stroke-dashoffset: 1.01;
+    animation: ill-draw 0.5s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--i, 0) * 90ms) forwards;
+  }
+  .ill-fade {
+    animation: ill-fade 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@keyframes ill-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes ill-fade {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}

@@ -184,6 +184,152 @@ async def test_find_candidates_by_npi_or_normalized_name(database: ConnectionSou
     assert await repository.find_candidates(None, None, None) == []
 
 
+async def test_find_candidates_by_organization_name_without_legal_suffix(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    listed = exclusion(
+        snapshot_id=snapshot_id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="7 STAR QZXSAMPLEVILLE PHARMACY AND DELI INC",
+    )
+    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW)
+
+    found = await repository.find_candidates(
+        None, None, "The 7 Star Qzxsampleville Pharmacy and Deli, LLC"
+    )
+
+    assert _ours(found) == {listed.id}
+
+
+async def test_find_candidates_by_licence_number(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    listed = exclusion(
+        snapshot_id=snapshot_id,
+        last="Qzxothername",
+        license=License(number="qzx 0012345", state="NY"),
+    )
+    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW)
+
+    found = await repository.find_candidates(None, None, None, license_numbers=["QZX0012345", "  "])
+
+    assert _ours(found) == {listed.id}
+    assert await repository.find_candidates(None, None, None, license_numbers=[" "]) == []
+
+
+async def test_replace_current_refreshes_outdated_name_keys(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    listed = exclusion(
+        snapshot_id=snapshot_id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="Qzxtestco LLC",
+    )
+    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW)
+    async with database.connection() as connection:
+        old_keys = ["qzxtestco llc"]
+        await connection.execute(
+            t"update exclusion_records set name_keys = {old_keys} where id = {listed.id}"
+        )
+
+    diff = await repository.replace_current(SOURCE, snapshot_id, [listed], LATER)
+
+    assert diff == SnapshotDiff(added=0, removed=0, changed=0, unchanged=1)
+    async with database.connection() as connection:
+        cursor = await connection.execute(
+            t"select name_keys, valid_from from exclusion_records where id = {listed.id}"
+        )
+        row = await cursor.fetchone()
+    assert row is not None
+    assert (row[0], row[1]) == (["qzxtestco"], NOW)
+
+
+async def _search_ids(repository: PostgresExclusionRecordRepository, query: str) -> list[UUID]:
+    """This test's records a search returns, in the order returned."""
+    return [r.id for r in await repository.search(query, limit=50) if r.source_id == SOURCE]
+
+
+async def test_search_by_npi_words_prefixes_and_identifiers(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    pharmacy = exclusion(
+        snapshot_id=snapshot_id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="7 STAR QZXSAMPLEVILLE PHARMACY AND DELI INC",
+        npi=NPI,
+        license=License(number="QZX0012345", state="NY"),
+    )
+    person = exclusion(
+        snapshot_id=snapshot_id,
+        last="Qzx-Testperson",
+        first="Avery",
+        aliases=("Avery Qzxmarriedname",),
+    ).model_copy(update={"state_provider_id": "QZXID77"})
+    closed = exclusion(snapshot_id=snapshot_id, last="Qzxgoneperson")
+    await repository.replace_current(SOURCE, snapshot_id, [pharmacy, person, closed], NOW)
+    await repository.replace_current(SOURCE, snapshot_id, [pharmacy, person], LATER)
+
+    assert await _search_ids(repository, NPI) == [pharmacy.id]
+    assert await _search_ids(repository, NPI[:6]) == [pharmacy.id]
+    assert await _search_ids(repository, "STAR QZXSAMPLEVILLE PHARMACY AND DELI") == [pharmacy.id]
+    assert await _search_ids(repository, "  qzxsamplev pharm ") == [pharmacy.id]
+    assert await _search_ids(repository, "qzx0012345") == [pharmacy.id]
+    assert await _search_ids(repository, "qzx-testperson, avery") == [person.id]
+    assert await _search_ids(repository, "qzxmarried") == [person.id]
+    assert await _search_ids(repository, "QZXID77") == [person.id]
+    assert await _search_ids(repository, "qzxgoneperson") == []
+    assert await _search_ids(repository, "qzxsampleville nobody") == []
+    assert await repository.search("  ':*&|!  ", limit=10) == []
+
+
+async def test_search_puts_an_exact_npi_first(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    by_state_id = exclusion(snapshot_id=snapshot_id, last="Aaqzxname").model_copy(
+        update={"state_provider_id": NPI}
+    )
+    by_npi = exclusion(snapshot_id=snapshot_id, last="Zzqzxname", npi=NPI)
+    await repository.replace_current(SOURCE, snapshot_id, [by_state_id, by_npi], NOW)
+
+    assert await _search_ids(repository, NPI) == [by_npi.id, by_state_id.id]
+
+
+async def test_search_ranks_whole_words_in_names_first(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    prefix_only = exclusion(
+        snapshot_id=snapshot_id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="Aaa Qzxstopping Center",
+        npi=NPI,
+    )
+    whole_word = exclusion(
+        snapshot_id=snapshot_id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="1 Qzxstop Pharmacy",
+    )
+    await repository.replace_current(SOURCE, snapshot_id, [prefix_only, whole_word], NOW)
+
+    assert await _search_ids(repository, "1 qzxstop") == [whole_word.id, prefix_only.id]
+
+
+async def test_search_limit_is_capped(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    rows = [exclusion(snapshot_id=snapshot_id, last="Qzxmany", first=f"A{i}") for i in range(55)]
+    await repository.replace_current(SOURCE, snapshot_id, rows, NOW)
+
+    assert len(await _search_ids(repository, "qzxmany")) == 50
+    assert len(await repository.search("qzxmany", limit=3)) == 3
+
+
 async def test_find_candidates_ignores_rows_no_longer_listed(database: ConnectionSource) -> None:
     repository = PostgresExclusionRecordRepository(database)
     snapshot_id = await _snapshot(database)

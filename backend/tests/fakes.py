@@ -1,5 +1,6 @@
 """In-memory implementations of the domain ports, for fast tests of use cases and the API."""
 
+import re
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -21,9 +22,11 @@ from credentialing.domain.models import (
     SourceSnapshot,
     VerificationResult,
 )
-from credentialing.domain.names import normalize_name
-from credentialing.domain.policies import candidate_keys
+from credentialing.domain.names import normalize_name, normalize_organization_name
+from credentialing.domain.policies import candidate_keys, license_key
 from credentialing.domain.types import Npi, SourceId
+
+_WORDS = re.compile(r"[^\W_]+")
 
 
 class FixedClock:
@@ -145,14 +148,60 @@ class InMemoryRecords:
         )
 
     async def find_candidates(
-        self, npi: Npi | None, last_name: str | None, organization_name: str | None
+        self,
+        npi: Npi | None,
+        last_name: str | None,
+        organization_name: str | None,
+        *,
+        license_numbers: Sequence[str] = (),
     ) -> Sequence[ExclusionRecord]:
-        keys = {normalize_name(n) for n in (last_name, organization_name) if n} - {""}
+        keys = {normalize_name(last_name)} if last_name else set()
+        if organization_name:
+            keys.add(normalize_organization_name(organization_name))
+        keys.discard("")
+        licenses = {license_key(number) for number in license_numbers} - {""}
         return [
             record
             for record in self.current.values()
-            if (npi is not None and record.npi == npi) or candidate_keys(record) & keys
+            if (npi is not None and record.npi == npi)
+            or candidate_keys(record) & keys
+            or (record.license is not None and license_key(record.license.number) in licenses)
         ]
+
+    async def search(self, query: str, *, limit: int) -> Sequence[ExclusionRecord]:
+        """Every word of the query starts a word of the record's names or identifiers."""
+        term = query.strip()
+        tokens = _WORDS.findall(term.casefold())
+        if not tokens:
+            return []
+
+        def words(record: ExclusionRecord) -> list[str]:
+            name = record.person_name
+            texts = [
+                name.last if name else None,
+                name.first if name else None,
+                name.middle if name else None,
+                record.organization_name,
+                *record.aliases,
+                record.npi,
+                record.state_provider_id,
+                record.license.number if record.license else None,
+            ]
+            return _WORDS.findall(" ".join(t for t in texts if t).casefold())
+
+        def hit(record: ExclusionRecord) -> bool:
+            own = words(record)
+            return record.npi == term or all(any(w.startswith(t) for w in own) for t in tokens)
+
+        found = sorted(
+            (r for r in self.current.values() if hit(r)),
+            key=lambda r: (
+                r.npi != term,
+                r.organization_name or (r.person_name.last if r.person_name else ""),
+                str(r.id),
+            ),
+        )
+        return found[: min(max(limit, 1), 50)]
 
     async def get_many(self, ids: Sequence[UUID]) -> Sequence[ExclusionRecord]:
         return [self.all[i] for i in ids if i in self.all]
@@ -182,6 +231,31 @@ class InMemoryProviders:
             None,
         )
 
+    async def list(
+        self, organization_id: UUID, *, query: str | None, limit: int, offset: int
+    ) -> tuple[Sequence[Provider], int]:
+        term = query.strip().casefold() if query else ""
+
+        def matches(provider: Provider) -> bool:
+            name = provider.person_name
+            texts = (
+                name.last if name else None,
+                name.first if name else None,
+                provider.organization_name,
+            )
+            return not term or provider.npi == term or any(term in t.casefold() for t in texts if t)
+
+        own = sorted(
+            (
+                p
+                for p in self.stored.values()
+                if p.organization_id == organization_id and matches(p)
+            ),
+            key=lambda p: (p.created_at, p.id),
+            reverse=True,
+        )
+        return own[offset : offset + limit], len(own)
+
 
 class InMemoryVerifications:
     def __init__(self) -> None:
@@ -203,6 +277,14 @@ class InMemoryVerifications:
             if r.source_id == source_id
         ]
         return history[0] if history else None
+
+    async def latest_per_source(
+        self, organization_id: UUID, provider_id: UUID, credential_type: CredentialType
+    ) -> Sequence[VerificationResult]:
+        newest: dict[str, VerificationResult] = {}
+        for result in await self.history(organization_id, provider_id, credential_type):
+            newest.setdefault(result.source_id, result)
+        return [newest[source_id] for source_id in sorted(newest)]
 
     async def history(
         self, organization_id: UUID, provider_id: UUID, credential_type: CredentialType

@@ -79,10 +79,14 @@ async def test_the_fixture_parses_into_records_of_this_snapshot(source_id: str) 
     assert result.snapshot.outcome is Outcome.COMPLETED
     assert result.records
     assert result.snapshot.row_count == len(result.records)
+    provider_type_fields = _connector(
+        source_id, ScriptedFetcher()
+    ).capabilities.provider_type_fields
     for record in result.records:
         assert record.source_id == source_id
         assert record.snapshot_id == result.snapshot.id
         assert record.raw
+        assert set(provider_type_fields) <= set(record.raw)
 
 
 @pytest.mark.parametrize("source_id", _SOURCE_IDS)

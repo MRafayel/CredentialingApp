@@ -1,3 +1,4 @@
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -84,3 +85,45 @@ async def test_find_by_npi(
 
     assert await repository.find_by_npi(organization_id, NPI) == provider
     assert await repository.find_by_npi(organization_id, make_npi("100000002")) is None
+
+
+async def test_list_pages_newest_first_and_searches(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresProviderRepository(database)
+    organization_id = await _organization(db_connection)
+    other_organization = await _organization(db_connection)
+    oldest = _provider(organization_id).model_copy(update={"created_at": NOW - timedelta(days=2)})
+    middle = _provider(organization_id, npi=None).model_copy(
+        update={
+            "person_name": PersonName(last="O'Searchperson", first="Blake"),
+            "created_at": NOW - timedelta(days=1),
+        }
+    )
+    newest = organization().model_copy(
+        update={"organization_id": organization_id, "organization_name": "Sample 100% Care"}
+    )
+    for provider in (oldest, middle, newest, _provider(other_organization)):
+        await repository.add(provider)
+
+    everyone, total = await repository.list(organization_id, query=None, limit=2, offset=0)
+    rest, _ = await repository.list(organization_id, query=None, limit=2, offset=2)
+    beyond, beyond_total = await repository.list(organization_id, query="", limit=2, offset=10)
+
+    assert total == 3
+    assert [p.id for p in everyone] == [newest.id, middle.id]
+    assert [p.id for p in rest] == [oldest.id]
+    assert (list(beyond), beyond_total) == ([], 3)
+
+    async def found(query: str) -> list[UUID]:
+        items, count = await repository.list(organization_id, query=query, limit=10, offset=0)
+        assert count == len(items)
+        return [p.id for p in items]
+
+    assert await found("  searchPERSON ") == [middle.id]
+    assert await found("blake") == [middle.id]
+    assert await found("100%") == [newest.id]
+    assert await found("%") == [newest.id]
+    assert await found("_") == []
+    assert await found(NPI) == [oldest.id]
+    assert await found(NPI[:4]) == []

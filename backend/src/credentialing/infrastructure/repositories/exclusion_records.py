@@ -4,6 +4,7 @@ Shared reference data: no organization owns them.
 """
 
 import hashlib
+import re
 from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Final
@@ -21,8 +22,8 @@ from credentialing.domain.models import (
     PersonName,
     SnapshotDiff,
 )
-from credentialing.domain.names import normalize_name
-from credentialing.domain.policies import candidate_keys
+from credentialing.domain.names import normalize_name, normalize_organization_name
+from credentialing.domain.policies import candidate_keys, license_key
 from credentialing.domain.types import Npi, SourceId
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.jsonb import mapping_jsonb, model_jsonb
@@ -33,6 +34,14 @@ _SELECT: Final = sql.SQL(
     " license_number, license_state, license_kind, date_of_birth, address, action, action_raw,"
     " effective_date, end_date, reason, raw, valid_from, valid_to from exclusion_records"
 )
+
+MAX_SEARCH_RESULTS: Final = 50
+"""The most rows one lookup returns."""
+
+_SEARCH_TOKEN: Final = re.compile(r"[^\W_]+")
+"""Runs of letters and digits: the only characters a lookup passes into a tsquery."""
+
+_NPI_QUERY: Final = re.compile(r"[0-9]{10}")
 
 
 class _ExclusionRow(BaseModel):
@@ -130,6 +139,11 @@ class PostgresExclusionRecordRepository:
         before new ones are inserted, so the one-current-row-per-identity index always holds.
         Replacements of one source are serialized by a transaction-scoped advisory lock, so two
         concurrent runs cannot interleave.
+
+        ``name_keys`` is derived from the names by the domain's normalization, not source
+        content: an unchanged row whose keys no longer match that normalization gets them
+        recomputed in place, so a change to the normalization reaches stored rows on the next
+        sync (``--force`` when the source itself has not changed).
         """
         incoming: dict[str, ExclusionRecord] = {}
         for record in records:
@@ -143,11 +157,13 @@ class PostgresExclusionRecordRepository:
             await connection.execute(t"select pg_advisory_xact_lock({_lock_key(source_id)})")
             cursor = await connection.execute(
                 t"""
-                select record_hash, content_hash from exclusion_records
+                select record_hash, content_hash, name_keys from exclusion_records
                 where source_id = {source_id} and valid_to is null
                 """
             )
-            current: dict[str, str] = {row[0]: row[1] for row in await cursor.fetchall()}
+            rows = await cursor.fetchall()
+            current: dict[str, str] = {row[0]: row[1] for row in rows}
+            stored_keys: dict[str, frozenset[str]] = {row[0]: frozenset(row[2]) for row in rows}
 
             removed = sorted(current.keys() - incoming.keys())
             added = [record for hash_, record in incoming.items() if hash_ not in current]
@@ -166,6 +182,14 @@ class PostgresExclusionRecordRepository:
                     """
                 )
             await _insert(connection, added + changed, now)
+            stale = [
+                record
+                for hash_, record in incoming.items()
+                if hash_ in current
+                and current[hash_] == record.content_hash
+                and stored_keys[hash_] != candidate_keys(record)
+            ]
+            await _refresh_name_keys(connection, source_id, stale)
 
         return SnapshotDiff(
             added=len(added),
@@ -175,17 +199,26 @@ class PostgresExclusionRecordRepository:
         )
 
     async def find_candidates(
-        self, npi: Npi | None, last_name: str | None, organization_name: str | None
+        self,
+        npi: Npi | None,
+        last_name: str | None,
+        organization_name: str | None,
+        *,
+        license_numbers: Sequence[str] = (),
     ) -> Sequence[ExclusionRecord]:
-        """Current rows with this NPI, or this normalized last name or organization name.
+        """Current rows with this NPI, normalized name or licence number.
 
-        Names are compared after the domain's normalization, against the record's names and
-        alias words, so every record the matcher could match by name is returned.
+        Names are compared after the domain's normalization (organization names without their
+        legal designators), against the record's names and alias words, so every record the
+        matcher could match by name is returned. Licence numbers are compared without
+        whitespace and case, in any state; the matcher checks the state.
         """
-        keys = sorted(
-            {normalize_name(name) for name in (last_name, organization_name) if name} - {""}
-        )
-        if npi is None and not keys:
+        keys = {normalize_name(last_name)} if last_name else set()
+        if organization_name:
+            keys.add(normalize_organization_name(organization_name))
+        names = sorted(keys - {""})
+        licenses = sorted({license_key(number) for number in license_numbers} - {""})
+        if npi is None and not names and not licenses:
             return []
         async with (
             self._database.connection() as connection,
@@ -194,8 +227,50 @@ class PostgresExclusionRecordRepository:
             await cursor.execute(
                 t"""
                 {_SELECT:q}
-                where valid_to is null and (npi = {npi} or name_keys && {keys}::text[])
+                where valid_to is null and (
+                    npi = {npi}
+                    or name_keys && {names}::text[]
+                    or upper(regexp_replace(license_number, '\\s+', '', 'g'))
+                        = any({licenses}::text[])
+                )
                 order by source_id, id
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]
+
+    async def search(self, query: str, *, limit: int) -> Sequence[ExclusionRecord]:
+        """Current rows matching a free-text lookup, best first, at most 50.
+
+        Every run of letters and digits in ``query`` must start a word of the row's names,
+        aliases, NPI, state provider id or licence number (``"stop pharm"`` finds "1 Stop
+        Pharmacy"). A query of exactly ten digits also matches the NPI itself; those rows
+        come first, then rows where more query words are whole words (names outrank
+        identifiers), then by prefix rank, then by name.
+        """
+        term = query.strip()
+        tokens = _SEARCH_TOKEN.findall(term.casefold())
+        if not tokens:
+            return []
+        tsquery = " & ".join(f"{token}:*" for token in tokens)
+        whole_words = " | ".join(tokens)
+        npi = term if _NPI_QUERY.fullmatch(term) else None
+        size = min(max(limit, 1), MAX_SEARCH_RESULTS)
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                {_SELECT:q}
+                where valid_to is null
+                  and (npi = {npi} or search_vector @@ to_tsquery('simple', {tsquery}))
+                order by
+                    coalesce(npi = {npi}, false) desc,
+                    ts_rank(search_vector, to_tsquery('simple', {whole_words})) desc,
+                    ts_rank(search_vector, to_tsquery('simple', {tsquery})) desc,
+                    coalesce(organization_name, last_name), first_name, id
+                limit {size}
                 """
             )
             rows = await cursor.fetchall()
@@ -228,6 +303,23 @@ def _lock_key(source_id: str) -> int:
     """A stable signed 64-bit advisory lock key for one source."""
     digest = hashlib.sha256(f"exclusion_records:{source_id}".encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
+
+
+async def _refresh_name_keys(
+    connection: AsyncConnection[TupleRow], source_id: str, records: Sequence[ExclusionRecord]
+) -> None:
+    """Rewrite the derived ``name_keys`` of current rows, pipelined like inserts."""
+    if not records:
+        return
+    async with connection.pipeline(), connection.cursor() as cursor:
+        for record in records:
+            await cursor.execute(
+                t"""
+                update exclusion_records set name_keys = {sorted(candidate_keys(record))}::text[]
+                where source_id = {source_id} and record_hash = {record.record_hash}
+                  and valid_to is null
+                """
+            )
 
 
 async def _insert(

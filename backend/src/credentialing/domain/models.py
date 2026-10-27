@@ -24,6 +24,7 @@ from credentialing.domain.enums import (
     MatchField,
     MatchLevel,
     Outcome,
+    Verdict,
     VerificationMethod,
 )
 from credentialing.domain.errors import InvalidProviderError
@@ -367,6 +368,23 @@ class VerificationResult(DomainModel):
         return self
 
 
+class ProviderVerdict(DomainModel):
+    """A provider's verdict rolled up from the latest result of each source, with its figures.
+
+    Built by :func:`credentialing.domain.policies.derive_verdict`, so every screen shows the
+    same answer. ``unchecked`` names the sources whose latest check could not run.
+    """
+
+    verdict: Verdict
+    sources_checked: int = Field(ge=0)
+    listed_in: tuple[SourceId, ...] = ()
+    review_in: tuple[SourceId, ...] = ()
+    unchecked: tuple[SourceId, ...] = ()
+    oldest_list_updated_at: AwareDatetime | None = None
+    last_checked_at: AwareDatetime | None = None
+    results: tuple[VerificationResult, ...] = ()
+
+
 class ConnectorCapabilities(DomainModel):
     """What a connector covers and how it reaches its source; the registry selects by this."""
 
@@ -381,6 +399,9 @@ class ConnectorCapabilities(DomainModel):
     display_name: str
     download_url: str | None = None
     """The file a bulk-list connector downloads; ``source_url`` is the page people read."""
+    provider_type_fields: tuple[str, ...] = ()
+    """Raw columns naming the provider's type, most specific first; a lookup shows the first
+    one that is filled in, as the source wrote it."""
 
 
 class FetchResult(DomainModel):

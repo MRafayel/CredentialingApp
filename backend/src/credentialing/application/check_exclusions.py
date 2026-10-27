@@ -13,10 +13,15 @@ from credentialing.domain.models import (
     MatchResult,
     Provenance,
     Provider,
+    ProviderVerdict,
     SourceSnapshot,
     VerificationResult,
 )
-from credentialing.domain.policies import FreshnessPolicyTable, match_provider_to_record
+from credentialing.domain.policies import (
+    FreshnessPolicyTable,
+    derive_verdict,
+    match_provider_to_record,
+)
 from credentialing.domain.ports import (
     BulkListConnector,
     Clock,
@@ -56,11 +61,12 @@ class CheckExclusions:
         self._freshness = freshness
         self._clock = clock
 
-    async def run(self, organization_id: UUID, provider_id: UUID) -> tuple[VerificationResult, ...]:
+    async def run(self, organization_id: UUID, provider_id: UUID) -> ProviderVerdict:
         """Check the provider against every list covering the U.S. and their states.
 
-        One result per list, ordered by source id, each appended to the verification history.
-        A list that was never loaded gives ``SOURCE_UNAVAILABLE``, never a clean result.
+        One result per list, each appended to the verification history, and the verdict
+        derived from them: every covered list has just answered, so older results do not
+        count. A list that was never loaded gives ``SOURCE_UNAVAILABLE``, never a clean result.
 
         Raises:
             ProviderNotFoundError: The organization has no provider with this id.
@@ -70,12 +76,13 @@ class CheckExclusions:
             raise ProviderNotFoundError(provider_id)
         connectors = self._connectors_for(provider)
         if not connectors:
-            return ()
+            return derive_verdict(())
         now = self._clock.now()
         candidates = await self._records.find_candidates(
             provider.npi,
             provider.person_name.last if provider.person_name else None,
             provider.organization_name,
+            license_numbers=[license.number for license in provider.licenses],
         )
         results: list[VerificationResult] = []
         for connector in connectors:
@@ -84,7 +91,7 @@ class CheckExclusions:
             result = await self._check(provider, capabilities, own, now)
             await self._verifications.add(result)
             results.append(result)
-        return tuple(results)
+        return derive_verdict(results)
 
     def _connectors_for(self, provider: Provider) -> list[BulkListConnector]:
         jurisdictions = (

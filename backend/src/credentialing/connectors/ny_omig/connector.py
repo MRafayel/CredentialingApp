@@ -86,6 +86,7 @@ CAPABILITIES: Final = ConnectorCapabilities(
     source_url="https://omig.ny.gov/medicaid-fraud/medicaid-exclusions",
     display_name="New York OMIG Medicaid Exclusion List",
     download_url=DOWNLOAD_URL,
+    provider_type_fields=("PROVIDER_TYPE",),
 )
 
 

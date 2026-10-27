@@ -26,3 +26,28 @@ def normalize_name(text: str) -> str:
     while len(tokens) > 1 and tokens[-1] in CREDENTIAL_SUFFIXES:
         tokens.pop()
     return " ".join(tokens)
+
+
+LEGAL_DESIGNATORS: Final = frozenset(
+    {
+        "inc", "incorporated", "llc", "llp", "lp", "pllc", "pc", "ltd", "limited", "co",
+        "corp", "corporation", "company",
+    }
+)  # fmt: skip
+"""Trailing words that state a business's legal form, not its name ("Acme Corp" is Acme)."""
+
+
+def normalize_organization_name(text: str) -> str:
+    """Reduce an organization name to a comparable form: "The Acme Group, LLC" -> "acme group".
+
+    :func:`normalize_name`, then a leading "the" and trailing legal designators (repeatedly:
+    "Acme Co Inc") are dropped, so the legal form a source happens to publish does not block a
+    match. A name that is nothing but those words keeps its normalized form, never empty.
+    """
+    normalized = normalize_name(text)
+    tokens = normalized.split()
+    if tokens and tokens[0] == "the":
+        tokens.pop(0)
+    while tokens and tokens[-1] in LEGAL_DESIGNATORS:
+        tokens.pop()
+    return " ".join(tokens) or normalized
