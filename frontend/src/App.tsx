@@ -1,4 +1,4 @@
-import { AnimatePresence, MotionConfig, motion } from 'motion/react'
+import { AnimatePresence, MotionConfig, cancelMicrotask, microtask, motion } from 'motion/react'
 import { useLayoutEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router'
 import { EASE } from './components/motion.ts'
@@ -12,10 +12,21 @@ import { TabBar } from './features/shell/TabBar.tsx'
 import { TopBar } from './features/shell/TopBar.tsx'
 import { SourcesPage } from './features/sources/SourcesPage.tsx'
 
-/** Mounted once per page, so each new page starts at the top. */
+/**
+ * Mounted once per page, so each new page starts at the top, instantly and before paint.
+ *
+ * The reset waits for Motion's layout measurement: Motion snapshots layouts before the commit and
+ * measures them again in its microtask `read` step, in page coordinates. Scrolling in between
+ * makes everything in the floating bars look as if it had moved by the scroll distance, and a
+ * shared indicator flew up from below on every route change made while scrolled. Scheduling the
+ * reset in `postRender` of the same microtask batch runs it after that measurement and still
+ * before the browser paints.
+ */
 function ScrollToTop() {
   useLayoutEffect(() => {
-    window.scrollTo(0, 0)
+    const reset = () => window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+    microtask.postRender(reset)
+    return () => cancelMicrotask(reset)
   }, [])
   return null
 }
@@ -38,7 +49,12 @@ export default function App() {
           <Atmosphere />
           <TopBar />
           <div className="relative min-w-0">
-            <AnimatePresence mode="popLayout" initial={false}>
+            {/*
+             * The rise plays on first load too (a direct load or a refresh), not only on
+             * navigation. Motion renders the initial style on the first render, so the first
+             * paint shows the page at opacity 0, never a flash of the settled page.
+             */}
+            <AnimatePresence mode="popLayout">
               <motion.div
                 key={key}
                 initial={{ opacity: 0, y: 10 }}

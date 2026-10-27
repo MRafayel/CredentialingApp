@@ -1,34 +1,42 @@
+import { motion, type MotionValue } from 'motion/react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
-import { useScrolledPast } from '../lib/scroll.ts'
+import { DESKTOP, useMedia } from '../lib/media.ts'
+import { useBarGlass } from '../lib/scroll.ts'
 import { Icon } from './Icon.tsx'
 
 type Back = { to: string; label: string }
 
 /**
- * The top bars' liquid glass: a floating pill behind the bar's content that fades in once the
- * page scrolls under it. The bar keeps its place and size either way, so nothing moves.
+ * The top bars' liquid glass: a floating pill behind the bar's content whose opacity follows the
+ * scroll (`useBarGlass`), so it fades in and out in proportion, never at a threshold. The blur
+ * stays constant; only the layer's opacity changes. The bar keeps its place and size either way.
  */
-export function BarGlass({ shown }: { shown: boolean }) {
+export function BarGlass({ opacity }: { opacity: MotionValue<number> }) {
   return (
-    <span
+    <motion.span
       aria-hidden="true"
-      className={`glass-bar pointer-events-none absolute inset-0 rounded-full transition-opacity duration-[240ms] ease-out-soft ${shown ? 'opacity-100' : 'opacity-0'}`}
+      style={{ opacity }}
+      className="glass-bar pointer-events-none absolute inset-0 rounded-full"
     />
   )
 }
 
 /**
  * The phone's top bar: a way back and the page's name, a pill 20 px below the window edge and
- * inside the page gutters. Transparent over the page header; once that has scrolled away the
- * pill turns to glass and the name fades in. Desktop has the shell's top bar instead.
+ * inside the page gutters. Transparent over the page header; as the page scrolls the pill turns
+ * to glass and the name fades in with it. It takes no room in the flow (its negative bottom margin
+ * equals its height), so `PageBody` alone sets where a page starts. Not mounted on desktop, which
+ * has the shell's top bar instead.
  */
 export function PageBar({ title, back }: { title: string; back?: Back }) {
-  const scrolled = useScrolledPast(48)
+  const desktop = useMedia(DESKTOP)
+  const glass = useBarGlass()
+  if (desktop) return null
   return (
-    <header className="pointer-events-none sticky top-0 z-30 px-5 pt-[calc(env(safe-area-inset-top)+20px)] lg:hidden">
+    <header className="pointer-events-none sticky top-0 z-30 -mb-[calc(env(safe-area-inset-top)+68px)] px-5 pt-[calc(env(safe-area-inset-top)+20px)]">
       <div className="pointer-events-auto relative flex h-12 items-center gap-2 px-1">
-        <BarGlass shown={scrolled} />
+        <BarGlass opacity={glass} />
         {back ? (
           <Link
             to={back.to}
@@ -40,12 +48,14 @@ export function PageBar({ title, back }: { title: string; back?: Back }) {
         ) : (
           <span className="w-2" />
         )}
-        <p
-          aria-hidden={!scrolled}
-          className={`relative min-w-0 flex-1 truncate text-[17px] font-semibold tracking-tight transition-opacity duration-200 ${scrolled ? 'opacity-100' : 'opacity-0'}`}
+        {/* The page's own h1 names the page for assistive technology; this is its visual echo. */}
+        <motion.p
+          aria-hidden="true"
+          style={{ opacity: glass }}
+          className="relative min-w-0 flex-1 truncate text-[17px] font-semibold tracking-tight"
         >
           {title}
-        </p>
+        </motion.p>
       </div>
     </header>
   )
@@ -107,11 +117,13 @@ export function PageHeader({
 
 /**
  * The page body: the 1280 px content column, 48 px gutters on desktop and 20 px on phone. Its top
- * padding keeps the first element at least 32 px clear of the floating bar.
+ * padding is the one place a page's start is set: the floating bar's top (20 px) plus its height
+ * (48 px phone, 56 px desktop) plus 40 px, so every page's first element sits exactly 40 px below
+ * the bar. Pages add no top spacing of their own.
  */
 export function PageBody({ children }: { children: ReactNode }) {
   return (
-    <main className="mx-auto w-full max-w-[1376px] px-5 pt-8 pb-[calc(env(safe-area-inset-bottom)+7rem)] lg:px-12 lg:pt-14 lg:pb-24">
+    <main className="mx-auto w-full max-w-[1376px] px-5 pt-[calc(env(safe-area-inset-top)+108px)] pb-[calc(env(safe-area-inset-bottom)+7rem)] lg:px-12 lg:pt-[116px] lg:pb-24">
       {children}
     </main>
   )

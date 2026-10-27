@@ -2,20 +2,24 @@ import { motion } from 'motion/react'
 import { Link, useLocation } from 'react-router'
 import { Icon } from '../../components/Icon.tsx'
 import { glide, press, quick } from '../../components/motion.ts'
+import { DESKTOP, useMedia } from '../../lib/media.ts'
 import { NAV } from './nav.ts'
 
 const MotionLink = motion.create(Link)
 
 /**
  * The phone's floating glass tab bar, monochrome: ink icons, the active tab widens and its
- * lens glides over, with blue only on the active label. Add is the one ink pill.
+ * lens glides over, with blue only on the active label. Add is the one ink pill. Not mounted on
+ * desktop (hidden navigation is unmounted, not display: none).
  */
 export function TabBar() {
   const { pathname } = useLocation()
+  const desktop = useMedia(DESKTOP)
+  if (desktop) return null
   return (
     <nav
       aria-label="Main"
-      className="fixed inset-x-4 bottom-[calc(env(safe-area-inset-bottom)+12px)] z-40 lg:hidden"
+      className="fixed inset-x-4 bottom-[calc(env(safe-area-inset-bottom)+12px)] z-40"
     >
       <ul className="mx-auto flex h-16 max-w-sm items-stretch gap-1 rounded-full bg-glass p-1.5 shadow-float backdrop-blur-[20px] backdrop-saturate-150">
         {NAV.map((item) => {

@@ -10,4 +10,5 @@ export {
   VerdictUnchecked,
 } from './Verdicts.tsx'
 export { EmptyProviders, EmptySources } from './Empty.tsx'
+export { EmptyDrawer } from './EmptyDrawer.tsx'
 export { Wordmark } from './Wordmark.tsx'

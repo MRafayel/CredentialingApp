@@ -2,7 +2,6 @@
 import { useSyncExternalStore } from 'react'
 
 export const DESKTOP = '(min-width: 1024px)'
-export const FINE_POINTER = '(hover: hover) and (pointer: fine)'
 
 export function useMedia(query: string): boolean {
   return useSyncExternalStore(

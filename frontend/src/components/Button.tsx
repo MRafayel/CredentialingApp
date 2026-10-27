@@ -1,8 +1,8 @@
-import { motion } from 'motion/react'
-import type { ComponentProps, ReactNode } from 'react'
+import { motion, useReducedMotion, type Transition } from 'motion/react'
+import { useState, type ComponentProps, type FocusEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { Icon, type IconName } from './Icon.tsx'
-import { press, quick } from './motion.ts'
+import { EASE, press, quick } from './motion.ts'
 
 type Variant = 'primary' | 'secondary' | 'ghost'
 
@@ -16,29 +16,95 @@ const VARIANTS: Record<Variant, string> = {
   ghost: 'text-ink-muted hover:bg-soft hover:text-ink',
 }
 
-type Common = { variant?: Variant; icon?: IconName; children: ReactNode; className?: string }
+type Common = {
+  variant?: Variant
+  icon?: IconName
+  /**
+   * Spin the icon a full turn clockwise (500 ms, `EASE`) each time the pointer enters the button
+   * or keyboard focus lands on it. It never spins back: at 360° it is reset to 0° with no
+   * animation, ready for the next entry. Off under reduced motion. Meant for "+" actions.
+   */
+  spinIconOnHover?: boolean
+  children: ReactNode
+  className?: string
+}
 
 function buttonClass(variant: Variant = 'secondary', className?: string) {
   return [BASE, VARIANTS[variant], className].filter(Boolean).join(' ')
 }
 
+/** One full turn, then back to 0° with no animation so the next entry spins again. */
+const SPIN: Transition = { duration: 0.5, ease: EASE }
+const RESET: Transition = { duration: 0 }
+
+/** The icon's spin state and the triggers that start it; a spin under way is not restarted. */
+function useIconSpin(enabled: boolean) {
+  const [spinning, setSpinning] = useState(false)
+  const reduced = useReducedMotion() ?? false
+  const spin = () => {
+    if (enabled && !reduced && !spinning) setSpinning(true)
+  }
+  const spinOnFocus = (event: FocusEvent<HTMLElement>) => {
+    if (event.currentTarget.matches(':focus-visible')) spin()
+  }
+  const settle = () => {
+    if (spinning) setSpinning(false)
+  }
+  return { spinning, spin, spinOnFocus, settle }
+}
+
+function ButtonIcon({
+  name,
+  spinning,
+  onSpun,
+}: {
+  name: IconName
+  spinning: boolean
+  onSpun: () => void
+}) {
+  return (
+    <motion.span
+      aria-hidden="true"
+      initial={false}
+      animate={{ rotate: spinning ? 360 : 0 }}
+      transition={spinning ? SPIN : RESET}
+      onAnimationComplete={onSpun}
+      className="inline-flex"
+    >
+      <Icon name={name} size={17} />
+    </motion.span>
+  )
+}
+
 export function Button({
   variant,
   icon,
+  spinIconOnHover = false,
   children,
   className,
   type = 'button',
+  onHoverStart,
+  onFocus,
   ...props
 }: Common & Omit<ComponentProps<typeof motion.button>, 'children'>) {
+  const { spinning, spin, spinOnFocus, settle } = useIconSpin(spinIconOnHover && !props.disabled)
   return (
     <motion.button
       type={type}
       whileTap={props.disabled ? undefined : press}
       transition={quick}
       className={buttonClass(variant, className)}
+      onHoverStart={(event, info) => {
+        spin()
+        onHoverStart?.(event, info)
+      }}
+      onFocus={(event) => {
+        spinOnFocus(event)
+        onFocus?.(event)
+      }}
       {...props}
     >
-      {icon && <Icon name={icon} size={17} />}
+      {icon && <ButtonIcon name={icon} spinning={spinning} onSpun={settle} />}
       {children}
     </motion.button>
   )
@@ -49,18 +115,30 @@ const MotionLink = motion.create(Link)
 export function ButtonLink({
   variant,
   icon,
+  spinIconOnHover = false,
   children,
   className,
+  onHoverStart,
+  onFocus,
   ...props
 }: Common & Omit<ComponentProps<typeof MotionLink>, 'children'>) {
+  const { spinning, spin, spinOnFocus, settle } = useIconSpin(spinIconOnHover)
   return (
     <MotionLink
       whileTap={press}
       transition={quick}
       className={buttonClass(variant, className)}
+      onHoverStart={(event, info) => {
+        spin()
+        onHoverStart?.(event, info)
+      }}
+      onFocus={(event) => {
+        spinOnFocus(event)
+        onFocus?.(event)
+      }}
       {...props}
     >
-      {icon && <Icon name={icon} size={17} />}
+      {icon && <ButtonIcon name={icon} spinning={spinning} onSpun={settle} />}
       {children}
     </MotionLink>
   )

@@ -2,8 +2,8 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button } from '../../components/Button.tsx'
 import { CopyValue } from '../../components/CopyValue.tsx'
-import { PILL_INPUT } from '../../components/Field.tsx'
-import { VerdictBlocked } from '@/components/illustrations'
+import { SEARCH_INPUT } from '../../components/Field.tsx'
+import { EmptyDrawer, VerdictBlocked } from '@/components/illustrations'
 import { Icon } from '../../components/Icon.tsx'
 import { rise, stagger } from '../../components/motion.ts'
 import { ErrorNote } from '../../components/Note.tsx'
@@ -26,12 +26,10 @@ import {
 } from '../../lib/lookup.ts'
 import { displayName, type ProviderDraft } from '../../lib/provider.ts'
 import { LOOKUP_LIMIT, useExclusionLookup } from '../../lib/queries.ts'
+import { useRecedingHero } from '../../lib/scroll.ts'
 import { AddProviderSheet } from '../providers/AddProviderSheet.tsx'
 
 const SEARCH_DELAY_MS = 300
-
-/** The shared pill input, one size up: this field is the whole screen's entry point. */
-const LOOKUP_INPUT = PILL_INPUT.replace('h-11', 'h-14').replace('text-body', 'text-[17px]')
 
 /** Made-up queries the empty field types out, one of each kind the lookup accepts. */
 const EXAMPLES = ['1234567893', 'Smith, John', 'Acme Pharmacy Inc', '00048309'] as const
@@ -48,7 +46,7 @@ const COLUMNS =
 
 /** A card on --shadow-card that lifts a pixel on hover. */
 const CARD =
-  'group rounded-item bg-surface shadow-card transition-[box-shadow,translate] duration-180 ease-out-soft hover:shadow-card-hover motion-safe:hover:-translate-y-px'
+  'rounded-item bg-surface shadow-card transition-[box-shadow,translate] duration-180 ease-out-soft hover:shadow-card-hover motion-safe:hover:-translate-y-px'
 
 type View =
   | { kind: 'idle' }
@@ -67,6 +65,7 @@ export function LookupPage() {
   const typed = useTypedPlaceholder(EXAMPLES, !focused && draft === '')
   const searchable = isSearchable(q)
   const lookup = useExclusionLookup(q, searchable)
+  const { anchor: heroAnchor, ...hero } = useRecedingHero()
 
   useEffect(() => {
     const term = draft.trim()
@@ -91,59 +90,67 @@ export function LookupPage() {
     <>
       <PageBar title="Lookup" />
       <PageBody>
-        <div className="lg:pt-6">
+        <motion.div style={hero.title}>
           <PageHeader centered title="Look up" subtitle="Search every exclusion list at once." />
-        </div>
-        <search className="mx-auto mt-6 block w-full max-w-[760px] lg:mt-10">
-          <label htmlFor="lookup-search" className="sr-only">
-            Search the exclusion lists by NPI, name or licence number
-          </label>
-          <div className="relative">
-            <Icon
-              name="search"
-              size={20}
-              className="pointer-events-none absolute top-1/2 left-5 -translate-y-1/2 text-ink-muted"
-            />
-            <input
-              ref={input}
-              id="lookup-search"
-              type="search"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              data-typing={typed.typing ? '' : undefined}
-              placeholder="NPI, name or licence number"
-              autoComplete="off"
-              spellCheck={false}
-              className={`${LOOKUP_INPUT} w-full pr-14 pl-13 [&::-webkit-search-cancel-button]:appearance-none`}
-            />
-            {typed.typing && (
-              <TypedPlaceholder text={typed.text} className="right-14 left-[53px] text-[17px]" />
-            )}
-            <AnimatePresence initial={false}>
-              {draft && (
-                <motion.button
-                  type="button"
-                  aria-label="Clear search"
-                  onClick={() => {
-                    setDraft('')
-                    input.current?.focus()
-                  }}
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.8 }}
-                  transition={{ duration: 0.15 }}
-                  className="absolute top-1/2 right-3 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-muted transition-colors hover:bg-soft hover:text-ink"
-                >
-                  <Icon name="close" size={16} />
-                </motion.button>
+        </motion.div>
+        {/* The field sits 24 px (desktop 40 px) under the header and recedes with it. */}
+        <motion.div
+          ref={heroAnchor}
+          style={hero.field}
+          className="mt-6 lg:mx-auto lg:mt-10 lg:max-w-[760px]"
+        >
+          <search className="block">
+            <label htmlFor="lookup-search" className="sr-only">
+              Search the exclusion lists by NPI, name or licence number
+            </label>
+            <div className="relative">
+              <Icon
+                name="search"
+                size={20}
+                className="pointer-events-none absolute top-1/2 left-5 -translate-y-1/2 text-ink-muted"
+              />
+              <input
+                ref={input}
+                id="lookup-search"
+                type="search"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                data-typing={typed.typing ? '' : undefined}
+                placeholder="NPI, name or licence number"
+                autoComplete="off"
+                spellCheck={false}
+                className={`${SEARCH_INPUT} w-full pr-14 pl-13 [&::-webkit-search-cancel-button]:appearance-none`}
+              />
+              {typed.typing && (
+                <TypedPlaceholder text={typed.text} className="right-14 left-[53px] text-[17px]" />
               )}
-            </AnimatePresence>
-          </div>
-        </search>
+              <AnimatePresence initial={false}>
+                {draft && (
+                  <motion.button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => {
+                      setDraft('')
+                      input.current?.focus()
+                    }}
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute top-1/2 right-3 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-muted transition-colors hover:bg-soft hover:text-ink"
+                  >
+                    <Icon name="close" size={16} />
+                  </motion.button>
+                )}
+              </AnimatePresence>
+            </div>
+          </search>
+        </motion.div>
 
-        <section
+        <motion.section
+          style={hero.results}
           aria-live="polite"
           aria-busy={view.kind === 'loading'}
           aria-label="Lookup results"
@@ -154,7 +161,7 @@ export function LookupPage() {
             query={q}
             onCheck={(record) => setPrefill(draftFromRecord(record))}
           />
-        </section>
+        </motion.section>
       </PageBody>
       <AnimatePresence>
         {prefill && <AddProviderSheet initial={prefill} onClose={() => setPrefill(null)} />}
@@ -204,10 +211,8 @@ function LookupView({
           transition={{ duration: 0.2 }}
           className="flex flex-col items-center gap-2 rounded-card bg-surface px-6 py-12 text-center shadow-card"
         >
-          <span className="grid size-11 place-items-center rounded-full border border-line-strong text-ink">
-            <Icon name="search" />
-          </span>
-          <p className="mt-1 text-title">
+          <EmptyDrawer />
+          <p className="mt-4 text-title">
             {noMatchesLine(view.data.sources)} for “{query}”
           </p>
           <ListsLine sources={view.data.sources} className="max-w-xl" />
@@ -365,12 +370,7 @@ function LookupRow({
           )}
         </div>
         <div>
-          <Button
-            variant="ghost"
-            icon="plus"
-            onClick={onCheck}
-            className="h-9 px-3.5 group-hover:bg-soft group-hover:text-ink max-lg:bg-soft max-lg:text-ink"
-          >
+          <Button variant="primary" icon="plus" spinIconOnHover onClick={onCheck}>
             Check as provider
           </Button>
         </div>
@@ -392,7 +392,7 @@ function LookupRowSkeleton() {
           <Skeleton className="h-3.5 w-24" />
         </div>
         <Skeleton className="h-3.5 w-36" />
-        <Skeleton className="h-9 w-40 rounded-full" />
+        <Skeleton className="h-10 w-44 rounded-full" />
       </div>
     </li>
   )

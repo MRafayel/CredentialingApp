@@ -2,9 +2,9 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { useMatch, useNavigate } from 'react-router'
 import { ButtonLink, Button } from '../../components/Button.tsx'
-import { PILL_INPUT } from '../../components/Field.tsx'
+import { SEARCH_INPUT } from '../../components/Field.tsx'
 import { Icon } from '../../components/Icon.tsx'
-import { EmptyProviders } from '@/components/illustrations'
+import { EmptyDrawer, EmptyProviders } from '@/components/illustrations'
 import { stagger } from '../../components/motion.ts'
 import { ErrorNote } from '../../components/Note.tsx'
 import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
@@ -12,6 +12,7 @@ import { TypedPlaceholder } from '../../components/TypedPlaceholder.tsx'
 import { useTypedPlaceholder } from '../../components/useTypedPlaceholder.ts'
 import { plural } from '../../lib/format.ts'
 import { PAGE_SIZE, useProviderList } from '../../lib/queries.ts'
+import { useRecedingHero } from '../../lib/scroll.ts'
 import { AddProviderSheet } from './AddProviderSheet.tsx'
 import { useListState } from './listState.ts'
 import { Pager } from './Pager.tsx'
@@ -33,6 +34,7 @@ export function ProvidersPage() {
   const list = useProviderList(q, page)
   const adding = useMatch('/providers/new') !== null
   const navigate = useNavigate()
+  const { anchor: heroAnchor, ...hero } = useRecedingHero()
 
   useEffect(() => {
     const term = draft.trim()
@@ -51,27 +53,34 @@ export function ProvidersPage() {
     <>
       <PageBar title="Providers" />
       <PageBody>
-        <PageHeader
-          centered
-          title="Providers"
-          subtitle={
-            data ? (
-              `${plural(data.total, 'provider')} on your roster`
-            ) : (
-              <span className="skeleton inline-block h-4 w-40 rounded-md align-middle" />
-            )
-          }
-        />
+        <motion.div style={hero.title}>
+          <PageHeader
+            centered
+            title="Providers"
+            subtitle={
+              data ? (
+                `${plural(data.total, 'provider')} on your roster`
+              ) : (
+                <span className="skeleton inline-block h-4 w-40 rounded-md align-middle" />
+              )
+            }
+          />
+        </motion.div>
         {!(empty && !q) && (
-          // The tools row: on desktop four equal columns, the search centred over the middle two
-          // (half the column, under the centred header) and Add at the right end. On phone the
-          // search is full width and the tab bar has Add.
-          <div className="mt-8 mb-5 flex items-center gap-4 lg:mt-12 lg:grid lg:grid-cols-4 lg:gap-0">
+          // The tools row, receding under the nav with the header: on desktop four equal columns,
+          // the search centred over the middle two (half the column, under the centred header) and
+          // Add at the right end. On phone the search spans the column and the tab bar has Add. The
+          // field sits 32 px (desktop 52 px) under the header and the first row 20 px under it.
+          <motion.div
+            ref={heroAnchor}
+            style={hero.field}
+            className="mt-8 mb-5 flex items-center gap-4 lg:mt-[52px] lg:grid lg:grid-cols-4 lg:gap-0"
+          >
             <search className="relative block w-full min-w-0 flex-1 lg:col-span-2 lg:col-start-2">
               <Icon
                 name="search"
-                size={17}
-                className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-ink-muted"
+                size={20}
+                className="pointer-events-none absolute top-1/2 left-5 -translate-y-1/2 text-ink-muted"
               />
               <label htmlFor="provider-search" className="sr-only">
                 Search your providers
@@ -87,10 +96,10 @@ export function ProvidersPage() {
                 placeholder="Search your providers"
                 autoComplete="off"
                 spellCheck={false}
-                className={`${PILL_INPUT} w-full pl-11`}
+                className={`${SEARCH_INPUT} w-full pr-5 pl-13`}
               />
               {typed.typing && (
-                <TypedPlaceholder text={typed.text} className="right-4 left-[45px] text-body" />
+                <TypedPlaceholder text={typed.text} className="right-5 left-[53px] text-[17px]" />
               )}
             </search>
             <div className="hidden shrink-0 lg:col-start-4 lg:block lg:justify-self-end">
@@ -98,51 +107,51 @@ export function ProvidersPage() {
                 Add provider
               </ButtonLink>
             </div>
-          </div>
+          </motion.div>
         )}
 
-        {list.isError && !data ? (
-          <ErrorNote
-            action={
-              <Button variant="ghost" className="-my-1 h-8" onClick={() => void list.refetch()}>
-                Try again
-              </Button>
-            }
-          >
-            {list.error.message}
-          </ErrorNote>
-        ) : list.isPending ? (
-          <ul aria-label="Loading providers" className={LIST}>
-            {Array.from({ length: 5 }, (_, index) => (
-              <ProviderRowSkeleton key={index} />
-            ))}
-          </ul>
-        ) : empty && !q ? (
-          <EmptyRoster />
-        ) : empty ? (
-          <p className="rounded-card border border-line px-6 py-10 text-center text-body text-ink-muted">
-            No providers match “{q}”.
-          </p>
-        ) : (
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={`${q}|${page}`}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: list.isPlaceholderData ? 0.6 : 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
+        <motion.div style={hero.results}>
+          {list.isError && !data ? (
+            <ErrorNote
+              action={
+                <Button variant="ghost" className="-my-1 h-8" onClick={() => void list.refetch()}>
+                  Try again
+                </Button>
+              }
             >
-              <motion.ul variants={stagger()} initial="hidden" animate="shown" className={LIST}>
-                {data?.items.map((provider) => (
-                  <ProviderRow key={provider.id} provider={provider} />
-                ))}
-              </motion.ul>
-              {data && (
-                <Pager page={page} pageSize={PAGE_SIZE} total={data.total} onPage={setPage} />
-              )}
-            </motion.div>
-          </AnimatePresence>
-        )}
+              {list.error.message}
+            </ErrorNote>
+          ) : list.isPending ? (
+            <ul aria-label="Loading providers" className={LIST}>
+              {Array.from({ length: 5 }, (_, index) => (
+                <ProviderRowSkeleton key={index} />
+              ))}
+            </ul>
+          ) : empty && !q ? (
+            <EmptyRoster />
+          ) : empty ? (
+            <NoMatches query={q} />
+          ) : (
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={`${q}|${page}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: list.isPlaceholderData ? 0.6 : 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <motion.ul variants={stagger()} initial="hidden" animate="shown" className={LIST}>
+                  {data?.items.map((provider) => (
+                    <ProviderRow key={provider.id} provider={provider} />
+                  ))}
+                </motion.ul>
+                {data && (
+                  <Pager page={page} pageSize={PAGE_SIZE} total={data.total} onPage={setPage} />
+                )}
+              </motion.div>
+            </AnimatePresence>
+          )}
+        </motion.div>
       </PageBody>
       <AnimatePresence>
         {adding && <AddProviderSheet onClose={() => navigate('/providers')} />}
@@ -166,6 +175,21 @@ function EmptyRoster() {
       <ButtonLink variant="primary" icon="plus" to="/providers/new">
         Add provider
       </ButtonLink>
+    </motion.div>
+  )
+}
+
+/** A search of the roster that found nobody. */
+function NoMatches({ query }: { query: string }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+      className="mx-auto mt-10 flex max-w-sm flex-col items-center gap-4 text-center"
+    >
+      <EmptyDrawer />
+      <p className="text-title break-words">No providers match “{query}”</p>
     </motion.div>
   )
 }

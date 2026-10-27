@@ -2,7 +2,7 @@
 import type { Transition, Variants } from 'motion/react'
 
 export const EASE = [0.22, 1, 0.36, 1] as const
-export const GLIDE = [0.4, 0, 0.2, 1] as const
+const GLIDE = [0.4, 0, 0.2, 1] as const
 
 export const quick: Transition = { duration: 0.18, ease: EASE }
 /** A page or a piece arriving. */

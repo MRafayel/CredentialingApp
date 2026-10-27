@@ -40,11 +40,6 @@ export function until(moment: Moment, now: Date): string {
   return remaining > 0 ? `in ${span(remaining)}` : `overdue ${span(-remaining)}`
 }
 
-/** Whether the moment has passed. */
-export function isPast(moment: Moment, now: Date): boolean {
-  return toDate(moment).getTime() < now.getTime()
-}
-
 /** "Oct 26, 2026, 3:19 PM" in the viewer's locale. */
 export function dateTime(moment: Moment, { locale, timeZone }: FormatOptions = {}): string {
   return new Intl.DateTimeFormat(locale, {

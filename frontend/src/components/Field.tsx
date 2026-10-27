@@ -8,9 +8,12 @@ import { VerdictReview } from '@/components/illustrations'
 export const INPUT =
   'h-11 min-w-0 rounded-control border border-line-strong bg-surface px-3 text-body text-ink transition-colors placeholder:text-ink-muted hover:border-ink-faint'
 
-/** The same input as a pill, for search fields. */
-export const PILL_INPUT =
-  'h-11 min-w-0 rounded-full border border-line-strong bg-surface px-3 text-body text-ink transition-colors placeholder:text-ink-muted hover:border-ink-faint'
+/**
+ * A page's own search (Lookup, Providers): the pill one size up, 56 px and 17 px type, with a
+ * 20 px icon at 20 px from the left and the text from 52 px (`pl-13`).
+ */
+export const SEARCH_INPUT =
+  'h-14 min-w-0 rounded-full border border-line-strong bg-surface px-3 text-[17px] text-ink transition-colors placeholder:text-ink-muted hover:border-ink-faint'
 
 /** A labelled input with an optional hint; the hint can turn into a warning. */
 export function Field({

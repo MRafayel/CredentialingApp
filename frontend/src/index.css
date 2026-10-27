@@ -11,6 +11,8 @@
   --page: #fafafb;
   --surface: #ffffff;
   --soft: #f3f4f6;
+  /* A mid grey between soft and line-strong: inner faces of a drawing (EmptyDrawer's drawer walls). */
+  --lift: #e4e6eb;
   --line: #ececec;
   --line-strong: #dcdfe6;
 
@@ -69,7 +71,6 @@
   /* The scrolled top bar's liquid glass: thinner than --glass, so the atmosphere reads through. */
   --glass-bar: rgb(255 255 255 / 50%);
   --glass-sheen: rgb(255 255 255 / 25%);
-  --glass-rim: rgb(0 0 0 / 6%);
   --scrim: rgb(23 25 28 / 18%);
 
   --skeleton: #f0f1f4;
@@ -77,9 +78,9 @@
 }
 
 @theme inline {
-  --color-page: var(--page);
   --color-surface: var(--surface);
   --color-soft: var(--soft);
+  --color-lift: var(--lift);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
   --color-ink: var(--ink);
@@ -102,7 +103,6 @@
   --color-tint-blocked: var(--tint-blocked);
 
   --color-glass: var(--glass);
-  --color-glass-rim: var(--glass-rim);
   --color-scrim: var(--scrim);
 
   --radius-card: 16px;
