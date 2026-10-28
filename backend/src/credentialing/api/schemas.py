@@ -8,6 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from credentialing.application.list_providers import ProviderPage
 from credentialing.application.lookup_exclusions import LookupRecord, LookupResult, SearchedSource
+from credentialing.application.record_profile import (
+    LinkedRecord,
+    ProfileRecord,
+    RecordProfile,
+    RecordSource,
+    RecordVersion,
+)
 from credentialing.application.register_provider import ProviderInput
 from credentialing.application.source_status import SourceHealth, SourceStatus
 from credentialing.application.verification_history import VerificationView
@@ -21,7 +28,10 @@ from credentialing.domain.enums import (
     Freshness,
     MatchField,
     MatchLevel,
+    MatchRelation,
     Outcome,
+    RecordLink,
+    RecordStatus,
     Verdict,
     VerificationMethod,
 )
@@ -154,11 +164,13 @@ class MatchEvidenceResponse(Schema):
 
 
 class MatchResponse(Schema):
-    """The match level, its evidence and a readable explanation."""
+    """The match level, its evidence, a readable explanation and the role the provider was
+    matched as (the listed party or a related party on the row)."""
 
     level: MatchLevel
     evidence: list[MatchEvidenceResponse]
     explanation: str
+    relation: MatchRelation
 
 
 class ProvenanceResponse(Schema):
@@ -174,7 +186,11 @@ class ProvenanceResponse(Schema):
 
 
 class MatchedRecordResponse(Schema):
-    """An exclusion record a result points at. DOB and address are left out on purpose."""
+    """An exclusion record a result points at. DOB and address are left out on purpose.
+
+    ``aliases`` are other names of the same party; ``related_parties`` name other parties on
+    the same row and ``related_npis`` the row's other NPIs, whose owner the row does not say.
+    """
 
     id: UUID
     source_id: str
@@ -182,7 +198,9 @@ class MatchedRecordResponse(Schema):
     person_name: PersonNameResponse | None
     organization_name: str | None
     aliases: list[str]
+    related_parties: list[str]
     npi: str | None
+    related_npis: list[str]
     action: ExclusionAction
     action_raw: str | None
     effective_date: date | None
@@ -199,7 +217,9 @@ class MatchedRecordResponse(Schema):
             person_name=PersonNameResponse.model_validate(name.model_dump()) if name else None,
             organization_name=record.organization_name,
             aliases=list(record.aliases),
+            related_parties=list(record.related_parties),
             npi=record.npi,
+            related_npis=list(record.related_npis),
             action=record.action,
             action_raw=record.action_raw,
             effective_date=record.effective_date,
@@ -278,6 +298,105 @@ class LookupResponse(Schema):
         )
 
 
+class ProfileRecordResponse(LookupRecordResponse):
+    """A record on a profile, with its list's name, identifiers and whether it still stands."""
+
+    source_name: str
+    state_provider_id: str | None
+    reason: str | None
+    status: RecordStatus
+
+    @classmethod
+    def from_profile(cls, found: ProfileRecord) -> ProfileRecordResponse:
+        """Map a profile record into its HTTP shape."""
+        return cls(
+            **LookupRecordResponse.from_lookup(found).model_dump(),
+            source_name=found.source_name,
+            state_provider_id=found.record.state_provider_id,
+            reason=found.record.reason,
+            status=found.status,
+        )
+
+
+class LinkedRecordResponse(ProfileRecordResponse):
+    """Another record tied to the profiled one; ``via_npi`` is the NPI that ties them."""
+
+    link: RecordLink
+    via_npi: str | None
+
+    @classmethod
+    def from_linked(cls, found: LinkedRecord) -> LinkedRecordResponse:
+        """Map a linked record into its HTTP shape."""
+        return cls(
+            **ProfileRecordResponse.from_profile(found).model_dump(),
+            link=found.link,
+            via_npi=found.via_npi,
+        )
+
+
+class RecordSourceResponse(SearchedSourceResponse):
+    """The list a record comes from; ``source_url`` is null for a list no longer registered.
+
+    ``freshness`` is how current the stored copy is by the central policy, shown with
+    ``fetched_at``; null when the list was never loaded or is no longer registered.
+    """
+
+    source_url: str | None
+    freshness: Freshness | None
+
+    @classmethod
+    def from_record_source(cls, source: RecordSource) -> RecordSourceResponse:
+        """Map a record's source into its HTTP shape."""
+        return cls.model_validate(source.model_dump())
+
+
+class RecordVersionResponse(Schema):
+    """One version of a row in its list; ``valid_to`` is null while it is current."""
+
+    valid_from: datetime
+    valid_to: datetime | None
+    action: ExclusionAction
+    action_raw: str | None
+    end_date: date | None
+    reason: str | None
+
+    @classmethod
+    def from_version(cls, version: RecordVersion) -> RecordVersionResponse:
+        """Map a record version into its HTTP shape."""
+        return cls.model_validate(version.model_dump())
+
+
+class RecordProfileResponse(Schema):
+    """Body of ``GET /exclusions/records/{id}``: one record and what the lists hold around it.
+
+    ``versions`` run oldest first. ``same_party`` lists records by NPI, then by licence;
+    ``related`` the records tied through the row's other NPIs; ``same_name`` records that
+    only share the name, for a person to weigh. Dates of birth, street addresses and raw rows
+    are never included.
+    """
+
+    record: ProfileRecordResponse
+    source: RecordSourceResponse
+    first_seen: datetime
+    versions: list[RecordVersionResponse]
+    same_party: list[LinkedRecordResponse]
+    related: list[LinkedRecordResponse]
+    same_name: list[LinkedRecordResponse]
+
+    @classmethod
+    def from_profile(cls, profile: RecordProfile) -> RecordProfileResponse:
+        """Map a record profile into its HTTP shape."""
+        return cls(
+            record=ProfileRecordResponse.from_profile(profile.record),
+            source=RecordSourceResponse.from_record_source(profile.source),
+            first_seen=profile.first_seen,
+            versions=[RecordVersionResponse.from_version(v) for v in profile.versions],
+            same_party=[LinkedRecordResponse.from_linked(r) for r in profile.same_party],
+            related=[LinkedRecordResponse.from_linked(r) for r in profile.related],
+            same_name=[LinkedRecordResponse.from_linked(r) for r in profile.same_name],
+        )
+
+
 class VerificationResponse(Schema):
     """One verification result with provenance, freshness and the records it matched."""
 
@@ -319,13 +438,15 @@ class VerificationResponse(Schema):
 class VerdictResponse(Schema):
     """A provider's verdict as the backend decided it, with the latest result of each source.
 
-    ``listed_in``, ``review_in`` and ``unchecked`` name sources by id; ``results`` are ordered
-    by source id. The UI shows these as given and derives no status of its own.
+    ``listed_in``, ``flagged_in`` (named as a related party of a listed party), ``review_in``
+    and ``unchecked`` name sources by id; ``results`` are ordered by source id. The UI
+    shows these as given and derives no status of its own.
     """
 
     verdict: Verdict
     sources_checked: int
     listed_in: list[str]
+    flagged_in: list[str]
     review_in: list[str]
     unchecked: list[str]
     oldest_list_updated_at: datetime | None
@@ -341,6 +462,7 @@ class VerdictResponse(Schema):
             verdict=verdict.verdict,
             sources_checked=verdict.sources_checked,
             listed_in=list(verdict.listed_in),
+            flagged_in=list(verdict.flagged_in),
             review_in=list(verdict.review_in),
             unchecked=list(verdict.unchecked),
             oldest_list_updated_at=verdict.oldest_list_updated_at,

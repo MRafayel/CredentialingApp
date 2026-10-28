@@ -39,3 +39,15 @@ export function expectedSources<S extends { jurisdictions: string[] }>(
   const covered = new Set(['US', ...providerStates(provider)])
   return sources.filter((source) => source.jurisdictions.some((j) => covered.has(j)))
 }
+
+/** The kind of party in words; a source that does not say gives "Unknown kind". */
+export function entityKindWord(kind: Provider['entity_kind']): string {
+  switch (kind) {
+    case 'organization':
+      return 'Organization'
+    case 'individual':
+      return 'Individual'
+    case 'unknown':
+      return 'Unknown kind'
+  }
+}

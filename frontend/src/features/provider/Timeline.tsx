@@ -28,7 +28,7 @@ export function Timeline({
       </h2>
       <motion.ol variants={stagger()} initial="hidden" animate="shown" className="mt-5">
         {runs.map((run) => (
-          <Step
+          <TimelineStep
             key={run.at}
             at={run.at}
             now={now}
@@ -43,7 +43,7 @@ export function Timeline({
             }
           />
         ))}
-        <Step
+        <TimelineStep
           at={provider.created_at}
           now={now}
           icon={
@@ -79,7 +79,8 @@ function RunResult({
   )
 }
 
-function Step({
+/** One step of a timeline: its mark on the rule, what happened, and when. */
+export function TimelineStep({
   at,
   now,
   icon,

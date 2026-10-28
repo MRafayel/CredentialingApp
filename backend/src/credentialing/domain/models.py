@@ -23,6 +23,7 @@ from credentialing.domain.enums import (
     Freshness,
     MatchField,
     MatchLevel,
+    MatchRelation,
     Outcome,
     Verdict,
     VerificationMethod,
@@ -115,6 +116,9 @@ class MatchResult(DomainModel):
     level: MatchLevel
     evidence: tuple[MatchEvidence, ...]
     explanation: str
+    relation: MatchRelation = MatchRelation.PARTY
+    """Which role on the row the provider was matched as: the confidence is ``level``, the
+    role is ``relation``."""
 
 
 _RECORD_HASH_VERSION: Final = 1
@@ -178,19 +182,23 @@ def compute_content_hash(
     state_provider_id: str | None,
     license: License | None,
     raw: Mapping[str, str],
+    related_npis: tuple[str, ...] = (),
+    related_parties: tuple[str, ...] = (),
 ) -> str:
     """Return a SHA-256 over the content of an exclusion row that can change under its identity.
 
     A row whose identity (:func:`compute_record_hash`) is unchanged but whose content hash
     differs was changed by the source, for example a reinstatement date that appeared, and is
     stored as a new version. Text is only trimmed, aliases are order-independent, and the raw
-    row is hashed with sorted keys.
+    row is hashed with sorted keys. Related NPIs and related parties are hashed (sorted) only
+    when the row has any: their keys are left out when empty, so rows stored before the fields
+    existed keep their hash and a sync does not version them again.
     """
 
     def text(value: str | None) -> str | None:
         return (value.strip() or None) if value else None
 
-    content = {
+    content: dict[str, object] = {
         "v": _RECORD_HASH_VERSION,
         "end_date": end_date.isoformat() if end_date else None,
         "reason": text(reason),
@@ -202,6 +210,11 @@ def compute_content_hash(
         "license_kind": text(license.kind) if license else None,
         "raw": dict(raw),
     }
+    if related_npis:
+        content["related_npis"] = sorted(set(related_npis))
+    parties = sorted({party.strip() for party in related_parties} - {""})
+    if parties:
+        content["related_parties"] = parties
     return _digest(content)
 
 
@@ -215,6 +228,11 @@ class ExclusionRecord(DomainModel):
 
     ``record_hash`` is the row's identity across snapshots and ``content_hash`` its changeable
     content. Build new records with :meth:`create`, which computes both.
+
+    ``aliases`` are other names of the same party (dba, aka, maiden or former names).
+    ``related_parties`` name other parties on the same row (an owner on a business's row, a
+    business on a person's row), and ``related_npis`` are the other valid NPIs the row
+    publishes besides ``npi``. The row does not say which NPI belongs to which name.
     """
 
     id: UUID
@@ -224,7 +242,9 @@ class ExclusionRecord(DomainModel):
     person_name: PersonName | None = None
     organization_name: str | None = None
     aliases: tuple[str, ...] = ()
+    related_parties: tuple[str, ...] = ()
     npi: Npi | None = None
+    related_npis: tuple[Npi, ...] = ()
     state_provider_id: str | None = None
     license: License | None = None
     date_of_birth: date | None = None
@@ -240,6 +260,14 @@ class ExclusionRecord(DomainModel):
     valid_from: AwareDatetime
     valid_to: AwareDatetime | None = None
 
+    @model_validator(mode="after")
+    def _related_npis_are_other_npis(self) -> Self:
+        if self.npi is not None and self.npi in self.related_npis:
+            raise ValueError("related_npis cannot repeat the record's own npi")
+        if len(set(self.related_npis)) != len(self.related_npis):
+            raise ValueError("related_npis cannot repeat an NPI")
+        return self
+
     @classmethod
     def create(
         cls,
@@ -254,7 +282,9 @@ class ExclusionRecord(DomainModel):
         person_name: PersonName | None = None,
         organization_name: str | None = None,
         aliases: tuple[str, ...] = (),
+        related_parties: tuple[str, ...] = (),
         npi: str | None = None,
+        related_npis: tuple[str, ...] = (),
         state_provider_id: str | None = None,
         license: License | None = None,
         date_of_birth: date | None = None,
@@ -264,7 +294,12 @@ class ExclusionRecord(DomainModel):
         end_date: date | None = None,
         reason: str | None = None,
     ) -> Self:
-        """Build a record and compute its hashes so connectors never do it by hand."""
+        """Build a record and compute its hashes so connectors never do it by hand.
+
+        ``related_npis`` drops the record's own ``npi`` and repeats, so a connector can pass
+        every NPI after the first as the row publishes them.
+        """
+        related = tuple(dict.fromkeys(other for other in related_npis if other != npi))
         record_hash = compute_record_hash(
             source_id=source_id,
             entity_kind=entity_kind,
@@ -286,6 +321,8 @@ class ExclusionRecord(DomainModel):
             state_provider_id=state_provider_id,
             license=license,
             raw=raw,
+            related_npis=related,
+            related_parties=related_parties,
         )
         return cls(
             id=id,
@@ -295,7 +332,9 @@ class ExclusionRecord(DomainModel):
             person_name=person_name,
             organization_name=organization_name,
             aliases=aliases,
+            related_parties=related_parties,
             npi=npi,
+            related_npis=related,
             state_provider_id=state_provider_id,
             license=license,
             date_of_birth=date_of_birth,
@@ -372,12 +411,15 @@ class ProviderVerdict(DomainModel):
     """A provider's verdict rolled up from the latest result of each source, with its figures.
 
     Built by :func:`credentialing.domain.policies.derive_verdict`, so every screen shows the
-    same answer. ``unchecked`` names the sources whose latest check could not run.
+    same answer. ``listed_in`` names the sources listing the provider, ``flagged_in`` those
+    naming them as a related party of a listed party, ``review_in`` those needing a person and
+    ``unchecked`` those whose latest check could not run.
     """
 
     verdict: Verdict
     sources_checked: int = Field(ge=0)
     listed_in: tuple[SourceId, ...] = ()
+    flagged_in: tuple[SourceId, ...] = ()
     review_in: tuple[SourceId, ...] = ()
     unchecked: tuple[SourceId, ...] = ()
     oldest_list_updated_at: AwareDatetime | None = None

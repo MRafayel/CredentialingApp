@@ -9,6 +9,9 @@
 :where(.ill-review) {
   color: var(--status-review);
 }
+:where(.ill-flagged) {
+  color: var(--status-flagged);
+}
 :where(.ill-listed) {
   color: var(--status-listed);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { displayName, expectedSources, providerStates } from './provider.ts'
+import { displayName, entityKindWord, expectedSources, providerStates } from './provider.ts'
 
 const person = { last: 'Sampleperson', first: 'Avery', middle: 'J', suffix: null }
 
@@ -40,5 +40,13 @@ describe('expectedSources', () => {
       'federal',
       'ny',
     ])
+  })
+})
+
+describe('entityKindWord', () => {
+  it('names each kind, and says so when the source does not', () => {
+    expect(entityKindWord('individual')).toBe('Individual')
+    expect(entityKindWord('organization')).toBe('Organization')
+    expect(entityKindWord('unknown')).toBe('Unknown kind')
   })
 })

@@ -23,14 +23,15 @@ from credentialing.domain.models import (
     SnapshotDiff,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
-from credentialing.domain.policies import candidate_keys, license_key
+from credentialing.domain.policies import candidate_keys, license_key, party_key
 from credentialing.domain.types import Npi, SourceId
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.jsonb import mapping_jsonb, model_jsonb
 
 _SELECT: Final = sql.SQL(
     "select id, source_id, snapshot_id, record_hash, content_hash, entity_kind, last_name,"
-    " first_name, middle_name, suffix, organization_name, aliases, npi, state_provider_id,"
+    " first_name, middle_name, suffix, organization_name, aliases, related_parties, npi,"
+    " related_npis, state_provider_id,"
     " license_number, license_state, license_kind, date_of_birth, address, action, action_raw,"
     " effective_date, end_date, reason, raw, valid_from, valid_to from exclusion_records"
 )
@@ -61,7 +62,9 @@ class _ExclusionRow(BaseModel):
     suffix: str | None
     organization_name: str | None
     aliases: tuple[str, ...]
+    related_parties: tuple[str, ...]
     npi: str | None
+    related_npis: tuple[str, ...]
     state_provider_id: str | None
     license_number: str | None
     license_state: str | None
@@ -101,7 +104,9 @@ class _ExclusionRow(BaseModel):
             person_name=person_name,
             organization_name=self.organization_name,
             aliases=self.aliases,
+            related_parties=self.related_parties,
             npi=self.npi,
+            related_npis=self.related_npis,
             state_provider_id=self.state_provider_id,
             license=license,
             date_of_birth=self.date_of_birth,
@@ -206,17 +211,18 @@ class PostgresExclusionRecordRepository:
         *,
         license_numbers: Sequence[str] = (),
     ) -> Sequence[ExclusionRecord]:
-        """Current rows with this NPI, normalized name or licence number.
+        """Current rows with this NPI (own or related), normalized name or licence number.
 
         Names are compared after the domain's normalization (organization names without their
-        legal designators), against the record's names and alias words, so every record the
-        matcher could match by name is returned. Licence numbers are compared without
-        whitespace and case, in any state; the matcher checks the state.
+        legal designators), against the record's names, alias and related-party words, so
+        every record the matcher could match by name is returned. Licence numbers are compared
+        without whitespace and case, in any state; the matcher checks the state.
         """
         keys = {normalize_name(last_name)} if last_name else set()
         if organization_name:
             keys.add(normalize_organization_name(organization_name))
         names = sorted(keys - {""})
+        npis = [npi] if npi else []
         licenses = sorted({license_key(number) for number in license_numbers} - {""})
         if npi is None and not names and not licenses:
             return []
@@ -229,6 +235,7 @@ class PostgresExclusionRecordRepository:
                 {_SELECT:q}
                 where valid_to is null and (
                     npi = {npi}
+                    or related_npis && {npis}::text[]
                     or name_keys && {names}::text[]
                     or upper(regexp_replace(license_number, '\\s+', '', 'g'))
                         = any({licenses}::text[])
@@ -243,10 +250,11 @@ class PostgresExclusionRecordRepository:
         """Current rows matching a free-text lookup, best first, at most 50.
 
         Every run of letters and digits in ``query`` must start a word of the row's names,
-        aliases, NPI, state provider id or licence number (``"stop pharm"`` finds "1 Stop
-        Pharmacy"). A query of exactly ten digits also matches the NPI itself; those rows
-        come first, then rows where more query words are whole words (names outrank
-        identifiers), then by prefix rank, then by name.
+        aliases, related parties, NPI, related NPIs, state provider id or licence number
+        (``"stop pharm"`` finds "1 Stop Pharmacy"). A query of exactly ten digits also matches
+        the NPI itself; those rows come first, then rows where more query words are whole
+        words (names outrank related parties, which outrank identifiers), then by prefix
+        rank, then by name.
         """
         term = query.strip()
         tokens = _SEARCH_TOKEN.findall(term.casefold())
@@ -271,6 +279,111 @@ class PostgresExclusionRecordRepository:
                     ts_rank(search_vector, to_tsquery('simple', {tsquery})) desc,
                     coalesce(organization_name, last_name), first_name, id
                 limit {size}
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]
+
+    async def get(self, record_id: UUID) -> ExclusionRecord | None:
+        """Return the row with this id, current or not."""
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
+        ):
+            await cursor.execute(t"{_SELECT:q} where id = {record_id}")
+            row = await cursor.fetchone()
+        return row.to_domain() if row else None
+
+    async def versions(self, source_id: SourceId, record_hash: str) -> Sequence[ExclusionRecord]:
+        """Every version of one row identity in one source, current or not, oldest first."""
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                {_SELECT:q}
+                where source_id = {source_id} and record_hash = {record_hash}
+                order by valid_from, id
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]
+
+    async def same_name(self, record: ExclusionRecord, *, limit: int) -> Sequence[ExclusionRecord]:
+        """At most ``limit`` current rows other than ``record`` sharing its party key.
+
+        One bitmap scan of the ``name_keys`` GIN index; rows whose first name equals the
+        record's (ignoring case) come first, so the limit is spent on the likeliest namesakes,
+        then by source and id.
+        """
+        key = party_key(record)
+        if key is None:
+            return []
+        first = record.person_name.first.casefold() if record.person_name else None
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                {_SELECT:q}
+                where valid_to is null and id <> {record.id}
+                  and name_keys @> array[{key}]::text[]
+                order by coalesce(lower(first_name) = {first}, false) desc, source_id, id
+                limit {max(limit, 0)}
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]
+
+    async def same_license(
+        self, record: ExclusionRecord, *, limit: int
+    ) -> Sequence[ExclusionRecord]:
+        """At most ``limit`` current rows other than ``record`` with its licence and state.
+
+        Uses the normalized licence-number index, compared the way matching compares them.
+        """
+        if record.license is None:
+            return []
+        number, state = license_key(record.license.number), record.license.state
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                {_SELECT:q}
+                where valid_to is null and id <> {record.id}
+                  and upper(regexp_replace(license_number, '\\s+', '', 'g')) = {number}
+                  and license_state = {state}
+                order by source_id, id
+                limit {max(limit, 0)}
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]
+
+    async def linked_by_npi(
+        self, npis: Sequence[Npi], *, exclude_id: UUID
+    ) -> Sequence[ExclusionRecord]:
+        """Current rows other than ``exclude_id`` whose own or related NPIs include ``npis``.
+
+        One query over the NPI index and the related-NPI index, ordered by source and id.
+        """
+        wanted = sorted(set(npis))
+        if not wanted:
+            return []
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                {_SELECT:q}
+                where valid_to is null and id <> {exclude_id}
+                  and (npi = any({wanted}::bpchar[]) or related_npis && {wanted}::text[])
+                order by source_id, id
                 """
             )
             rows = await cursor.fetchall()
@@ -336,7 +449,8 @@ async def _insert(
                 t"""
                 insert into exclusion_records (
                     id, source_id, snapshot_id, record_hash, content_hash, entity_kind, last_name,
-                    first_name, middle_name, suffix, organization_name, aliases, name_keys, npi,
+                    first_name, middle_name, suffix, organization_name, aliases,
+                    related_parties, name_keys, npi, related_npis,
                     state_provider_id, license_number, license_state, license_kind,
                     date_of_birth, address, action, action_raw, effective_date, end_date,
                     reason, raw, valid_from, valid_to
@@ -346,8 +460,9 @@ async def _insert(
                     {record.entity_kind.value}, {name.last if name else None},
                     {name.first if name else None}, {name.middle if name else None},
                     {name.suffix if name else None}, {record.organization_name},
-                    {list(record.aliases)}::text[], {sorted(candidate_keys(record))}::text[],
-                    {record.npi}, {record.state_provider_id},
+                    {list(record.aliases)}::text[], {list(record.related_parties)}::text[],
+                    {sorted(candidate_keys(record))}::text[],
+                    {record.npi}, {list(record.related_npis)}::text[], {record.state_provider_id},
                     {license.number if license else None}, {license.state if license else None},
                     {license.kind if license else None}, {record.date_of_birth},
                     {model_jsonb(record.address) if record.address else None},

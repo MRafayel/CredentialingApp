@@ -6,7 +6,14 @@ from typing import Final
 from uuid import UUID, uuid4
 
 from credentialing.application.errors import ProviderNotFoundError
-from credentialing.domain.enums import CredentialType, Finding, MatchLevel, Outcome, RecordStatus
+from credentialing.domain.enums import (
+    CredentialType,
+    Finding,
+    MatchLevel,
+    MatchRelation,
+    Outcome,
+    RecordStatus,
+)
 from credentialing.domain.models import (
     ConnectorCapabilities,
     ExclusionRecord,
@@ -38,6 +45,9 @@ from credentialing.domain.types import FEDERAL
 
 _STRENGTH: Final = {level: rank for rank, level in enumerate(MatchLevel)}
 """Match levels ranked strongest first, following the enum's declared order."""
+
+_ROLE: Final = {relation: rank for rank, relation in enumerate(MatchRelation)}
+"""Within a level, a match as the listed party ranks before one as a related party."""
 
 _FOUND: Final = frozenset({MatchLevel.EXACT, MatchLevel.HIGH})
 _REVIEW: Final = frozenset({MatchLevel.POTENTIAL, MatchLevel.AMBIGUOUS})
@@ -167,7 +177,11 @@ class CheckExclusions:
 
         ranked = sorted(
             ((match_provider_to_record(provider, record), record) for record in candidates),
-            key=lambda pair: (_STRENGTH[pair[0].level], str(pair[1].id)),
+            key=lambda pair: (
+                _STRENGTH[pair[0].level],
+                _ROLE[pair[0].relation],
+                str(pair[1].id),
+            ),
         )
         best = ranked[0][0].level if ranked else MatchLevel.NONE
         strongest = [
@@ -182,9 +196,25 @@ class CheckExclusions:
         }
         if matched_records:
             details[RECORD_STATUS_DETAIL] = record_status(matched_records, today).value
-        if best in _FOUND:
+        if best in _FOUND and any(m.relation is MatchRelation.PARTY for m, _ in strongest):
             finding = Finding.RECORD_FOUND
-            summary = _listed_summary(capabilities, matched_records, today)
+            summary = _found_summary(
+                capabilities,
+                matched_records,
+                today,
+                standing="Listed in",
+                ended="Previously listed in",
+            )
+        elif best in _FOUND:
+            finding = Finding.RELATED_PARTY
+            summary = _found_summary(
+                capabilities,
+                matched_records,
+                today,
+                standing="Flagged in",
+                ended="Previously flagged in",
+                context="named with a listed party, ",
+            )
         elif best in _REVIEW:
             finding = Finding.AMBIGUOUS
             summary = f"Possible match in {capabilities.display_name}: review required"
@@ -233,23 +263,30 @@ def _provenance(
     )
 
 
-def _listed_summary(
-    capabilities: ConnectorCapabilities, records: Sequence[ExclusionRecord], today: date
+def _found_summary(
+    capabilities: ConnectorCapabilities,
+    records: Sequence[ExclusionRecord],
+    today: date,
+    *,
+    standing: str,
+    ended: str,
+    context: str = "",
 ) -> str:
-    """The summary of a found listing: "Listed in" while one record stands, otherwise
-    "Previously listed in", with the end date."""
-    ended = record_status(records, today) is RecordStatus.ENDED
-    standing = [record for record in records if not record_has_ended(record, today)]
-    record = records[0] if ended else standing[0]
+    """The summary of found records: the ``standing`` lead ("Listed in") while one record
+    stands, otherwise the ``ended`` lead ("Previously listed in") and the end date;
+    ``context`` goes before the action ("named with a listed party, ")."""
+    has_ended = record_status(records, today) is RecordStatus.ENDED
+    current = [record for record in records if not record_has_ended(record, today)]
+    record = records[0] if has_ended else current[0]
     effective = (
         f"effective {record.effective_date.isoformat()}"
         if record.effective_date
         else "effective date not published"
     )
-    lead = "Previously listed in" if ended else "Listed in"
-    summary = f"{lead} {capabilities.display_name}: {record.action.value} {effective}"
+    lead = ended if has_ended else standing
+    summary = f"{lead} {capabilities.display_name}: {context}{record.action.value} {effective}"
     if record.end_date:
-        summary += f" \u2013 {'ended' if ended else 'ends'} {record.end_date.isoformat()}"
+        summary += f" \u2013 {'ended' if has_ended else 'ends'} {record.end_date.isoformat()}"
     if len(records) > 1:
         summary += f" ({len(records)} matching records)"
     return summary

@@ -10,18 +10,26 @@ Source facts (survey of 2026-10-16, first sync 2026-10-27):
   change signal ``HEADER_COMPARE`` (HEAD, compare, GET on change). Polled weekly.
 - Header on row 4: ``Name | License # | NPI # or P1 # | Date of Exclusion | Action``.
 - ``Name`` is "Last, First M. CREDENTIAL" (ARNP, PA-C, LD, MW, SUDP, ...) or an
-  organization; ten cells hold several names on separate lines ("Last, First MD" then
-  "dba: Clinic Name", or two business names and then the owner): the first line is the
-  party, the others are aliases.
-- ``NPI # or P1 #`` holds NPIs (several in some cells: the first is the record's, the rest
-  stay in ``raw``) or ProviderOne ids written "P1 - 1234567", whose digits become
-  ``state_provider_id``. Licences are Washington licences; a second licence stays in ``raw``.
+  organization; some cells hold several names on separate lines ("Last, First MD" then
+  "dba: Clinic Name", a person then their business, or two business names and then the
+  owner). The first line is the party; a "dba" line or one naming the same kind of party is
+  an alias, and one naming the other kind (the owner, the business) is a related party
+  (``parse_name_lines``).
+- ``NPI # or P1 #`` holds NPIs or ProviderOne ids written "P1 - 1234567", whose digits become
+  ``state_provider_id``. Some cells hold two NPIs, checked against NPPES (2026-10-28): always
+  one person's (type 1) and that person's business's (type 2), in no reliable order, so they
+  cannot be paired with the names by position. The first is the record's ``npi``, the others
+  ``related_npis``. Licences are Washington licences; a second licence stays in ``raw``.
 - ``Action`` is free text with typos that mixes licence actions, OIG exclusions and
   terminations; it is classified by keyword (see :data:`ACTION_KEYWORDS`) and kept as
   ``action_raw``.
 - First sync 2026-10-27: 27,792 bytes (HEAD, then GET), 234 rows, none skipped, 234 records:
   226 individuals and 8 organizations, NPI on 180, ProviderOne id on 32, licence on 232.
   Some ten-digit values (``52037...00``) are no valid NPI and stay in ``raw``.
+- Re-sync 2026-10-28 (related NPIs and parties): 12 identifier cells hold several values:
+  10 two NPIs (10 records with a related NPI), one an NPI and a ProviderOne id, one three
+  ProviderOne ids (the first is kept, the others stay in ``raw``). 9 name cells hold several
+  lines: 8 records with a related party, 3 with an alias. 13 records changed, 221 unchanged.
 """
 
 import re
@@ -33,13 +41,12 @@ from uuid import uuid4
 
 from credentialing.connectors.framework.base import BulkListConnectorBase
 from credentialing.connectors.framework.errors import ParseError
-from credentialing.connectors.framework.names import parse_name_field
+from credentialing.connectors.framework.names import parse_name_lines
 from credentialing.connectors.framework.rows import ParsedList, RowIssues, build_records
 from credentialing.connectors.framework.spreadsheet import read_sheet
 from credentialing.connectors.framework.values import (
     classify_action,
     clean,
-    collapse,
     parse_npi_list,
     split_identifiers,
 )
@@ -117,11 +124,13 @@ def provider_one_id(text: str | None) -> str | None:
     return found[1] if found else None
 
 
+def _without_comma(line: str) -> bool:
+    """People are written "Last, First"; a line without a comma names a business."""
+    return "," not in line
+
+
 def _record(snapshot: SourceSnapshot, row: Mapping[str, str], issues: RowIssues) -> ExclusionRecord:
-    names = [line for line in (collapse(part) for part in row["Name"].splitlines()) if line]
-    if not names:
-        raise ParseError("row has no name")
-    name = parse_name_field(" AKA ".join(names), organization_hint="," not in names[0])
+    name = parse_name_lines(row["Name"].splitlines(), organization_hint=_without_comma)
     if name.entity_kind is EntityKind.UNKNOWN:
         raise ParseError("row has no name")
     identifiers = row["NPI # or P1 #"]
@@ -136,7 +145,9 @@ def _record(snapshot: SourceSnapshot, row: Mapping[str, str], issues: RowIssues)
         person_name=name.person,
         organization_name=name.organization,
         aliases=name.aliases,
+        related_parties=name.related_parties,
         npi=npis[0] if npis else None,
+        related_npis=npis[1:],
         state_provider_id=provider_one_id(identifiers),
         license=License(number=licenses[0], state=_STATE) if licenses else None,
         action=classify_action(action_text, ACTION_KEYWORDS),

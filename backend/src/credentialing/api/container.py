@@ -9,6 +9,7 @@ from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.application.provider_verdict import ProviderVerdictQuery
+from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
 from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.verification_history import VerificationHistory
@@ -28,6 +29,7 @@ class AppContainer:
     source_status: SourceStatusReport
     check_exclusions: CheckExclusions
     lookup_exclusions: LookupExclusions
+    record_profile: RecordProfileQuery
     verification_history: VerificationHistory
     provider_verdict: ProviderVerdictQuery
     providers: ProviderRepository

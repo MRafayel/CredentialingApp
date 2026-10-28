@@ -90,7 +90,7 @@ class LookupExclusions:
             query=term,
             records=tuple(
                 LookupRecord(
-                    record=r, provider_type=_provider_type(r, capabilities.get(r.source_id))
+                    record=r, provider_type=provider_type(r, capabilities.get(r.source_id))
                 )
                 for r in found
             ),
@@ -107,7 +107,7 @@ class LookupExclusions:
         )
 
 
-def _provider_type(
+def provider_type(
     record: ExclusionRecord, capabilities: ConnectorCapabilities | None
 ) -> str | None:
     """The first provider-type column the source declares that this row fills in."""

@@ -103,24 +103,57 @@ class ExclusionRecordRepository(Protocol):
         *,
         license_numbers: Sequence[str] = (),
     ) -> Sequence[ExclusionRecord]:
-        """Current rows with this NPI, normalized last or organization name, or licence number.
+        """Current rows with this NPI (own or related), name, or licence number.
 
-        Organization names are compared without legal designators, licence numbers without
-        whitespace or case and in any state, so every record the matcher could weigh is found.
+        The NPI is looked up as the row's own NPI and among its related NPIs. Names are the
+        normalized last name, organization name, alias and related-party keys
+        (:func:`~credentialing.domain.policies.candidate_keys`). Organization names are
+        compared without legal designators, licence numbers without whitespace or case and
+        in any state, so every record the matcher could weigh is found.
         """
         ...
 
     async def search(self, query: str, *, limit: int) -> Sequence[ExclusionRecord]:
         """Current rows matching a free-text lookup by name, NPI or licence, best first.
 
-        Every word of ``query`` must start a word of the row's names or identifiers; a
-        ten-digit query also matches the NPI exactly, and those rows come first. At most
-        ``limit`` rows, never more than 50.
+        Every word of ``query`` must start a word of the row's names (aliases and related
+        parties included) or identifiers (related NPIs included); a ten-digit query also
+        matches the NPI exactly, and those rows come first. At most ``limit`` rows, never
+        more than 50.
         """
+        ...
+
+    async def get(self, record_id: UUID) -> ExclusionRecord | None:
+        """Return the row with this id, current or not."""
         ...
 
     async def get_many(self, ids: Sequence[UUID]) -> Sequence[ExclusionRecord]:
         """Return the rows with these ids, current or not."""
+        ...
+
+    async def versions(self, source_id: SourceId, record_hash: str) -> Sequence[ExclusionRecord]:
+        """Every version of one row identity in one source, current or not, oldest first."""
+        ...
+
+    async def same_name(self, record: ExclusionRecord, *, limit: int) -> Sequence[ExclusionRecord]:
+        """At most ``limit`` current rows other than ``record`` whose name keys include its
+        party key (:func:`~credentialing.domain.policies.party_key`), rows with the same first
+        name first, then by source and id; none without a party key."""
+        ...
+
+    async def same_license(
+        self, record: ExclusionRecord, *, limit: int
+    ) -> Sequence[ExclusionRecord]:
+        """At most ``limit`` current rows other than ``record`` with its licence number
+        (whitespace and case ignored) in the same state, by source and id; none without a
+        licence."""
+        ...
+
+    async def linked_by_npi(
+        self, npis: Sequence[Npi], *, exclude_id: UUID
+    ) -> Sequence[ExclusionRecord]:
+        """Current rows other than ``exclude_id`` whose own or related NPIs include any of
+        ``npis``, ordered by source and id; none when ``npis`` is empty."""
         ...
 
     async def count_current(self, source_id: SourceId) -> int:

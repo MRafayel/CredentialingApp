@@ -25,3 +25,11 @@ class ProviderNotFoundError(ApplicationError):
 
 class InvalidProviderInputError(ApplicationError):
     """The provider data breaks a domain rule; ``message`` says which, without the values."""
+
+
+class RecordNotFoundError(ApplicationError):
+    """No exclusion record has this id."""
+
+    def __init__(self, record_id: UUID) -> None:
+        super().__init__(f"exclusion record {record_id} not found")
+        self.record_id = record_id

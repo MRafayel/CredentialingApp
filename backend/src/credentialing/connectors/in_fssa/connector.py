@@ -15,17 +15,17 @@ Source facts (survey of 2026-10-16, first sync 2026-10-27):
   weekly.
 - Header on row 2: ``Provider Name | National Provider Identification (NPI) | Service Location
   Address | Termination Effective Date `` (with a trailing space).
-- People are written first name first, with the credential after a comma ("Jamie L Thomas",
-  "Mark Pefley, DDS", "Russell Harms, Podiatrist", "Eddie Kemper M.D."): the text after the
+- People are written first name first, with the credential after a comma ("Avery L Quinlan",
+  "Rowan Castellane, DDS", "Devin Marlow, Podiatrist", "Sasha Okonkwo M.D."): the text after the
   comma becomes the suffix and the rest is split first name first. A one-word name
-  ("Centrad") is a business. One cell holds two NPIs on separate lines (the first is the
-  record's, the other stays in ``raw``).
+  ("Centrad") is a business. One cell holds two NPIs on separate lines: the first is the
+  record's ``npi``, the other a related NPI (``related_npis``).
 - ``Service Location Address`` is "City, ST"; a provider with several practice locations has
   them all in the cell, on separate lines or after runs of spaces. The first is stored as the
   address and the rest stay in ``raw``.
 - First sync 2026-10-27: 27,495 bytes (sheet "Sheet1", title "Provider Terminations (As of
   July 2026)"), 112 rows, none skipped, 112 records: 76 individuals and 36 organizations,
-  NPI on 105.
+  NPI on 105. Re-sync 2026-10-28: 1 record with a related NPI (an organization's).
 """
 
 import re
@@ -141,6 +141,7 @@ def _record(snapshot: SourceSnapshot, row: Mapping[str, str], issues: RowIssues)
         organization_name=name.organization,
         aliases=name.aliases,
         npi=npis[0] if npis else None,
+        related_npis=npis[1:],
         address=parse_city_state_zip(first_location(row["Service Location Address"])),
         action=ExclusionAction.TERMINATION,
         effective_date=issues.date(

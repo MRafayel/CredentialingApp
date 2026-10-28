@@ -11,16 +11,17 @@ from psycopg.rows import TupleRow
 from credentialing.api.app import create_app
 from credentialing.bootstrap import api_container, build_services
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import Outcome
+from credentialing.domain.enums import EntityKind, Outcome
 from credentialing.domain.models import FetchResult, SourceSnapshot
 from credentialing.infrastructure.config import Settings
 from credentialing.infrastructure.database import ConnectionSource
 from tests.fakes import FixedClock, ScriptedConnector, capabilities
-from tests.synthetic import NOW, exclusion
+from tests.synthetic import NOW, exclusion, make_npi
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 SOURCE = "test_federal_list"
+OWNER_NPI = make_npi("100000011")
 
 
 @pytest.fixture
@@ -43,11 +44,21 @@ async def client(database: ConnectionSource) -> AsyncIterator[httpx2.AsyncClient
         content_hash="ab" * 32,
     )
     listed = exclusion(source_id=SOURCE, snapshot_id=snapshot.id, last="Deltaperson", first="Avery")
+    business = exclusion(
+        source_id=SOURCE,
+        snapshot_id=snapshot.id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="Sample Echo Clinic",
+        related_parties=("Echoperson, Blake",),
+        npi=make_npi("100000012"),
+        related_npis=(OWNER_NPI,),
+    )
     registry = ConnectorRegistry()
     registry.register(
         ScriptedConnector(
             capabilities(SOURCE, display_name="Test Federal List"),
-            FetchResult(snapshot=snapshot, records=(listed,)),
+            FetchResult(snapshot=snapshot, records=(listed, business)),
         )
     )
     services = build_services(database, registry, FixedClock(NOW))
@@ -78,7 +89,7 @@ async def test_register_check_and_read_history(
     verdict = checked.json()
     assert verdict["verdict"] == "needs_review"
     assert verdict["review_in"] == [SOURCE]
-    assert verdict["listed_in"] == verdict["unchecked"] == []
+    assert verdict["listed_in"] == verdict["flagged_in"] == verdict["unchecked"] == []
     assert verdict["sources_checked"] == 1
     assert verdict["oldest_list_updated_at"] == NOW.isoformat().replace("+00:00", "Z")
     (result,) = verdict["results"]
@@ -87,6 +98,7 @@ async def test_register_check_and_read_history(
     assert result["outcome"] == "completed"
     assert result["finding"] == "ambiguous"
     assert result["match"]["level"] == "potential"
+    assert result["match"]["relation"] == "party"
     assert result["freshness"] in {"live", "cached"}
     assert result["provenance"]["source_url"] == f"https://example.test/{SOURCE}"
     (record,) = result["matched_records"]
@@ -101,6 +113,32 @@ async def test_register_check_and_read_history(
     read = await client.get(f"/providers/{provider['id']}/verdict", headers=headers)
     assert read.status_code == 200
     assert read.json() == verdict
+
+
+async def test_a_related_party_is_flagged(
+    client: httpx2.AsyncClient, organization_id: UUID
+) -> None:
+    headers = {"X-Organization-Id": str(organization_id)}
+    body = {
+        "entity_kind": "individual",
+        "person_name": {"last": "Echoperson", "first": "Blake"},
+        "npi": OWNER_NPI,
+    }
+    provider = (await client.post("/providers", json=body, headers=headers)).json()
+
+    checked = await client.post(
+        f"/providers/{provider['id']}/verifications/exclusions", headers=headers
+    )
+
+    verdict = checked.json()
+    assert verdict["verdict"] == "flagged"
+    assert verdict["flagged_in"] == [SOURCE]
+    assert verdict["listed_in"] == verdict["review_in"] == []
+    (result,) = verdict["results"]
+    assert result["finding"] == "related_party"
+    assert result["match"]["level"] == "high"
+    assert result["match"]["relation"] == "related_party"
+    assert result["summary"].startswith("Flagged in Test Federal List: named with a listed party")
 
 
 async def test_unknown_provider_is_404(client: httpx2.AsyncClient, organization_id: UUID) -> None:

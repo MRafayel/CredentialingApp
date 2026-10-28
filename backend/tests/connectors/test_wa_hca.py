@@ -32,8 +32,8 @@ def _starting(parsed: ParsedList, text: str) -> ExclusionRecord:
 
 
 def test_counts(parsed: ParsedList) -> None:
-    assert parsed.rows == 5
-    assert len(parsed.records) == 5
+    assert parsed.rows == 6
+    assert len(parsed.records) == 6
     assert parsed.skipped == 0
 
 
@@ -50,23 +50,39 @@ def test_a_person_with_credential_licence_and_npi(parsed: ParsedList) -> None:
     assert record.effective_date == date(2023, 9, 21)
 
 
-def test_several_names_in_one_cell_are_the_party_and_its_aliases(parsed: ParsedList) -> None:
+def test_a_business_with_another_business_name_and_its_owner(parsed: ParsedList) -> None:
     record = _starting(parsed, "Sample Dentures NW")
 
     assert record.entity_kind is EntityKind.ORGANIZATION
     assert record.organization_name == "Sample Dentures NW"
-    assert record.aliases == ("Mock Dental and Denture", "Exampleowner, Jordan L. DN")
+    assert record.aliases == ("Mock Dental and Denture",)
+    assert record.related_parties == ("Exampleowner, Jordan L. DN",)
     assert record.npi == builders.NPI_B
-    assert builders.NPI_C in record.raw["NPI # or P1 #"]
+    assert record.related_npis == (builders.NPI_C,)
     assert record.action is ExclusionAction.TERMINATION
+
+
+def test_a_person_with_their_business_and_two_npis(parsed: ParsedList) -> None:
+    record = _starting(parsed, "Samplewoman, Casey")
+
+    assert record.entity_kind is EntityKind.INDIVIDUAL
+    assert record.person_name == PersonName(
+        last="Samplewoman", first="Casey", middle="L.", suffix="MD/"
+    )
+    assert record.aliases == ()
+    assert record.related_parties == ("Sample Family Pediatrics",)
+    assert record.npi == builders.NPI_E
+    assert record.related_npis == (builders.NPI_F,)
 
 
 def test_a_providerone_id_and_a_dba_line(parsed: ParsedList) -> None:
     record = _starting(parsed, "Mockdoc, Riley")
 
     assert record.npi is None
+    assert record.related_npis == ()
     assert record.state_provider_id == "1027986"
     assert record.aliases == ("Sample Pathology Labs",)
+    assert record.related_parties == ()
     assert record.action is ExclusionAction.EXCLUSION
 
 

@@ -200,6 +200,8 @@ def test_content_hash_ignores_raw_key_order_and_alias_order() -> None:
         {"date_of_birth": date(1970, 5, 17)},
         {"raw": {"LASTNAME": "Testperson", "FIRSTNAME": "Avery", "NOTE": "x"}},
         {"license": License(number="0012345", state="NY", kind="Physician")},
+        {"related_npis": (make_npi("100000009"),)},
+        {"related_parties": ("Sample Family Care",)},
     ],
 )
 def test_content_hash_changes_with_each_content_field(changed: dict[str, object]) -> None:
@@ -214,3 +216,41 @@ def test_create_and_direct_construction_agree() -> None:
     rebuilt = ExclusionRecord(**record.model_dump())
 
     assert rebuilt == record
+
+
+def test_content_hash_without_related_fields_is_unchanged() -> None:
+    def content(related_npis: tuple[str, ...], related_parties: tuple[str, ...]) -> str:
+        return compute_content_hash(
+            end_date=None,
+            reason=None,
+            action_raw="Termination",
+            aliases=(),
+            date_of_birth=None,
+            address=None,
+            state_provider_id=None,
+            license=None,
+            raw={"NAME": "Testperson, Avery"},
+            related_npis=related_npis,
+            related_parties=related_parties,
+        )
+
+    # The digest of this row as stored before related NPIs and parties existed.
+    stored = "058326724744ad1f45eddd85fcd0c40327f9044429bddff553ddf2f26e37aa7f"
+    assert content((), ()) == stored
+    assert content((), (" ",)) == stored
+
+
+def test_create_keeps_related_npis_other_than_its_own() -> None:
+    own, other = make_npi("100000001"), make_npi("100000002")
+
+    record = exclusion(npi=own, related_npis=(own, other, other))
+
+    assert record.npi == own
+    assert record.related_npis == (other,)
+
+
+def test_a_record_cannot_list_its_own_npi_as_related() -> None:
+    record = exclusion(npi=make_npi("100000001"))
+
+    with pytest.raises(ValidationError):
+        ExclusionRecord(**{**record.model_dump(), "related_npis": (record.npi,)})

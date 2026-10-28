@@ -78,3 +78,12 @@ def test_names_without_a_comma_are_organizations(parsed: ParsedList) -> None:
     assert lab.organization_name == "SAMPLE LAB WERKS INC"
     assert clinic.entity_kind is EntityKind.ORGANIZATION
     assert clinic.effective_date == date(2024, 6, 30)
+
+
+def test_a_second_npi_in_the_cell_is_a_related_npi(parsed: ParsedList) -> None:
+    clinic = _by_id(parsed, "0002003")
+    single = _by_id(parsed, "0001926")
+
+    assert clinic.npi == builders.NPI_C
+    assert clinic.related_npis == (builders.NPI_D,)
+    assert single.related_npis == ()

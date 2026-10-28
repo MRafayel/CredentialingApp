@@ -3,6 +3,7 @@ import pytest
 from credentialing.connectors.framework.names import (
     looks_like_business,
     parse_name_field,
+    parse_name_lines,
     split_single_name_field,
 )
 from credentialing.domain.enums import EntityKind
@@ -234,3 +235,48 @@ def test_state_list_credentials_are_suffixes(text: str, suffix: str | None) -> N
 
     assert person is not None
     assert person.suffix == suffix
+
+
+def _no_comma(line: str) -> bool:
+    return "," not in line
+
+
+def test_name_lines_the_first_line_alone_is_the_party() -> None:
+    parsed = parse_name_lines(
+        ["Testperson, Avery M MD", "", "dba: Sample Pathology Labs"], organization_hint=_no_comma
+    )
+
+    assert parsed.person == PersonName(last="Testperson", first="Avery", middle="M", suffix="MD")
+    assert parsed.aliases == ("Sample Pathology Labs",)
+    assert parsed.related_parties == ()
+
+
+def test_name_lines_of_the_other_kind_are_related_parties() -> None:
+    business = parse_name_lines(
+        ["Sample Dentures NW", "Mock Dental and Denture", "Exampleowner, Jordan L. DN"],
+        organization_hint=_no_comma,
+    )
+    person = parse_name_lines(
+        ["Mockdoc, Riley", "Sample Family Pediatrics"], organization_hint=_no_comma
+    )
+
+    assert business.organization == "Sample Dentures NW"
+    assert business.aliases == ("Mock Dental and Denture",)
+    assert business.related_parties == ("Exampleowner, Jordan L. DN",)
+    assert person.entity_kind is EntityKind.INDIVIDUAL
+    assert person.aliases == ()
+    assert person.related_parties == ("Sample Family Pediatrics",)
+
+
+def test_name_lines_keep_inline_aliases_and_same_kind_lines_as_aliases() -> None:
+    parsed = parse_name_lines(
+        ["Samplewoman, Casey aka Casey Marriedname", "Samplewoman, C. aka Casey S."],
+        organization_hint=_no_comma,
+    )
+
+    assert parsed.aliases == ("Casey Marriedname", "Samplewoman, C.", "Casey S.")
+    assert parsed.related_parties == ()
+
+
+def test_name_lines_without_text_are_unknown() -> None:
+    assert parse_name_lines(["", "  "]).entity_kind is EntityKind.UNKNOWN

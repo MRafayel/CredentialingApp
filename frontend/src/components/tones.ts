@@ -4,6 +4,7 @@ import {
   type IllustrationProps,
   VerdictBlocked,
   VerdictClear,
+  VerdictFlagged,
   VerdictListed,
   VerdictReview,
   VerdictUnchecked,
@@ -32,6 +33,12 @@ export const TONES: Record<Tone, ToneStyle> = {
     tint: 'bg-tint-review',
     wash: '[--tone-wash:var(--wash-review)]',
     Mark: VerdictReview,
+  },
+  flagged: {
+    text: 'text-status-flagged',
+    tint: 'bg-tint-flagged',
+    wash: '[--tone-wash:var(--wash-flagged)]',
+    Mark: VerdictFlagged,
   },
   listed: {
     text: 'text-status-listed',

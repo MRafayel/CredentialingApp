@@ -10,7 +10,14 @@ from psycopg.rows import TupleRow
 from credentialing.application.source_status import SourceHealth
 from credentialing.bootstrap import Services, build_services
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import Finding, Freshness, MatchLevel, Outcome, Verdict
+from credentialing.domain.enums import (
+    EntityKind,
+    Finding,
+    Freshness,
+    MatchLevel,
+    Outcome,
+    Verdict,
+)
 from credentialing.domain.models import FetchResult, SnapshotDiff, SourceSnapshot
 from credentialing.infrastructure.database import ConnectionSource
 from tests.fakes import FixedClock, ScriptedConnector, capabilities
@@ -164,3 +171,40 @@ async def test_source_status_over_the_real_repositories(database: ConnectionSour
     assert (failing.latest, failing.latest_completed) == (failed, loaded)
     assert failing.problem == "synthetic timeout"
     assert failing.current_records == 2
+
+
+async def test_a_related_npi_without_a_matching_name_needs_review_and_shows_on_the_profile(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    snapshot = _snapshot(0)
+    owner_npi = make_npi("100000008")
+    business = exclusion(
+        source_id=SOURCE,
+        snapshot_id=snapshot.id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="Deltasample Dentures NW",
+        npi=NPI,
+        related_npis=(owner_npi,),
+        related_parties=("Deltaowner, Jordan L. DN",),
+    )
+    connector = ScriptedConnector(
+        capabilities(SOURCE), FetchResult(snapshot=snapshot, records=(business,))
+    )
+    clock = FixedClock(NOW)
+    services = _services(database, connector, clock)
+    organization_id = await _organization(db_connection)
+    provider = individual(last="Unnamedperson", npi=owner_npi, organization_id=organization_id)
+    await services.providers.add(provider)
+    await services.sync_source.run(SOURCE)
+
+    verdict = await services.check_exclusions.run(organization_id, provider.id)
+    profile = await services.record_profile.run(business.id)
+
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    (result,) = verdict.results
+    assert result.match is not None
+    assert result.match.level is MatchLevel.POTENTIAL
+    assert profile.source.fetched_at == snapshot.fetched_at
+    assert profile.record.record.related_npis == (owner_npi,)
+    assert profile.record.record.related_parties == ("Deltaowner, Jordan L. DN",)

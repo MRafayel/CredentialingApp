@@ -104,9 +104,10 @@ def split_identifiers(text: str | None) -> tuple[str, ...]:
 def parse_npi_list(text: str | None) -> tuple[str, ...]:
     """Every valid NPI in a cell, in order and without repeats.
 
-    Some lists put two NPIs in one cell. A connector stores the first as the record's ``npi``;
-    the others stay only in the raw row, because a second NPI in ``aliases`` would be matched
-    as a name.
+    Some lists put two NPIs in one cell, typically a person's and their business's, in no
+    reliable order. A connector stores the first as the record's ``npi`` and the others as
+    ``related_npis``, never in ``aliases``, which would be matched as names; matching treats a
+    related NPI as needing a confirming name.
     """
     found: list[str] = []
     for candidate in _TEN_DIGITS.findall(text or ""):

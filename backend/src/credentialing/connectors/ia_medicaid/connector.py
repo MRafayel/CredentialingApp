@@ -13,9 +13,11 @@ Source facts (survey of 2026-10-16, first sync 2026-10-27):
   Reapply Date, Authority, State License Type, State License Number``.
 - ``Enrollment Type`` is "Individual" or "Organization" with typos, so only its start is
   compared; when it is unreadable the name columns decide.
-- ``NPI`` holds NPIs, Iowa Medicaid ids shaped ``X000429159`` (stored as
+- ``NPI`` holds NPIs, Iowa Medicaid ids shaped ``X000000111`` (stored as
   ``state_provider_id``) and numbers that are not ten digits (left in ``raw``).
-  ``Affiliated NPI`` stays in ``raw``.
+  ``Affiliated NPI`` (an NPI of an affiliated party, filled on a handful of organizations)
+  becomes ``related_npis`` when it is a valid NPI; anything else (a Medicaid id) stays in
+  ``raw``.
 - ``Type of Sanction`` is classified by keyword and kept as ``action_raw``; ``Authority``
   is the reason. ``Sanction End Date`` mixes dates with "Indefinite" and "Federal Authority",
   which mean no end date. One person can have several rows (a state and a federal action).
@@ -25,6 +27,8 @@ Source facts (survey of 2026-10-16, first sync 2026-10-27):
   Medicaid id on 347, licence on 470, an end date on 170 (141 already past). Beyond the
   survey: end dates "2 Years" and "On Payment Plan" (no end date) and one effective date
   "12/17/2025 - on payment plan" (unreadable, counted).
+- Re-sync 2026-10-28: ``Affiliated NPI`` is filled on 4 organization rows; 3 hold a valid
+  NPI (3 records with a related NPI) and one a Medicaid id.
 """
 
 import re
@@ -45,6 +49,7 @@ from credentialing.connectors.framework.values import (
     entity_kind_from,
     open_ended,
     parse_npi,
+    parse_npi_list,
 )
 from credentialing.domain.enums import (
     AccessPolicy,
@@ -118,7 +123,7 @@ class IaMedicaidConnector(BulkListConnectorBase):
         return CAPABILITIES
 
     def parse(self, body: bytes, snapshot: SourceSnapshot) -> ParsedList:
-        """Map every row; the specialty and affiliated NPI stay in ``raw``."""
+        """Map every row; the specialty stays in ``raw``, a valid affiliated NPI is related."""
         rows = read_sheet(body, expected_columns=COLUMNS)
         return build_records(rows, partial(_record, snapshot))
 
@@ -164,6 +169,7 @@ def _record(snapshot: SourceSnapshot, row: Mapping[str, str], issues: RowIssues)
         organization_name=None if individual else business,
         aliases=(business,) if individual and business else (),
         npi=parse_npi(identifier),
+        related_npis=parse_npi_list(row["Affiliated NPI"]),
         state_provider_id=identifier if _MEDICAID_ID.match(identifier) else None,
         license=License(number=license_number, state=_STATE, kind=clean(row["State License Type"]))
         if license_number

@@ -59,6 +59,7 @@ def test_an_organization_with_an_end_date(parsed: ParsedList) -> None:
     assert record.entity_kind is EntityKind.ORGANIZATION
     assert record.organization_name == "Sample Pharmacy LLC"
     assert record.npi == builders.NPI_A
+    assert record.related_npis == (builders.NPI_D,)
     assert record.action is ExclusionAction.TERMINATION
     assert record.end_date == date(2024, 1, 1)
 
@@ -68,7 +69,8 @@ def test_a_typo_in_the_enrollment_type_and_a_medicaid_id(parsed: ParsedList) -> 
 
     assert record.entity_kind is EntityKind.INDIVIDUAL
     assert record.npi is None
-    assert record.state_provider_id == "X000429159"
+    assert record.related_npis == (builders.NPI_B,)
+    assert record.state_provider_id == "X000000111"
     assert record.aliases == ("Exampledoc Clinic",)
     assert record.action is ExclusionAction.EXCLUSION
     assert record.end_date is None
@@ -102,3 +104,11 @@ def test_entity_kind_for(
     enrollment: str | None, business: str | None, last: str | None, expected: EntityKind
 ) -> None:
     assert entity_kind_for(enrollment, business, last) is expected
+
+
+def test_an_affiliated_value_that_is_no_npi_stays_raw(parsed: ParsedList) -> None:
+    record = _named(parsed, "Samplewoman")
+
+    assert record.npi == builders.NPI_C
+    assert record.related_npis == ()
+    assert record.raw["Affiliated NPI"] == "X000000222"

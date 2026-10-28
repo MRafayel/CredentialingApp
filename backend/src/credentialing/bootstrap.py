@@ -18,6 +18,7 @@ from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.application.provider_verdict import ProviderVerdictQuery
+from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
 from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
@@ -71,6 +72,7 @@ class Services:
     source_status: SourceStatusReport
     check_exclusions: CheckExclusions
     lookup_exclusions: LookupExclusions
+    record_profile: RecordProfileQuery
     register_provider: RegisterProvider
     list_providers: ListProviders
     verification_history: VerificationHistory
@@ -127,6 +129,7 @@ def build_services(
             registry, providers, records, snapshots, verifications, DEFAULT_FRESHNESS, clock
         ),
         lookup_exclusions=LookupExclusions(records, snapshots, registry),
+        record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
         register_provider=RegisterProvider(providers, clock),
         list_providers=ListProviders(providers),
         verification_history=VerificationHistory(providers, verifications, records),
@@ -142,6 +145,7 @@ def api_container(services: Services, settings: Settings) -> AppContainer:
         source_status=services.source_status,
         check_exclusions=services.check_exclusions,
         lookup_exclusions=services.lookup_exclusions,
+        record_profile=services.record_profile,
         verification_history=services.verification_history,
         provider_verdict=services.provider_verdict,
         providers=services.providers,

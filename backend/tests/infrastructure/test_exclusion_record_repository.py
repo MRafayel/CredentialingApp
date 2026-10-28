@@ -50,6 +50,8 @@ async def test_full_record_round_trips(database: ConnectionSource) -> None:
         snapshot_id=snapshot_id,
         npi=NPI,
         aliases=("Avery Marriedname",),
+        related_npis=(make_npi("100000002"),),
+        related_parties=("Sample Family Care",),
         date_of_birth=date(1970, 5, 17),
         license=License(number="0012345", state="NY", kind="Physician"),
     ).model_copy(
@@ -359,3 +361,150 @@ async def test_count_current_counts_only_this_sources_open_rows(
 
     assert await repository.count_current(SOURCE) == 1
     assert await repository.count_current("test_other_list") == 0
+
+
+RELATED_NPI = make_npi("100000002")
+
+
+async def _business_and_owner(
+    repository: PostgresExclusionRecordRepository, database: ConnectionSource
+) -> tuple[ExclusionRecord, ExclusionRecord]:
+    """A business row naming its owner and the owner's NPI, and the owner's own row."""
+    snapshot_id = await _snapshot(database)
+    business = exclusion(
+        snapshot_id=snapshot_id,
+        entity_kind=EntityKind.ORGANIZATION,
+        last=None,
+        organization_name="Qzxsample Dentures NW",
+        related_parties=("Qzxowner, Jordan L. DN",),
+        npi=NPI,
+        related_npis=(RELATED_NPI,),
+    )
+    owner = exclusion(snapshot_id=snapshot_id, last="Qzxowner", first="Jordan", npi=RELATED_NPI)
+    await repository.replace_current(SOURCE, snapshot_id, [business, owner], NOW)
+    return business, owner
+
+
+async def test_find_candidates_by_related_npi_and_related_party(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    business, owner = await _business_and_owner(repository, database)
+
+    by_npi = await repository.find_candidates(RELATED_NPI, None, None)
+    by_name = await repository.find_candidates(None, "Qzxowner", None)
+
+    assert _ours(by_npi) == {business.id, owner.id}
+    assert _ours(by_name) == {business.id, owner.id}
+
+
+async def test_search_finds_related_npis_and_parties_after_the_own_npi(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    business, owner = await _business_and_owner(repository, database)
+
+    assert await _search_ids(repository, RELATED_NPI) == [owner.id, business.id]
+    assert await _search_ids(repository, "qzxsample") == [business.id]
+    assert await _search_ids(repository, "qzxowner jordan") == [owner.id, business.id]
+
+
+async def test_get_a_record_current_or_not(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    business, owner = await _business_and_owner(repository, database)
+    await repository.replace_current(SOURCE, business.snapshot_id, [business], LATER)
+
+    assert await repository.get(business.id) == business
+    closed = await repository.get(owner.id)
+    assert closed is not None
+    assert closed.valid_to == LATER
+    assert await repository.get(uuid4()) is None
+
+
+async def test_versions_of_one_identity_oldest_first(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    first_snapshot = await _snapshot(database)
+    listed = exclusion(snapshot_id=first_snapshot, last="Qzxversioned")
+    other = exclusion(snapshot_id=first_snapshot, last="Qzxbystander")
+    await repository.replace_current(SOURCE, first_snapshot, [listed, other], NOW)
+    second_snapshot = await _snapshot(database)
+    ended = exclusion(snapshot_id=second_snapshot, last="Qzxversioned", end_date=date(2026, 1, 10))
+    still = other.model_copy(update={"snapshot_id": second_snapshot})
+    await repository.replace_current(SOURCE, second_snapshot, [ended, still], LATER)
+
+    versions = await repository.versions(SOURCE, listed.record_hash)
+
+    assert [(v.id, v.valid_from, v.valid_to) for v in versions] == [
+        (listed.id, NOW, LATER),
+        (ended.id, LATER, None),
+    ]
+
+
+async def test_linked_by_npi_matches_own_and_related_npis_of_current_rows(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    business, owner = await _business_and_owner(repository, database)
+
+    linked = await repository.linked_by_npi([NPI, RELATED_NPI], exclude_id=business.id)
+    naming = await repository.linked_by_npi([RELATED_NPI], exclude_id=owner.id)
+
+    assert _ours(linked) == {owner.id}
+    assert _ours(naming) == {business.id}
+    assert await repository.linked_by_npi([], exclude_id=business.id) == []
+    await repository.replace_current(SOURCE, business.snapshot_id, [business], LATER)
+    assert _ours(await repository.linked_by_npi([RELATED_NPI], exclude_id=business.id)) == set()
+
+
+async def test_same_name_is_bounded_and_puts_the_same_first_name_first(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    subject = exclusion(snapshot_id=snapshot_id, last="Qzxcommon", first="Avery")
+    others = [
+        exclusion(
+            snapshot_id=snapshot_id,
+            last="Qzxcommon",
+            first="Blake",
+            effective_date=date(2020, 1, 1) + timedelta(days=day),
+        )
+        for day in range(4)
+    ]
+    namesake = exclusion(
+        snapshot_id=snapshot_id, last="QZXCOMMON", first="AVERY", effective_date=date(2019, 5, 5)
+    )
+    via_alias = exclusion(
+        snapshot_id=snapshot_id, last="Qzxother", first="Casey", aliases=("Avery Qzxcommon",)
+    )
+    await repository.replace_current(
+        SOURCE, snapshot_id, [subject, *others, namesake, via_alias], NOW
+    )
+
+    found = await repository.same_name(subject, limit=3)
+    every = await repository.same_name(subject, limit=50)
+
+    assert len(found) == 3
+    assert found[0].id == namesake.id
+    assert subject.id not in _ours(every)
+    assert _ours(every) == {namesake.id, via_alias.id, *(r.id for r in others)}
+    nameless = exclusion(snapshot_id=snapshot_id, last=None, organization_name=None)
+    assert await repository.same_name(nameless, limit=10) == []
+
+
+async def test_same_license_compares_number_and_state(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    licence = License(number="QZX 0098765", state="NY")
+    subject = exclusion(snapshot_id=snapshot_id, last="Qzxholder", license=licence)
+    same = exclusion(
+        snapshot_id=snapshot_id, last="Qzxother", license=License(number="qzx0098765", state="NY")
+    )
+    other_state = exclusion(
+        snapshot_id=snapshot_id, last="Qzxthird", license=License(number="QZX0098765", state="NJ")
+    )
+    await repository.replace_current(SOURCE, snapshot_id, [subject, same, other_state], NOW)
+
+    assert _ours(await repository.same_license(subject, limit=10)) == {same.id}
+    assert await repository.same_license(subject, limit=0) == []
+    assert await repository.same_license(exclusion(snapshot_id=snapshot_id), limit=10) == []

@@ -98,22 +98,23 @@ export function VerdictHero({
           </Button>
         </div>
         <dl className="mt-6 grid divide-y divide-line border-t border-line sm:mt-8 sm:grid-cols-3 sm:divide-x sm:divide-y-0 sm:pt-6 lg:mt-10">
-          <Figure term="Sources" first>
+          <HeroFigure term="Sources" first>
             <span className="tabular-nums">{checked ? verdict.sources_checked : expected}</span>
-          </Figure>
-          <Figure term="List last updated">
+          </HeroFigure>
+          <HeroFigure term="List last updated">
             {verdict.oldest_list_updated_at ? <DateOf at={verdict.oldest_list_updated_at} /> : '—'}
-          </Figure>
-          <Figure term="Last checked">
+          </HeroFigure>
+          <HeroFigure term="Last checked">
             {verdict.last_checked_at ? <Ago at={verdict.last_checked_at} /> : 'Never'}
-          </Figure>
+          </HeroFigure>
         </dl>
       </section>
     </div>
   )
 }
 
-function Figure({
+/** One figure under a hero: its term and its value, in a row of three on wider screens. */
+export function HeroFigure({
   term,
   first = false,
   children,

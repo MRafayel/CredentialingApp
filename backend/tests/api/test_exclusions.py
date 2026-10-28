@@ -2,24 +2,33 @@
 
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 from uuid import uuid4
 
 import httpx2
 import pytest
 
 from credentialing.application.lookup_exclusions import LookupExclusions
+from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import EntityKind, ExclusionAction, Outcome
 from credentialing.domain.models import Address, License, SourceSnapshot
+from credentialing.domain.policies import DEFAULT_FRESHNESS
 from tests.api.test_providers import HEADERS, _client, _container
-from tests.fakes import InMemoryRecords, InMemorySnapshots, ScriptedConnector, capabilities
+from tests.fakes import (
+    FixedClock,
+    InMemoryRecords,
+    InMemorySnapshots,
+    ScriptedConnector,
+    capabilities,
+)
 from tests.synthetic import NOW, exclusion, make_npi
 
 pytestmark = pytest.mark.anyio
 
 SOURCE = "fake_state"
 NPI = make_npi("100000001")
+OWNER_NPI = make_npi("100000002")
 
 
 @pytest.fixture
@@ -48,13 +57,28 @@ async def client() -> AsyncIterator[httpx2.AsyncClient]:
         last=None,
         organization_name="7 STAR SAMPLEVILLE PHARMACY AND DELI INC",
         npi=NPI,
+        related_npis=(OWNER_NPI,),
+        related_parties=("Exampleowner, Jordan",),
         license=License(number="00012345", state="NY"),
         action=ExclusionAction.TERMINATION,
         raw={"PROVIDER_TYPE": "Pharmacy"},
     ).model_copy(update={"address": Address(line1="1 Sample Way", city="Sampleville", state="NY")})
-    await records.replace_current(SOURCE, snapshot.id, [listed], NOW)
+    owner = exclusion(
+        source_id=SOURCE,
+        snapshot_id=snapshot.id,
+        last="Exampleowner",
+        first="Jordan",
+        npi=OWNER_NPI,
+        date_of_birth=date(1970, 5, 17),
+        raw={"PROVIDER_TYPE": "Pharmacist"},
+    )
+    await records.replace_current(SOURCE, snapshot.id, [listed, owner], NOW)
     container = replace(
-        _container(), lookup_exclusions=LookupExclusions(records, snapshots, registry)
+        _container(),
+        lookup_exclusions=LookupExclusions(records, snapshots, registry),
+        record_profile=RecordProfileQuery(
+            records, snapshots, registry, DEFAULT_FRESHNESS, FixedClock(NOW)
+        ),
     )
     async for client in _client(container):
         yield client
@@ -92,6 +116,60 @@ async def test_search_by_npi(client: httpx2.AsyncClient) -> None:
     body = (await client.get("/exclusions/search", params={"q": NPI}, headers=HEADERS)).json()
 
     assert [record["npi"] for record in body["records"]] == [NPI]
+    assert body["records"][0]["related_npis"] == [OWNER_NPI]
+    assert body["records"][0]["related_parties"] == ["Exampleowner, Jordan"]
+
+
+async def test_a_related_npi_finds_the_row_that_names_it_after_its_own(
+    client: httpx2.AsyncClient,
+) -> None:
+    body = (await client.get("/exclusions/search", params={"q": OWNER_NPI}, headers=HEADERS)).json()
+
+    assert [record["npi"] for record in body["records"]] == [OWNER_NPI, NPI]
+
+
+async def _pharmacy_id(client: httpx2.AsyncClient) -> str:
+    body = (await client.get("/exclusions/search", params={"q": NPI}, headers=HEADERS)).json()
+    return str(body["records"][0]["id"])
+
+
+async def test_a_record_profile(client: httpx2.AsyncClient) -> None:
+    record_id = await _pharmacy_id(client)
+
+    response = await client.get(f"/exclusions/records/{record_id}", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["record"]["id"] == record_id
+    assert body["record"]["source_name"] == "Fake New York List"
+    assert body["record"]["status"] == "active"
+    assert body["record"]["raw_provider_type"] == "Pharmacy"
+    assert body["record"]["place"] == {"city": "Sampleville", "state": "NY"}
+    assert body["source"]["source_url"] == f"https://example.test/{SOURCE}"
+    assert body["source"]["freshness"] == "cached"
+    assert [v["action"] for v in body["versions"]] == ["termination"]
+    (owner,) = body["related"]
+    assert owner["link"] == "listed_as"
+    assert owner["via_npi"] == OWNER_NPI
+    assert owner["raw_provider_type"] == "Pharmacist"
+    assert body["same_party"] == body["same_name"] == []
+    for hidden in ('"date_of_birth"', '"address"', '"raw"', "1 Sample Way", "1970-05-17"):
+        assert hidden not in response.text
+
+
+async def test_an_unknown_record_profile_is_404(client: httpx2.AsyncClient) -> None:
+    response = await client.get(f"/exclusions/records/{uuid4()}", headers=HEADERS)
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"]
+
+
+async def test_a_record_profile_needs_the_organization_header(
+    client: httpx2.AsyncClient,
+) -> None:
+    response = await client.get(f"/exclusions/records/{uuid4()}")
+
+    assert response.status_code == 401
 
 
 async def test_no_match_still_names_the_lists_searched(client: httpx2.AsyncClient) -> None:

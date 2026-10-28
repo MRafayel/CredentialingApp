@@ -1,6 +1,7 @@
 import { motion } from 'motion/react'
 import { OrganizationMark, PersonMark } from '@/components/illustrations'
 import type { Provider } from '../../lib/api.ts'
+import { entityKindWord } from '../../lib/provider.ts'
 
 /** The provider's kind as a drawing in a quiet circle; shared between the row and the page header. */
 export function ProviderMark({
@@ -11,7 +12,7 @@ export function ProviderMark({
   size?: 'md' | 'lg'
 }) {
   const Mark = provider.entity_kind === 'organization' ? OrganizationMark : PersonMark
-  const label = provider.entity_kind === 'organization' ? 'Organization' : 'Individual'
+  const label = entityKindWord(provider.entity_kind)
   return (
     <motion.span
       layoutId={`provider-mark-${provider.id}`}

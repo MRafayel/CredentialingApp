@@ -34,6 +34,7 @@
   /* Status colours live in marks; the word next to a mark stays ink. */
   --status-clear: var(--accent);
   --status-review: #9a5b00;
+  --status-flagged: #7f3f98;
   --status-listed: #c0312f;
   --status-blocked: #6b7280;
 
@@ -43,6 +44,7 @@
    */
   --tint-clear: var(--accent-soft);
   --tint-review: #fbefd9;
+  --tint-flagged: #f1e8f6;
   --tint-listed: #fbe9e8;
   --tint-blocked: #eef0f3;
 
@@ -64,6 +66,7 @@
   /* The verdict's faint status field, a tone over the atmosphere. */
   --wash-clear: rgb(43 92 246 / 13%);
   --wash-review: rgb(214 140 20 / 13%);
+  --wash-flagged: rgb(150 80 180 / 11%);
   --wash-listed: rgb(220 60 55 / 11%);
   --wash-blocked: rgb(107 114 128 / 9%);
 
@@ -94,11 +97,13 @@
 
   --color-status-clear: var(--status-clear);
   --color-status-review: var(--status-review);
+  --color-status-flagged: var(--status-flagged);
   --color-status-listed: var(--status-listed);
   --color-status-blocked: var(--status-blocked);
 
   --color-tint-clear: var(--tint-clear);
   --color-tint-review: var(--tint-review);
+  --color-tint-flagged: var(--tint-flagged);
   --color-tint-listed: var(--tint-listed);
   --color-tint-blocked: var(--tint-blocked);
 

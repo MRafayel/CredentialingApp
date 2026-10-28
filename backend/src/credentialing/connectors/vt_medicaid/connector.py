@@ -16,7 +16,8 @@ Source facts (survey of 2026-10-19, first sync 2026-10-27):
   reason text as ``reason``.
 - ``Provider Full Name`` is "LAST,FIRST M" with no space after the comma and heavy trailing
   padding; organizations have no comma. ``VT Medicaid Provider ID`` becomes
-  ``state_provider_id``.
+  ``state_provider_id``. ``Provider NPI`` holds one NPI per row so far; should a cell hold
+  several, the first is the record's ``npi`` and the others ``related_npis``.
 - ``Provider Exclusion Status End Date`` is the placeholder 2382-12-31 for open-ended
   exclusions, read as no end date; a ``Reinstatement Date with Vermont Medicaid if
   Applicable`` (empty on every row so far) ends the record. The ID keeps its leading zeros
@@ -136,6 +137,7 @@ def _record(snapshot: SourceSnapshot, row: Mapping[str, str], issues: RowIssues)
         organization_name=name.organization,
         aliases=name.aliases,
         npi=npis[0] if npis else None,
+        related_npis=npis[1:],
         state_provider_id=clean(row["VT Medicaid Provider ID"]),
         address=address if address != Address() else None,
         action=ExclusionAction.EXCLUSION,

@@ -4,7 +4,8 @@ import { CodePill } from '../../components/Status.tsx'
 import { DateOf } from '../../components/Time.tsx'
 import type { Provider } from '../../lib/api.ts'
 
-function Fact({ term, children }: { term: string; children: ReactNode }) {
+/** One term and its value in a facts panel. */
+export function Fact({ term, children }: { term: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5 py-3">
       <dt className="text-small text-ink-muted">{term}</dt>

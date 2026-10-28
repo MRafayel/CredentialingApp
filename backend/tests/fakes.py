@@ -23,7 +23,7 @@ from credentialing.domain.models import (
     VerificationResult,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
-from credentialing.domain.policies import candidate_keys, license_key
+from credentialing.domain.policies import candidate_keys, license_key, party_key
 from credentialing.domain.types import Npi, SourceId
 
 _WORDS = re.compile(r"[^\W_]+")
@@ -163,7 +163,7 @@ class InMemoryRecords:
         return [
             record
             for record in self.current.values()
-            if (npi is not None and record.npi == npi)
+            if (npi is not None and npi in (record.npi, *record.related_npis))
             or candidate_keys(record) & keys
             or (record.license is not None and license_key(record.license.number) in licenses)
         ]
@@ -183,7 +183,9 @@ class InMemoryRecords:
                 name.middle if name else None,
                 record.organization_name,
                 *record.aliases,
+                *record.related_parties,
                 record.npi,
+                *record.related_npis,
                 record.state_provider_id,
                 record.license.number if record.license else None,
             ]
@@ -203,8 +205,58 @@ class InMemoryRecords:
         )
         return found[: min(max(limit, 1), 50)]
 
+    async def get(self, record_id: UUID) -> ExclusionRecord | None:
+        return self.all.get(record_id)
+
     async def get_many(self, ids: Sequence[UUID]) -> Sequence[ExclusionRecord]:
         return [self.all[i] for i in ids if i in self.all]
+
+    async def versions(self, source_id: SourceId, record_hash: str) -> Sequence[ExclusionRecord]:
+        own = [
+            r for r in self.all.values() if (r.source_id, r.record_hash) == (source_id, record_hash)
+        ]
+        return sorted(own, key=lambda r: (r.valid_from, str(r.id)))
+
+    async def same_name(self, record: ExclusionRecord, *, limit: int) -> Sequence[ExclusionRecord]:
+        key = party_key(record)
+        first = record.person_name.first.casefold() if record.person_name else None
+        found = [
+            r
+            for r in self.current.values()
+            if key is not None and r.id != record.id and key in candidate_keys(r)
+        ]
+
+        def rank(r: ExclusionRecord) -> tuple[bool, str, str]:
+            same_first = r.person_name is not None and r.person_name.first.casefold() == first
+            return (not same_first, r.source_id, str(r.id))
+
+        return sorted(found, key=rank)[: max(limit, 0)]
+
+    async def same_license(
+        self, record: ExclusionRecord, *, limit: int
+    ) -> Sequence[ExclusionRecord]:
+        own = record.license
+        found = [
+            r
+            for r in self.current.values()
+            if own is not None
+            and r.id != record.id
+            and r.license is not None
+            and r.license.state == own.state
+            and license_key(r.license.number) == license_key(own.number)
+        ]
+        return sorted(found, key=lambda r: (r.source_id, str(r.id)))[: max(limit, 0)]
+
+    async def linked_by_npi(
+        self, npis: Sequence[Npi], *, exclude_id: UUID
+    ) -> Sequence[ExclusionRecord]:
+        wanted = set(npis)
+        found = [
+            r
+            for r in self.current.values()
+            if r.id != exclude_id and wanted & {*(r.related_npis), *([r.npi] if r.npi else [])}
+        ]
+        return sorted(found, key=lambda r: (r.source_id, str(r.id)))
 
     async def count_current(self, source_id: SourceId) -> int:
         return sum(1 for (source, _) in self.current if source == source_id)

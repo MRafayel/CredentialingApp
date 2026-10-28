@@ -1,12 +1,13 @@
 """Direct lookup of the exclusion lists, without a provider on the roster."""
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 
 from credentialing.api.container import Container
 from credentialing.api.organization import OrganizationId
-from credentialing.api.schemas import LookupResponse
+from credentialing.api.schemas import LookupResponse, RecordProfileResponse
 from credentialing.application.lookup_exclusions import MAX_RESULTS
 
 router = APIRouter(prefix="/exclusions", tags=["exclusions"])
@@ -27,3 +28,17 @@ async def search_exclusions(
     """
     result = await container.lookup_exclusions.run(q, limit=limit)
     return LookupResponse.from_result(result)
+
+
+@router.get("/records/{record_id}")
+async def exclusion_record_profile(
+    record_id: UUID, _organization_id: OrganizationId, container: Container
+) -> RecordProfileResponse:
+    """One exclusion record and what the stored lists hold around it.
+
+    Its versions in its list (what it said and since when), other records of the same party
+    (same NPI or licence), records tied through the row's other NPIs, and records that only
+    share the name. 404 when no record has this id.
+    """
+    profile = await container.record_profile.run(record_id)
+    return RecordProfileResponse.from_profile(profile)

@@ -29,6 +29,15 @@ export function VerdictReview(props: IllustrationProps) {
   )
 }
 
+export function VerdictFlagged(props: IllustrationProps) {
+  return (
+    <Svg tone="ill-flagged" {...props}>
+      <Draw d="M5 21V3.5" />
+      <Draw d="M5 4.5h12.5l-3 4.25l3 4.25H5" i={1} />
+    </Svg>
+  )
+}
+
 export function VerdictBlocked(props: IllustrationProps) {
   return (
     <Svg tone="ill-blocked" {...props}>

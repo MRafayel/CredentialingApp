@@ -3,6 +3,8 @@ import { useLayoutEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router'
 import { EASE } from './components/motion.ts'
 import { LookupPage } from './features/lookup/LookupPage.tsx'
+import { LookupStateProvider } from './features/lookup/LookupStateProvider.tsx'
+import { RecordPage } from './features/lookup/RecordPage.tsx'
 import { NotFoundPage } from './features/not-found/NotFoundPage.tsx'
 import { ProviderPage } from './features/provider/ProviderPage.tsx'
 import { ListStateProvider } from './features/providers/ListStateProvider.tsx'
@@ -44,39 +46,42 @@ export default function App() {
     // reducedMotion="user" makes every animation honour the OS "reduce motion" setting.
     <MotionConfig reducedMotion="user">
       <ListStateProvider>
-        <div className="relative isolate min-h-dvh overflow-x-clip">
-          <ScrollToTop key={key} />
-          <Atmosphere />
-          <TopBar />
-          <div className="relative min-w-0">
-            {/*
-             * The rise plays on first load too (a direct load or a refresh), not only on
-             * navigation. Motion renders the initial style on the first render, so the first
-             * paint shows the page at opacity 0, never a flash of the settled page.
-             */}
-            <AnimatePresence mode="popLayout">
-              <motion.div
-                key={key}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.26, ease: EASE }}
-                className="min-h-dvh w-full"
-              >
-                <Routes location={location}>
-                  <Route path="/" element={<Navigate to="/lookup" replace />} />
-                  <Route path="/lookup" element={<LookupPage />} />
-                  <Route path="/providers" element={<ProvidersPage />} />
-                  <Route path="/providers/new" element={<ProvidersPage />} />
-                  <Route path="/providers/:id" element={<ProviderPage />} />
-                  <Route path="/sources" element={<SourcesPage />} />
-                  <Route path="*" element={<NotFoundPage />} />
-                </Routes>
-              </motion.div>
-            </AnimatePresence>
+        <LookupStateProvider>
+          <div className="relative isolate min-h-dvh overflow-x-clip">
+            <ScrollToTop key={key} />
+            <Atmosphere />
+            <TopBar />
+            <div className="relative min-w-0">
+              {/*
+               * The rise plays on first load too (a direct load or a refresh), not only on
+               * navigation. Motion renders the initial style on the first render, so the first
+               * paint shows the page at opacity 0, never a flash of the settled page.
+               */}
+              <AnimatePresence mode="popLayout">
+                <motion.div
+                  key={key}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.26, ease: EASE }}
+                  className="min-h-dvh w-full"
+                >
+                  <Routes location={location}>
+                    <Route path="/" element={<Navigate to="/lookup" replace />} />
+                    <Route path="/lookup" element={<LookupPage />} />
+                    <Route path="/lookup/:recordId" element={<RecordPage />} />
+                    <Route path="/providers" element={<ProvidersPage />} />
+                    <Route path="/providers/new" element={<ProvidersPage />} />
+                    <Route path="/providers/:id" element={<ProviderPage />} />
+                    <Route path="/sources" element={<SourcesPage />} />
+                    <Route path="*" element={<NotFoundPage />} />
+                  </Routes>
+                </motion.div>
+              </AnimatePresence>
+            </div>
+            <TabBar />
           </div>
-          <TabBar />
-        </div>
+        </LookupStateProvider>
       </ListStateProvider>
     </MotionConfig>
   )

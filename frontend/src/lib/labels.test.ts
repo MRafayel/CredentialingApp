@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderVerdict } from './api.ts'
-import { freshnessLabel, outcomeWord, resultLabel, verdictLabel } from './labels.ts'
+import {
+  freshnessLabel,
+  outcomeWord,
+  recordStatusLabel,
+  resultLabel,
+  verdictLabel,
+} from './labels.ts'
 
 const figures = (
   overrides: Partial<ProviderVerdict> & Pick<ProviderVerdict, 'verdict'>,
 ): ProviderVerdict => ({
   sources_checked: 0,
   listed_in: [],
+  flagged_in: [],
   review_in: [],
   unchecked: [],
   oldest_list_updated_at: null,
@@ -20,6 +27,9 @@ describe('verdictLabel', () => {
     expect(
       verdictLabel(figures({ verdict: 'listed', sources_checked: 2, listed_in: ['ny_omig'] })),
     ).toEqual({ tone: 'listed', word: 'Listed', detail: 'in 1 list' })
+    expect(
+      verdictLabel(figures({ verdict: 'flagged', flagged_in: ['wa_hca', 'oig_leie'] })),
+    ).toEqual({ tone: 'flagged', word: 'Flagged', detail: 'in 2 lists' })
     expect(
       verdictLabel(figures({ verdict: 'needs_review', review_in: ['ny_omig', 'oig_leie'] })),
     ).toEqual({ tone: 'review', word: 'Needs review', detail: 'in 2 lists' })
@@ -81,6 +91,20 @@ describe('resultLabel', () => {
       }).word,
     ).toBe('Needs review')
   })
+
+  it('reads a related-party record as flagged, and an ended one as previously flagged', () => {
+    expect(resultLabel({ outcome: 'completed', finding: 'related_party' })).toEqual({
+      tone: 'flagged',
+      word: 'Flagged',
+    })
+    expect(
+      resultLabel({
+        outcome: 'completed',
+        finding: 'related_party',
+        details: { record_status: 'ended' },
+      }),
+    ).toEqual({ tone: 'review', word: 'Previously flagged' })
+  })
 })
 
 describe('outcomeWord', () => {
@@ -96,5 +120,12 @@ describe('freshnessLabel', () => {
     expect(freshnessLabel('cached').word).toBe('Cached')
     expect(freshnessLabel('stale')).toEqual({ tone: 'review', word: 'Stale' })
     expect(freshnessLabel('manual').word).toBe('Manually verified')
+  })
+})
+
+describe('recordStatusLabel', () => {
+  it('reads a standing record as listed and an ended one as previously listed', () => {
+    expect(recordStatusLabel('active')).toEqual({ tone: 'listed', word: 'Listed' })
+    expect(recordStatusLabel('ended')).toEqual({ tone: 'review', word: 'Previously listed' })
   })
 })

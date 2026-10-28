@@ -3,14 +3,22 @@
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from credentialing.application.errors import InvalidProviderInputError, ProviderNotFoundError
+from credentialing.application.errors import (
+    InvalidProviderInputError,
+    ProviderNotFoundError,
+    RecordNotFoundError,
+)
 
 
 def register_error_handlers(app: FastAPI) -> None:
-    """404 for an unknown provider, 422 for provider data that breaks a domain rule."""
+    """404 for an unknown provider or record, 422 for provider data that breaks a domain rule."""
 
     @app.exception_handler(ProviderNotFoundError)
     async def provider_not_found(_request: Request, error: ProviderNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(error)})
+
+    @app.exception_handler(RecordNotFoundError)
+    async def record_not_found(_request: Request, error: RecordNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(error)})
 
     @app.exception_handler(InvalidProviderInputError)

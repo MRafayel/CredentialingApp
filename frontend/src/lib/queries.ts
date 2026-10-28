@@ -24,6 +24,7 @@ export const keys = {
   verifications: (id: string) => ['providers', 'detail', id, 'verifications'] as const,
   verdict: (id: string) => ['providers', 'detail', id, 'verdict'] as const,
   lookup: (q: string) => ['exclusions', 'search', q] as const,
+  record: (id: string) => ['exclusions', 'records', id] as const,
 }
 
 export const PAGE_SIZE = 10
@@ -46,6 +47,15 @@ export function useExclusionLookup(q: string, enabled: boolean) {
       get('/exclusions/search', { query: { q, limit: LOOKUP_LIMIT }, signal }),
     enabled,
     placeholderData: keepPreviousData,
+  })
+}
+
+/** One exclusion record and what the stored lists hold around it. */
+export function useRecordProfile(id: string) {
+  return useQuery({
+    queryKey: keys.record(id),
+    queryFn: ({ signal }) =>
+      get('/exclusions/records/{record_id}', { path: { record_id: id }, signal }),
   })
 }
 

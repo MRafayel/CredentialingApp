@@ -187,3 +187,39 @@ def test_a_found_record_without_a_status_counts_as_standing() -> None:
 
     assert verdict.verdict is Verdict.LISTED
     assert verdict.listed_in == ("list_a",)
+
+
+def test_a_standing_related_party_record_is_flagged() -> None:
+    verdict = derive_verdict(
+        [
+            _result("list_a", Finding.AMBIGUOUS),
+            _result("list_b", Finding.RELATED_PARTY, record_status="active"),
+            _failed("list_c"),
+        ]
+    )
+
+    assert verdict.verdict is Verdict.FLAGGED
+    assert verdict.flagged_in == ("list_b",)
+    assert verdict.listed_in == ()
+    assert verdict.review_in == ("list_a",)
+    assert verdict.unchecked == ("list_c",)
+
+
+def test_listed_comes_before_flagged() -> None:
+    verdict = derive_verdict(
+        [_result("list_a", Finding.RELATED_PARTY), _result("list_b", Finding.RECORD_FOUND)]
+    )
+
+    assert verdict.verdict is Verdict.LISTED
+    assert verdict.listed_in == ("list_b",)
+    assert verdict.flagged_in == ("list_a",)
+
+
+def test_an_ended_related_party_record_needs_review_not_flagged() -> None:
+    verdict = derive_verdict(
+        [_result("list_a", Finding.RELATED_PARTY, record_status="ended"), _result("list_b")]
+    )
+
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    assert verdict.flagged_in == ()
+    assert verdict.review_in == ("list_a",)

@@ -14,6 +14,7 @@ from credentialing.domain.enums import (
     Finding,
     Freshness,
     MatchLevel,
+    MatchRelation,
     Outcome,
     VerificationMethod,
 )
@@ -24,9 +25,9 @@ from credentialing.infrastructure.repositories.jsonb import mapping_jsonb, model
 
 _COLUMNS: Final = sql.SQL(
     "id, organization_id, provider_id, credential_type, source_id, outcome, finding,"
-    " match_level, match_evidence, match_explanation, matched_record_ids, summary, details,"
-    " source_url, method, verified_at, source_updated_at, snapshot_id, raw_record_ref,"
-    " freshness, created_at"
+    " match_level, match_evidence, match_explanation, match_relation, matched_record_ids,"
+    " summary, details, source_url, method, verified_at, source_updated_at, snapshot_id,"
+    " raw_record_ref, freshness, created_at"
 )
 _SELECT: Final = sql.SQL("select {} from verifications").format(_COLUMNS)
 
@@ -46,6 +47,8 @@ class _VerificationRow(BaseModel):
     match_level: MatchLevel | None
     match_evidence: tuple[MatchEvidence, ...] | None
     match_explanation: str | None
+    match_relation: MatchRelation | None
+    """Null on rows stored before the relation existed; those were matched as the party."""
     matched_record_ids: tuple[UUID, ...]
     summary: str
     details: dict[str, str]
@@ -64,6 +67,7 @@ class _VerificationRow(BaseModel):
                 level=self.match_level,
                 evidence=self.match_evidence or (),
                 explanation=self.match_explanation or "",
+                relation=self.match_relation or MatchRelation.PARTY,
             )
             if self.match_level is not None
             else None
@@ -109,9 +113,9 @@ class PostgresVerificationRepository:
                 t"""
                 insert into verifications (
                     id, organization_id, provider_id, credential_type, source_id, outcome,
-                    finding, match_level, match_evidence, match_explanation, matched_record_ids,
-                    summary, details, source_url, method, verified_at, source_updated_at,
-                    snapshot_id, raw_record_ref, freshness, created_at
+                    finding, match_level, match_evidence, match_explanation, match_relation,
+                    matched_record_ids, summary, details, source_url, method, verified_at,
+                    source_updated_at, snapshot_id, raw_record_ref, freshness, created_at
                 ) values (
                     {result.id}, {result.organization_id}, {result.provider_id},
                     {result.credential_type.value}, {result.source_id}, {result.outcome.value},
@@ -119,6 +123,7 @@ class PostgresVerificationRepository:
                     {match.level.value if match else None},
                     {models_jsonb(match.evidence) if match else None},
                     {match.explanation if match else None},
+                    {match.relation.value if match else None},
                     {list(result.matched_record_ids)}::uuid[], {result.summary},
                     {mapping_jsonb(result.details)}, {provenance.source_url},
                     {provenance.method.value}, {provenance.verified_at},

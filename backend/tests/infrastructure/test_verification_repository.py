@@ -12,6 +12,7 @@ from credentialing.domain.enums import (
     Freshness,
     MatchField,
     MatchLevel,
+    MatchRelation,
     Outcome,
     VerificationMethod,
 )
@@ -234,3 +235,45 @@ async def test_latest_per_source_keeps_the_newest_result_of_each_source(
         )
         == []
     )
+
+
+async def test_the_match_relation_round_trips_and_a_missing_one_is_the_party(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresVerificationRepository(database)
+    organization_id, provider_id = await _provider(database, db_connection)
+    stored = _result(organization_id, provider_id)
+    assert stored.match is not None
+    related = stored.model_copy(
+        update={
+            "finding": Finding.RELATED_PARTY,
+            "match": stored.match.model_copy(update={"relation": MatchRelation.RELATED_PARTY}),
+        }
+    )
+    await repository.add(related)
+    # A row stored before the relation existed has none: copy the row without it.
+    await db_connection.execute(
+        t"""
+        insert into verifications (
+            id, organization_id, provider_id, credential_type, source_id, outcome, finding,
+            match_level, match_evidence, match_explanation, summary, source_url, method,
+            verified_at, freshness, created_at
+        )
+        select {uuid4()}, organization_id, provider_id, credential_type, 'test_older', outcome,
+               'record_found', match_level, match_evidence, match_explanation, summary,
+               source_url, method, verified_at, freshness, created_at
+        from verifications where id = {related.id}
+        """
+    )
+
+    by_source = {
+        r.source_id: r
+        for r in await repository.latest_per_source(
+            organization_id, provider_id, CredentialType.EXCLUSION
+        )
+    }
+
+    assert by_source[SOURCE] == related
+    read_older = by_source["test_older"].match
+    assert read_older is not None
+    assert read_older.relation is MatchRelation.PARTY

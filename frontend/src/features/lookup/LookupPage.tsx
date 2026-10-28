@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import { Button } from '../../components/Button.tsx'
 import { CopyValue } from '../../components/CopyValue.tsx'
 import { SEARCH_INPUT } from '../../components/Field.tsx'
@@ -28,6 +29,8 @@ import { displayName, type ProviderDraft } from '../../lib/provider.ts'
 import { LOOKUP_LIMIT, useExclusionLookup } from '../../lib/queries.ts'
 import { useRecedingHero } from '../../lib/scroll.ts'
 import { AddProviderSheet } from '../providers/AddProviderSheet.tsx'
+import { CARD, CARD_LINK } from './cards.ts'
+import { useLookupState } from './lookupState.ts'
 
 const SEARCH_DELAY_MS = 300
 
@@ -44,10 +47,6 @@ const LIST = 'flex flex-col gap-3'
 const COLUMNS =
   'flex flex-col gap-4 p-5 lg:grid lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-center lg:gap-8 lg:px-7 lg:py-6'
 
-/** A card on --shadow-card that lifts a pixel on hover. */
-const CARD =
-  'rounded-item bg-surface shadow-card transition-[box-shadow,translate] duration-180 ease-out-soft hover:shadow-card-hover motion-safe:hover:-translate-y-px'
-
 type View =
   | { kind: 'idle' }
   | { kind: 'loading' }
@@ -55,10 +54,13 @@ type View =
   | { kind: 'results'; data: Lookup; refreshing: boolean }
   | { kind: 'empty'; data: Lookup; refreshing: boolean }
 
-/** Search every exclusion list directly, and turn a hit into a tracked provider. */
+/**
+ * Search every exclusion list directly, open a hit to see what the lists hold around it, or
+ * turn it into a tracked provider. The search is kept above the routes, so it is still there
+ * when the reader comes back from a record.
+ */
 export function LookupPage() {
-  const [draft, setDraft] = useState('')
-  const [q, setQ] = useState('')
+  const { draft, q, setDraft, setQ } = useLookupState()
   const [prefill, setPrefill] = useState<ProviderDraft | null>(null)
   const [focused, setFocused] = useState(false)
   const input = useRef<HTMLInputElement>(null)
@@ -72,7 +74,7 @@ export function LookupPage() {
     if (term === q) return
     const timer = setTimeout(() => setQ(term), SEARCH_DELAY_MS)
     return () => clearTimeout(timer)
-  }, [draft, q])
+  }, [draft, q, setQ])
 
   const view: View = !searchable
     ? { kind: 'idle' }
@@ -289,9 +291,9 @@ function ListsLine({
 }
 
 /**
- * One listed record as a card. Desktop reads across, in columns that line up between cards:
- * who (source, name, place), what (the action on its tinted mark, then its dates), which (NPI,
- * provider type, licence), then the one action. Phone stacks it.
+ * One listed record as a card that opens the record. Desktop reads across, in columns that
+ * line up between cards: who (source, name, place), what (the action on its tinted mark, then
+ * its dates), which (NPI, provider type, licence), then the one action. Phone stacks it.
  */
 function LookupRow({
   record,
@@ -309,6 +311,9 @@ function LookupRow({
   if (record.aliases.length > 0) {
     extras.push({ key: 'aliases', node: `Also known as ${record.aliases.join('; ')}` })
   }
+  if (record.related_parties.length > 0) {
+    extras.push({ key: 'related', node: `Named with ${record.related_parties.join('; ')}` })
+  }
 
   return (
     <motion.li variants={rise} className={CARD}>
@@ -318,7 +323,9 @@ function LookupRow({
             {sourceName}
           </p>
           <h3 className="mt-1.5 text-[17px] leading-snug font-semibold break-words text-ink">
-            {displayName(record)}
+            <Link to={`/lookup/${record.id}`} className={CARD_LINK}>
+              {displayName(record)}
+            </Link>
           </h3>
           {extras.length > 0 && (
             <p className="mt-0.5 text-small break-words text-ink-muted">
@@ -354,7 +361,7 @@ function LookupRow({
           <span className="inline-flex items-center gap-1">
             NPI
             {record.npi ? (
-              <CopyValue value={record.npi} label="NPI" className="-my-1.5" />
+              <CopyValue value={record.npi} label="NPI" className="relative z-10 -my-1.5" />
             ) : (
               <span>not published</span>
             )}
@@ -369,7 +376,7 @@ function LookupRow({
             </span>
           )}
         </div>
-        <div>
+        <div className="relative z-10 self-start lg:self-auto">
           <Button variant="primary" icon="plus" spinIconOnHover onClick={onCheck}>
             Check as provider
           </Button>

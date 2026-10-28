@@ -174,6 +174,30 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/exclusions/records/{record_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Exclusion Record Profile
+     * @description One exclusion record and what the stored lists hold around it.
+     *
+     *     Its versions in its list (what it said and since when), other records of the same party
+     *     (same NPI or licence), records tied through the row's other NPIs, and records that only
+     *     share the name. 404 when no record has this id.
+     */
+    get: operations['exclusion_record_profile_exclusions_records__record_id__get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -236,9 +260,13 @@ export interface components {
     /**
      * Finding
      * @description What a completed check found.
+     *
+     *     ``RELATED_PARTY`` is a record of another party that names the provider with confirming
+     *     identity (an owner or worker of a listed business, the business of a listed person): the
+     *     provider is flagged, not listed.
      * @enum {string}
      */
-    Finding: 'no_record' | 'record_found' | 'ambiguous'
+    Finding: 'no_record' | 'record_found' | 'related_party' | 'ambiguous'
     /**
      * Freshness
      * @description How current a result is; always shown together with its timestamp.
@@ -275,6 +303,52 @@ export interface components {
       kind?: string | null
     }
     /**
+     * LinkedRecordResponse
+     * @description Another record tied to the profiled one; ``via_npi`` is the NPI that ties them.
+     */
+    LinkedRecordResponse: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string
+      /** Source Id */
+      source_id: string
+      entity_kind: components['schemas']['EntityKind']
+      person_name: components['schemas']['PersonNameResponse'] | null
+      /** Organization Name */
+      organization_name: string | null
+      /** Aliases */
+      aliases: string[]
+      /** Related Parties */
+      related_parties: string[]
+      /** Npi */
+      npi: string | null
+      /** Related Npis */
+      related_npis: string[]
+      action: components['schemas']['ExclusionAction']
+      /** Action Raw */
+      action_raw: string | null
+      /** Effective Date */
+      effective_date: string | null
+      /** End Date */
+      end_date: string | null
+      license: components['schemas']['RecordLicenseResponse'] | null
+      place: components['schemas']['RecordPlaceResponse'] | null
+      /** Raw Provider Type */
+      raw_provider_type: string | null
+      /** Source Name */
+      source_name: string
+      /** State Provider Id */
+      state_provider_id: string | null
+      /** Reason */
+      reason: string | null
+      status: components['schemas']['RecordStatus']
+      link: components['schemas']['RecordLink']
+      /** Via Npi */
+      via_npi: string | null
+    }
+    /**
      * LookupRecordResponse
      * @description An exclusion record a lookup found. The date of birth and street address are left out.
      */
@@ -292,8 +366,12 @@ export interface components {
       organization_name: string | null
       /** Aliases */
       aliases: string[]
+      /** Related Parties */
+      related_parties: string[]
       /** Npi */
       npi: string | null
+      /** Related Npis */
+      related_npis: string[]
       action: components['schemas']['ExclusionAction']
       /** Action Raw */
       action_raw: string | null
@@ -350,8 +428,18 @@ export interface components {
      */
     MatchLevel: 'exact' | 'high' | 'potential' | 'ambiguous' | 'none'
     /**
+     * MatchRelation
+     * @description Which role on a record the provider was matched as; the confidence is the match level.
+     *
+     *     ``PARTY`` is the listed party itself. ``RELATED_PARTY`` is another party the row names: an
+     *     owner, a worker or an affiliated business of the listed party.
+     * @enum {string}
+     */
+    MatchRelation: 'party' | 'related_party'
+    /**
      * MatchResponse
-     * @description The match level, its evidence and a readable explanation.
+     * @description The match level, its evidence, a readable explanation and the role the provider was
+     *     matched as (the listed party or a related party on the row).
      */
     MatchResponse: {
       level: components['schemas']['MatchLevel']
@@ -359,10 +447,14 @@ export interface components {
       evidence: components['schemas']['MatchEvidenceResponse'][]
       /** Explanation */
       explanation: string
+      relation: components['schemas']['MatchRelation']
     }
     /**
      * MatchedRecordResponse
      * @description An exclusion record a result points at. DOB and address are left out on purpose.
+     *
+     *     ``aliases`` are other names of the same party; ``related_parties`` name other parties on
+     *     the same row and ``related_npis`` the row's other NPIs, whose owner the row does not say.
      */
     MatchedRecordResponse: {
       /**
@@ -378,8 +470,12 @@ export interface components {
       organization_name: string | null
       /** Aliases */
       aliases: string[]
+      /** Related Parties */
+      related_parties: string[]
       /** Npi */
       npi: string | null
+      /** Related Npis */
+      related_npis: string[]
       action: components['schemas']['ExclusionAction']
       /** Action Raw */
       action_raw: string | null
@@ -424,6 +520,49 @@ export interface components {
       middle: string | null
       /** Suffix */
       suffix: string | null
+    }
+    /**
+     * ProfileRecordResponse
+     * @description A record on a profile, with its list's name, identifiers and whether it still stands.
+     */
+    ProfileRecordResponse: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string
+      /** Source Id */
+      source_id: string
+      entity_kind: components['schemas']['EntityKind']
+      person_name: components['schemas']['PersonNameResponse'] | null
+      /** Organization Name */
+      organization_name: string | null
+      /** Aliases */
+      aliases: string[]
+      /** Related Parties */
+      related_parties: string[]
+      /** Npi */
+      npi: string | null
+      /** Related Npis */
+      related_npis: string[]
+      action: components['schemas']['ExclusionAction']
+      /** Action Raw */
+      action_raw: string | null
+      /** Effective Date */
+      effective_date: string | null
+      /** End Date */
+      end_date: string | null
+      license: components['schemas']['RecordLicenseResponse'] | null
+      place: components['schemas']['RecordPlaceResponse'] | null
+      /** Raw Provider Type */
+      raw_provider_type: string | null
+      /** Source Name */
+      source_name: string
+      /** State Provider Id */
+      state_provider_id: string | null
+      /** Reason */
+      reason: string | null
+      status: components['schemas']['RecordStatus']
     }
     /**
      * ProvenanceResponse
@@ -524,6 +663,18 @@ export interface components {
       kind: string | null
     }
     /**
+     * RecordLink
+     * @description How another exclusion record is tied to the one being viewed.
+     *
+     *     ``BY_NPI`` is the same party (same NPI); ``BY_LICENSE`` very likely is (same licence
+     *     number and state); ``SAME_NAME`` only shares the name, so a person decides. ``LISTED_AS``
+     *     is a record whose own NPI is one of this record's related NPIs, and ``NAMED_ALONGSIDE`` a
+     *     record that names one of this record's NPIs (its own or a related one) among its related
+     *     NPIs.
+     * @enum {string}
+     */
+    RecordLink: 'by_npi' | 'by_license' | 'same_name' | 'listed_as' | 'named_alongside'
+    /**
      * RecordPlaceResponse
      * @description Where an exclusion record places the provider: city and state only, never the street.
      */
@@ -532,6 +683,78 @@ export interface components {
       city: string | null
       /** State */
       state: string | null
+    }
+    /**
+     * RecordProfileResponse
+     * @description Body of ``GET /exclusions/records/{id}``: one record and what the lists hold around it.
+     *
+     *     ``versions`` run oldest first. ``same_party`` lists records by NPI, then by licence;
+     *     ``related`` the records tied through the row's other NPIs; ``same_name`` records that
+     *     only share the name, for a person to weigh. Dates of birth, street addresses and raw rows
+     *     are never included.
+     */
+    RecordProfileResponse: {
+      record: components['schemas']['ProfileRecordResponse']
+      source: components['schemas']['RecordSourceResponse']
+      /**
+       * First Seen
+       * Format: date-time
+       */
+      first_seen: string
+      /** Versions */
+      versions: components['schemas']['RecordVersionResponse'][]
+      /** Same Party */
+      same_party: components['schemas']['LinkedRecordResponse'][]
+      /** Related */
+      related: components['schemas']['LinkedRecordResponse'][]
+      /** Same Name */
+      same_name: components['schemas']['LinkedRecordResponse'][]
+    }
+    /**
+     * RecordSourceResponse
+     * @description The list a record comes from; ``source_url`` is null for a list no longer registered.
+     *
+     *     ``freshness`` is how current the stored copy is by the central policy, shown with
+     *     ``fetched_at``; null when the list was never loaded or is no longer registered.
+     */
+    RecordSourceResponse: {
+      /** Source Id */
+      source_id: string
+      /** Display Name */
+      display_name: string
+      /** List Last Updated */
+      list_last_updated: string | null
+      /** Fetched At */
+      fetched_at: string | null
+      /** Source Url */
+      source_url: string | null
+      freshness: components['schemas']['Freshness'] | null
+    }
+    /**
+     * RecordStatus
+     * @description Whether a matched exclusion record still stands or has ended (end date passed).
+     * @enum {string}
+     */
+    RecordStatus: 'active' | 'ended'
+    /**
+     * RecordVersionResponse
+     * @description One version of a row in its list; ``valid_to`` is null while it is current.
+     */
+    RecordVersionResponse: {
+      /**
+       * Valid From
+       * Format: date-time
+       */
+      valid_from: string
+      /** Valid To */
+      valid_to: string | null
+      action: components['schemas']['ExclusionAction']
+      /** Action Raw */
+      action_raw: string | null
+      /** End Date */
+      end_date: string | null
+      /** Reason */
+      reason: string | null
     }
     /**
      * SearchedSourceResponse
@@ -644,16 +867,20 @@ export interface components {
      * Verdict
      * @description A provider's answer across sources, most serious first.
      *
-     *     ``COULD_NOT_CHECK`` is never clean: at least one source did not answer.
+     *     ``FLAGGED`` is a confirmed tie to a listed party (the provider is named on another party's
+     *     record); ``NEEDS_REVIEW`` an unresolved possible listing. ``COULD_NOT_CHECK`` is never
+     *     clean: at least one source did not answer.
      * @enum {string}
      */
-    Verdict: 'listed' | 'needs_review' | 'could_not_check' | 'no_records' | 'not_checked'
+    Verdict:
+      'listed' | 'flagged' | 'needs_review' | 'could_not_check' | 'no_records' | 'not_checked'
     /**
      * VerdictResponse
      * @description A provider's verdict as the backend decided it, with the latest result of each source.
      *
-     *     ``listed_in``, ``review_in`` and ``unchecked`` name sources by id; ``results`` are ordered
-     *     by source id. The UI shows these as given and derives no status of its own.
+     *     ``listed_in``, ``flagged_in`` (named as a related party of a listed party), ``review_in``
+     *     and ``unchecked`` name sources by id; ``results`` are ordered by source id. The UI
+     *     shows these as given and derives no status of its own.
      */
     VerdictResponse: {
       verdict: components['schemas']['Verdict']
@@ -661,6 +888,8 @@ export interface components {
       sources_checked: number
       /** Listed In */
       listed_in: string[]
+      /** Flagged In */
+      flagged_in: string[]
       /** Review In */
       review_in: string[]
       /** Unchecked */
@@ -998,6 +1227,39 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['LookupResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  exclusion_record_profile_exclusions_records__record_id__get: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        record_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RecordProfileResponse']
         }
       }
       /** @description Validation Error */

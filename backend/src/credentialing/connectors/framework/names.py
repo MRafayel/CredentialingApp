@@ -39,6 +39,12 @@ The heuristics here are deterministic and documented so a wrong split can be exp
    before it ("MARIA DE LA CRUZ" has last name "DE LA CRUZ"), the first word is the first
    name and the words between are the middle name. A cell with a comma is still read as
    "LAST, FIRST".
+6. One name per line (:func:`parse_name_lines`, Washington): the first line alone is the
+   party. A further line that starts with an alias marker ("dba: Sample Labs") is an alias.
+   Any other line is parsed on its own: when it names the same kind of party (a second
+   business name of a business) it is an alias, and when it names the other kind (the owner
+   on a business's row, the business on a person's row) it is a related party, kept as
+   written. Aliases are other names of the same party; related parties are other parties.
 
 Known limit: a two-word surname without a particle ("GARCIA LOPEZ MARIA") is read as last
 name "GARCIA", first name "LOPEZ" (first name first: "MARIA GARCIA LOPEZ" has last name
@@ -46,6 +52,7 @@ name "GARCIA", first name "LOPEZ" (first name first: "MARIA GARCIA LOPEZ" has la
 """
 
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -112,11 +119,13 @@ SURNAME_PARTICLES: Final = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class ParsedName:
-    """A name cell split into a person, an organization (at most one of them) and aliases."""
+    """A name cell split into a person, an organization (at most one of them), aliases (other
+    names of the same party) and related parties (other parties named in the cell)."""
 
     person: PersonName | None
     organization: str | None
     aliases: tuple[str, ...]
+    related_parties: tuple[str, ...] = ()
 
     @property
     def entity_kind(self) -> EntityKind:
@@ -150,6 +159,36 @@ def parse_name_field(
         return ParsedName(person=None, organization=primary, aliases=aliases)
     person = _split_person(primary, first_name_first=first_name_first)
     return ParsedName(person=person, organization=None, aliases=aliases)
+
+
+def parse_name_lines(
+    lines: Sequence[str], *, organization_hint: Callable[[str], bool] = lambda _line: False
+) -> ParsedName:
+    """Split a cell with one name per line into the party, its aliases and related parties.
+
+    Rule 6 of the module. ``organization_hint`` is asked about each line on its own, as
+    :func:`parse_name_field`'s hint.
+    """
+    texts = [text for text in (collapse(line) for line in lines) if text]
+    if not texts:
+        return ParsedName(person=None, organization=None, aliases=())
+    first, *others = texts
+    party = parse_name_field(first, organization_hint=organization_hint(first))
+    aliases = list(party.aliases)
+    related: list[str] = []
+    for line in others:
+        if not _LEADING_ALIAS_MARKER.match(line):
+            other = parse_name_field(line, organization_hint=organization_hint(line))
+            if other.entity_kind not in (party.entity_kind, EntityKind.UNKNOWN):
+                related.append(_trim(line))
+                continue
+        aliases.extend(part for part in (_trim(p) for p in _ALIAS_MARKER.split(line)) if part)
+    return ParsedName(
+        person=party.person,
+        organization=party.organization,
+        aliases=tuple(aliases),
+        related_parties=tuple(related),
+    )
 
 
 def split_single_name_field(text: str | None) -> tuple[PersonName | None, tuple[str, ...]]:

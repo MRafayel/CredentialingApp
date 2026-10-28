@@ -5,6 +5,7 @@ export { OrganizationMark, PersonMark } from './ProviderMarks.tsx'
 export {
   VerdictBlocked,
   VerdictClear,
+  VerdictFlagged,
   VerdictListed,
   VerdictReview,
   VerdictUnchecked,

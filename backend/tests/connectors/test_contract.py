@@ -98,6 +98,8 @@ async def test_the_fixture_parses_into_records_of_this_snapshot(source_id: str) 
         assert record.snapshot_id == result.snapshot.id
         assert record.raw
         assert set(provider_type_fields) <= set(record.raw)
+        assert record.npi not in record.related_npis
+        assert len(set(record.related_npis)) == len(record.related_npis)
 
 
 @pytest.mark.parametrize("source_id", _SOURCE_IDS)

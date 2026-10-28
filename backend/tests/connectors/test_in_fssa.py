@@ -54,7 +54,7 @@ def test_a_credential_after_the_comma_two_npis_and_several_locations(
         last="Exampledoc", first="Jordan", middle="L.", suffix="MD"
     )
     assert record.npi == builders.NPI_A
-    assert builders.NPI_B in record.raw["National Provider Identification (NPI)"]
+    assert record.related_npis == (builders.NPI_B,)
     assert record.address == Address(city="Sampleville", state="IN")
 
 

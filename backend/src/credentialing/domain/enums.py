@@ -27,20 +27,29 @@ class Outcome(StrEnum):
 
 
 class Finding(StrEnum):
-    """What a completed check found."""
+    """What a completed check found.
+
+    ``RELATED_PARTY`` is a record of another party that names the provider with confirming
+    identity (an owner or worker of a listed business, the business of a listed person): the
+    provider is flagged, not listed.
+    """
 
     NO_RECORD = "no_record"
     RECORD_FOUND = "record_found"
+    RELATED_PARTY = "related_party"
     AMBIGUOUS = "ambiguous"
 
 
 class Verdict(StrEnum):
     """A provider's answer across sources, most serious first.
 
-    ``COULD_NOT_CHECK`` is never clean: at least one source did not answer.
+    ``FLAGGED`` is a confirmed tie to a listed party (the provider is named on another party's
+    record); ``NEEDS_REVIEW`` an unresolved possible listing. ``COULD_NOT_CHECK`` is never
+    clean: at least one source did not answer.
     """
 
     LISTED = "listed"
+    FLAGGED = "flagged"
     NEEDS_REVIEW = "needs_review"
     COULD_NOT_CHECK = "could_not_check"
     NO_RECORDS = "no_records"
@@ -55,6 +64,17 @@ class MatchLevel(StrEnum):
     POTENTIAL = "potential"
     AMBIGUOUS = "ambiguous"
     NONE = "none"
+
+
+class MatchRelation(StrEnum):
+    """Which role on a record the provider was matched as; the confidence is the match level.
+
+    ``PARTY`` is the listed party itself. ``RELATED_PARTY`` is another party the row names: an
+    owner, a worker or an affiliated business of the listed party.
+    """
+
+    PARTY = "party"
+    RELATED_PARTY = "related_party"
 
 
 class MatchField(StrEnum):
@@ -135,3 +155,20 @@ class RecordStatus(StrEnum):
 
     ACTIVE = "active"
     ENDED = "ended"
+
+
+class RecordLink(StrEnum):
+    """How another exclusion record is tied to the one being viewed.
+
+    ``BY_NPI`` is the same party (same NPI); ``BY_LICENSE`` very likely is (same licence
+    number and state); ``SAME_NAME`` only shares the name, so a person decides. ``LISTED_AS``
+    is a record whose own NPI is one of this record's related NPIs, and ``NAMED_ALONGSIDE`` a
+    record that names one of this record's NPIs (its own or a related one) among its related
+    NPIs.
+    """
+
+    BY_NPI = "by_npi"
+    BY_LICENSE = "by_license"
+    SAME_NAME = "same_name"
+    LISTED_AS = "listed_as"
+    NAMED_ALONGSIDE = "named_alongside"

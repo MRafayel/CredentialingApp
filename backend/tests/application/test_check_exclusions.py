@@ -13,6 +13,7 @@ from credentialing.domain.enums import (
     Finding,
     Freshness,
     MatchLevel,
+    MatchRelation,
     Outcome,
     Verdict,
     VerificationMethod,
@@ -393,3 +394,82 @@ async def test_a_check_without_a_matched_record_has_no_record_status() -> None:
     results = await world.check()
 
     assert "record_status" not in results[STATE].details
+
+
+BUSINESS_NPI = make_npi("100000003")
+
+
+def _business_naming_the_provider(**changes: object) -> ExclusionRecord:
+    """A business row that names the provider as its owner and publishes their NPI."""
+    fields: dict[str, object] = {
+        "source_id": STATE,
+        "entity_kind": EntityKind.ORGANIZATION,
+        "last": None,
+        "organization_name": "Sample Dentures NW",
+        "related_parties": ("Testperson, Avery",),
+        "npi": BUSINESS_NPI,
+        "related_npis": (NPI,),
+        "effective_date": date(2021, 4, 1),
+        **changes,
+    }
+    return exclusion(**fields)  # type: ignore[arg-type]  # fields of mixed types
+
+
+async def test_a_provider_named_as_a_related_party_is_flagged_not_listed() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    business = _business_naming_the_provider()
+    await world.load(FEDERAL)
+    await world.load(STATE, business)
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.finding is Finding.RELATED_PARTY
+    assert result.match is not None
+    assert result.match.level is MatchLevel.HIGH
+    assert result.match.relation is MatchRelation.RELATED_PARTY
+    assert result.matched_record_ids == (business.id,)
+    assert result.summary == (
+        "Flagged in Fake New York List: named with a listed party, exclusion effective 2021-04-01"
+    )
+    assert verdict.verdict is Verdict.FLAGGED
+    assert verdict.flagged_in == (STATE,)
+    assert verdict.listed_in == verdict.review_in == ()
+
+
+async def test_an_ended_related_party_record_is_previously_flagged() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    await world.load(FEDERAL)
+    await world.load(STATE, _business_naming_the_provider(end_date=date(2024, 1, 1)))
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.finding is Finding.RELATED_PARTY
+    assert result.summary == (
+        "Previously flagged in Fake New York List: named with a listed party, exclusion "
+        "effective 2021-04-01 \u2013 ended 2024-01-01"
+    )
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    assert verdict.flagged_in == ()
+    assert verdict.review_in == (STATE,)
+
+
+async def test_a_party_match_outranks_a_related_party_match_at_the_same_level() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    related = _business_naming_the_provider().model_copy(update={"id": UUID(int=1)})
+    party = exclusion(source_id=STATE, license=License(number="123456", state="NY")).model_copy(
+        update={"id": UUID(int=2)}
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE, related, party)
+
+    result = (await world.check())[STATE]
+
+    assert result.finding is Finding.RECORD_FOUND
+    assert result.match is not None
+    assert result.match.level is MatchLevel.HIGH
+    assert result.match.relation is MatchRelation.PARTY
+    assert result.matched_record_ids == (party.id, related.id)
+    assert result.summary.startswith("Listed in Fake New York List: ")
+    assert result.summary.endswith("(2 matching records)")
