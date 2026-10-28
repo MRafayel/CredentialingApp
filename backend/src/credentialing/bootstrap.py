@@ -23,9 +23,17 @@ from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
 from credentialing.application.verification_history import VerificationHistory
 from credentialing.connectors.framework.http import Fetcher, HttpFetcher
+from credentialing.connectors.ia_medicaid import IaMedicaidConnector
+from credentialing.connectors.in_fssa import InFssaConnector
+from credentialing.connectors.md_medicaid import MdMedicaidConnector
+from credentialing.connectors.nc_medicaid import NcMedicaidConnector
+from credentialing.connectors.nd_medicaid import NdMedicaidConnector
 from credentialing.connectors.ny_omig import NyOmigConnector
 from credentialing.connectors.oig_leie import OigLeieConnector
+from credentialing.connectors.pa_medicheck import PaMedicheckConnector
 from credentialing.connectors.registry import ConnectorRegistry
+from credentialing.connectors.vt_medicaid import VtMedicaidConnector
+from credentialing.connectors.wa_hca import WaHcaConnector
 from credentialing.domain.policies import DEFAULT_FRESHNESS
 from credentialing.domain.ports import Clock
 from credentialing.infrastructure.clock import SystemClock
@@ -41,7 +49,11 @@ from credentialing.infrastructure.repositories.verifications import (
     PostgresVerificationRepository,
 )
 
-_ACCEPT: Final = "text/csv, text/tab-separated-values, text/plain;q=0.9, */*;q=0.1"
+_ACCEPT: Final = (
+    "text/csv, text/tab-separated-values, "
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/plain;q=0.9, "
+    "*/*;q=0.1"
+)
 _ACCEPT_LANGUAGE: Final = "en-US,en;q=0.9"
 
 
@@ -83,6 +95,14 @@ def build_registry(fetcher: Fetcher) -> ConnectorRegistry:
     registry = ConnectorRegistry()
     registry.register(OigLeieConnector(fetcher))
     registry.register(NyOmigConnector(fetcher))
+    registry.register(NcMedicaidConnector(fetcher))
+    registry.register(MdMedicaidConnector(fetcher))
+    registry.register(VtMedicaidConnector(fetcher))
+    registry.register(NdMedicaidConnector(fetcher))
+    registry.register(WaHcaConnector(fetcher))
+    registry.register(IaMedicaidConnector(fetcher))
+    registry.register(InFssaConnector(fetcher))
+    registry.register(PaMedicheckConnector(fetcher))
     return registry
 
 

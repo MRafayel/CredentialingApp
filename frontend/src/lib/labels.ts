@@ -51,14 +51,22 @@ const OUTCOME_WORDS: Record<Exclude<Outcome, 'completed'>, string> = {
   failed: 'Failed',
 }
 
-/** One source's result as a pill: the finding when it ran, the outcome when it could not. */
-export function resultLabel(result: Pick<Verification, 'outcome' | 'finding'>): Label {
+/**
+ * One source's result as a pill: the finding when it ran, the outcome when it could not. A
+ * found record the backend marks as ended (`details.record_status`) reads "Previously listed"
+ * in the review tone, as the backend's verdict counts it.
+ */
+export function resultLabel(
+  result: Pick<Verification, 'outcome' | 'finding'> & Partial<Pick<Verification, 'details'>>,
+): Label {
   if (result.outcome !== 'completed') {
     return { tone: 'blocked', word: OUTCOME_WORDS[result.outcome] }
   }
   switch (result.finding) {
     case 'record_found':
-      return { tone: 'listed', word: 'Record found' }
+      return result.details?.record_status === 'ended'
+        ? { tone: 'review', word: 'Previously listed' }
+        : { tone: 'listed', word: 'Record found' }
     case 'ambiguous':
       return { tone: 'review', word: 'Needs review' }
     case 'no_record':

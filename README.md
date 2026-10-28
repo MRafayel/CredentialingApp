@@ -25,6 +25,14 @@ make sync SOURCE=oig_leie         # download the federal exclusion list (SOURCE=
 make sources                      # every source's links, last fetch, data age and next fetch (ARGS=--json)
 ```
 
+To keep the lists current, run `make sync-due` on a schedule. It fetches only the sources whose
+poll interval has elapsed since their last completed fetch (a failed source is retried on every
+run), so a daily cron entry is enough:
+
+```sh
+0 6 * * * cd /path/to/CredentialingApp && make sync-due
+```
+
 Until authentication is in place, local API calls name their organization in a header. The
 seeded development organization is `00000000-0000-0000-0000-000000000001`:
 

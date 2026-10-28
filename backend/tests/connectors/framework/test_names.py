@@ -146,3 +146,91 @@ def test_a_professional_corporation_keeps_its_other_aliases() -> None:
 
     assert parsed.person == PersonName(last="SAMPLEPERSON", first="AVERY", suffix="MD PC")
     assert parsed.aliases == ("SAMPLEPERSON AVERY MD PC", "SAMPLE FAMILY CARE")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "JORDAN LEE EXAMPLEPERSON",
+            PersonName(last="EXAMPLEPERSON", first="JORDAN", middle="LEE"),
+        ),
+        ("QUINN DE LA MOCK", PersonName(last="DE LA MOCK", first="QUINN")),
+        (
+            "AVERY J TESTPERSON JR",
+            PersonName(last="TESTPERSON", first="AVERY", middle="J", suffix="JR"),
+        ),
+        ("Casey Mc Example", PersonName(last="Mc Example", first="Casey")),
+        ("TESTPERSON, AVERY", PersonName(last="TESTPERSON", first="AVERY")),
+    ],
+)
+def test_first_name_first(text: str, expected: PersonName) -> None:
+    assert parse_name_field(text, first_name_first=True).person == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "person", "aliases"),
+    [
+        (
+            "CASEY WREN SAMPLEWOMAN (MAIDENMOCK)",
+            PersonName(last="SAMPLEWOMAN", first="CASEY", middle="WREN"),
+            ("MAIDENMOCK",),
+        ),
+        (
+            "Exampleperson (aka Mockname), Jordan",
+            PersonName(last="Exampleperson", first="Jordan"),
+            ("Mockname, Jordan",),
+        ),
+        (
+            "Samplewoman (Mockone, Mocktwo), Casey",
+            PersonName(last="Samplewoman", first="Casey"),
+            ("Mockone, Casey", "Mocktwo, Casey"),
+        ),
+        ("Testperson, Melinda (Mindy)", PersonName(last="Testperson", first="Melinda"), ("Mindy",)),
+        ("Testperson, Avery (LPN)", PersonName(last="Testperson", first="Avery", suffix="LPN"), ()),
+        (
+            "AVERY TESTPERSON (DBA: SAMPLE HOME CARE)",
+            PersonName(last="TESTPERSON", first="AVERY"),
+            ("SAMPLE HOME CARE",),
+        ),
+    ],
+)
+def test_parenthesized_names_are_aliases(
+    text: str, person: PersonName, aliases: tuple[str, ...]
+) -> None:
+    parsed = parse_name_field(text, first_name_first="," not in text)
+
+    assert parsed.person == person
+    assert parsed.aliases == aliases
+
+
+def test_a_parenthesized_dba_of_a_business_is_its_alias() -> None:
+    parsed = parse_name_field("SAMPLE & COMPANY LLC (DBA: MOCK\nMEDICAL)")
+
+    assert parsed.organization == "SAMPLE & COMPANY LLC"
+    assert parsed.aliases == ("MOCK MEDICAL",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["SAMPLE OBSTETRICS AND GYNECOLOGY", "MOCK COUNTY MENTAL HEALTH", "CLASSIC HOMES BY MOCK BROS"],
+)
+def test_and_county_and_homes_are_business_words(text: str) -> None:
+    assert parse_name_field(text).organization == text
+
+
+@pytest.mark.parametrize(
+    ("text", "suffix"),
+    [
+        ("Testperson, Avery M ARNP", "ARNP"),
+        ("Example, Quinn PA-C", "PA-C"),
+        ("Exampleowner, Jordan L. DN", None),
+        ("EXAMPLE,JORDAN LCMHC", "LCMHC"),
+        ("Mockdoc, Riley K. MD/", "MD/"),
+    ],
+)
+def test_state_list_credentials_are_suffixes(text: str, suffix: str | None) -> None:
+    person = parse_name_field(text).person
+
+    assert person is not None
+    assert person.suffix == suffix

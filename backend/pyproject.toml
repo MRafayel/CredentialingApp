@@ -6,6 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.142.1",
     "httpx2>=2.13.1",
+    "openpyxl>=3.1.5",
     "psycopg[binary,pool]>=3.3.6",
     "pydantic-settings>=2.15.0",
     "uvicorn>=0.54.0",
@@ -63,6 +64,12 @@ files = ["src", "tests"]
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
 
+[[tool.mypy.overrides]]
+# openpyxl ships no type information; it is used only in connectors/framework/spreadsheet.py,
+# which turns every cell into a str, so Any does not leak past that module.
+module = "openpyxl.*"
+ignore_missing_imports = true
+
 # --- Pytest -------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -104,4 +111,5 @@ forbidden_modules = [
     "psycopg",
     "psycopg_pool",
     "supabase",
+    "openpyxl",
 ]

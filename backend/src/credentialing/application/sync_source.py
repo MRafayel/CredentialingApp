@@ -1,7 +1,7 @@
 """Use case: fetch one public source, store the snapshot and update its current records."""
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Final
 from uuid import uuid4
 
@@ -26,6 +26,10 @@ SHRINK_GUARD_RATIO: Final = 0.5
 
 SHRINK_GUARD_MIN_ROWS: Final = 100
 """Lists smaller than this are too small for the ratio to mean anything; no guard."""
+
+DUE_TOLERANCE: Final = timedelta(hours=1)
+"""How early a source counts as due, so a daily cron job is not skipped because yesterday's
+run finished a few seconds after today's started."""
 
 
 class SyncReport(BaseModel):
@@ -91,6 +95,24 @@ class SyncSource:
             await self._snapshots.add(self._storage_failed(snapshot))
             raise
         return SyncReport(snapshot=snapshot, diff=diff)
+
+    async def next_due(self, source_id: SourceId) -> datetime | None:
+        """When ``source_id`` is next due: its latest completed fetch plus its poll interval,
+        less :data:`DUE_TOLERANCE`. ``None`` when it never completed, so it is due now.
+
+        Only a completed fetch (new or unchanged) counts: after a failure the source stays due
+        on every run until a fetch completes.
+
+        Raises:
+            UnknownSourceError: No bulk-list connector is registered as ``source_id``.
+        """
+        connector = self._connectors.get(source_id)
+        if not isinstance(connector, BulkListConnector):
+            raise UnknownSourceError(source_id)
+        completed = await self._snapshots.latest_completed(source_id)
+        if completed is None:
+            return None
+        return completed.fetched_at + connector.capabilities.poll_interval - DUE_TOLERANCE
 
     async def _guard_shrink(
         self, snapshot: SourceSnapshot, records: tuple[ExclusionRecord, ...]

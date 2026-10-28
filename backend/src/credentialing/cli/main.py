@@ -1,7 +1,9 @@
 """Composition root of the command line: ``python -m credentialing.cli sync oig_leie``.
 
 ``sync`` fetches public sources, stores a snapshot per fetch and updates their records. It
-prints one line per source and exits with 1 when any source could not be read.
+prints one line per source and exits with 1 when any source could not be read. With ``--due``
+it skips the sources whose poll interval has not elapsed since their last completed fetch,
+which is what a cron job runs.
 
 ``sources`` shows every registered source: its links, its last fetch, how many records are
 current, how old the data is and when the next fetch is due. ``--json`` prints the same as
@@ -17,11 +19,13 @@ import json
 import sys
 import time
 from collections.abc import Sequence
+from datetime import datetime
 
 from credentialing.api.app import create_app
 from credentialing.application.errors import UnknownSourceError
 from credentialing.application.sync_source import SyncReport
 from credentialing.bootstrap import runtime
+from credentialing.cli.relative_time import until
 from credentialing.cli.sources import show
 from credentialing.domain.enums import Outcome
 from credentialing.infrastructure.config import Settings, get_settings
@@ -38,6 +42,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     which.add_argument("--all", action="store_true", help="every registered bulk-list source")
     sync.add_argument(
         "--force", action="store_true", help="download and parse even if the source is unchanged"
+    )
+    sync.add_argument(
+        "--due",
+        action="store_true",
+        help="skip sources whose poll interval has not elapsed since their last completed fetch",
     )
     sources = commands.add_parser(
         "sources", help="every source's links, last fetch, data age and next fetch"
@@ -60,7 +69,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(settings.log_level)
     if args.command == "sources":
         return asyncio.run(_sources(settings, as_json=args.as_json, strict=args.strict))
-    return asyncio.run(_sync(settings, args.source_id, every=args.all, force=args.force))
+    return asyncio.run(
+        _sync(settings, args.source_id, every=args.all, force=args.force, only_due=args.due)
+    )
 
 
 def openapi_json() -> str:
@@ -77,7 +88,9 @@ async def _sources(settings: Settings, *, as_json: bool, strict: bool) -> int:
     return show(statuses, now, out=sys.stdout, as_json=as_json, strict=strict, color=color)
 
 
-async def _sync(settings: Settings, source_id: str | None, *, every: bool, force: bool) -> int:
+async def _sync(
+    settings: Settings, source_id: str | None, *, every: bool, force: bool, only_due: bool
+) -> int:
     async with runtime(settings) as services:
         if every:
             source_ids = [c.capabilities.source_id for c in services.registry.bulk_connectors()]
@@ -87,6 +100,10 @@ async def _sync(settings: Settings, source_id: str | None, *, every: bool, force
         for current in source_ids:
             started = time.perf_counter()
             try:
+                due_at = await services.sync_source.next_due(current) if only_due else None
+                if due_at is not None and due_at > (now := services.clock.now()):
+                    sys.stdout.write(skipped_line(current, due_at, now) + "\n")
+                    continue
                 report = await services.sync_source.run(current, force=force)
             except UnknownSourceError as error:
                 sys.stderr.write(f"{error}\n")
@@ -94,6 +111,11 @@ async def _sync(settings: Settings, source_id: str | None, *, every: bool, force
             sys.stdout.write(_line(current, report, time.perf_counter() - started) + "\n")
             failed = failed or report.snapshot.outcome is not Outcome.COMPLETED
         return 1 if failed else 0
+
+
+def skipped_line(source_id: str, due_at: datetime, now: datetime) -> str:
+    """The line ``sync --due`` prints for a source that is not due yet."""
+    return f"{source_id} skipped: next due {until(due_at, now)}"
 
 
 def _line(source_id: str, report: SyncReport, seconds: float) -> str:

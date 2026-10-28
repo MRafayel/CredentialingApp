@@ -128,3 +128,10 @@ class ExclusionAction(StrEnum):
     SANCTION = "sanction"
     REINSTATEMENT = "reinstatement"
     OTHER = "other"
+
+
+class RecordStatus(StrEnum):
+    """Whether a matched exclusion record still stands or has ended (end date passed)."""
+
+    ACTIVE = "active"
+    ENDED = "ended"

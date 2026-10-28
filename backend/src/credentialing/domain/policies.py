@@ -6,7 +6,7 @@ is decided here once, so no screen ever derives a status of its own.
 """
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Final, Self
 
 from pydantic import Field, model_validator
@@ -14,11 +14,13 @@ from pydantic import Field, model_validator
 from credentialing.domain.enums import (
     CredentialType,
     EntityKind,
+    ExclusionAction,
     Finding,
     Freshness,
     MatchField,
     MatchLevel,
     Outcome,
+    RecordStatus,
     Verdict,
     VerificationMethod,
 )
@@ -359,16 +361,40 @@ def _explain(level: MatchLevel, evidence: tuple[MatchEvidence, ...], note: str |
     return f"{_LEVEL_LABELS[level]}: {', '.join(parts)}{ending}."
 
 
+# --- Record status -------------------------------------------------------------------------
+
+RECORD_STATUS_DETAIL: Final = "record_status"
+"""The result detail holding the :class:`RecordStatus` of the records a check matched."""
+
+
+def record_has_ended(record: ExclusionRecord, today: date) -> bool:
+    """Whether the record no longer stands: its end date is before ``today``, or it is itself a
+    reinstatement (Pennsylvania keeps one row per action, so a reinstatement is a row of its
+    own). An end date of today or later, or none, means the record stands."""
+    if record.action is ExclusionAction.REINSTATEMENT:
+        return True
+    return record.end_date is not None and record.end_date < today
+
+
+def record_status(records: Sequence[ExclusionRecord], today: date) -> RecordStatus:
+    """``ENDED`` only when every record has ended; one standing record makes it ``ACTIVE``."""
+    if records and all(record_has_ended(record, today) for record in records):
+        return RecordStatus.ENDED
+    return RecordStatus.ACTIVE
+
+
 # --- Verdict -------------------------------------------------------------------------------
 
 
 def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderVerdict:
     """Roll the latest result of each source up into the provider's verdict.
 
-    The most serious answer wins: a found record is LISTED; otherwise an ambiguous match is
-    NEEDS_REVIEW; otherwise a source that could not be checked is COULD_NOT_CHECK, never clean;
-    NO_RECORDS only when every source answered with none; NOT_CHECKED without results. Should
-    a source appear twice, its newest result counts.
+    The most serious answer wins: a found record that still stands is LISTED; otherwise an
+    ambiguous match, or a found record that has ended ("previously listed", see
+    :func:`record_status`), is NEEDS_REVIEW; otherwise a source that could not be checked is
+    COULD_NOT_CHECK, never clean; NO_RECORDS only when every source answered with none;
+    NOT_CHECKED without results. Should a source appear twice, its newest result counts.
+    A result without a record status (stored before it existed) counts as standing.
     """
     newest: dict[str, VerificationResult] = {}
     for result in latest_per_source:
@@ -377,8 +403,14 @@ def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderV
             newest[result.source_id] = result
     results = tuple(newest[source_id] for source_id in sorted(newest))
 
-    listed_in = tuple(r.source_id for r in results if r.finding is Finding.RECORD_FOUND)
-    review_in = tuple(r.source_id for r in results if r.finding is Finding.AMBIGUOUS)
+    listed_in = tuple(
+        r.source_id for r in results if r.finding is Finding.RECORD_FOUND and not _ended(r)
+    )
+    review_in = tuple(
+        r.source_id
+        for r in results
+        if r.finding is Finding.AMBIGUOUS or (r.finding is Finding.RECORD_FOUND and _ended(r))
+    )
     unchecked = tuple(r.source_id for r in results if r.outcome is not Outcome.COMPLETED)
     if listed_in:
         verdict = Verdict.LISTED
@@ -406,3 +438,7 @@ def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderV
         last_checked_at=max((r.created_at for r in results), default=None),
         results=results,
     )
+
+
+def _ended(result: VerificationResult) -> bool:
+    return result.details.get(RECORD_STATUS_DETAIL) == RecordStatus.ENDED.value

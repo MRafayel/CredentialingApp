@@ -6,8 +6,12 @@ opens the "blocked" pages from the same city without trouble, so most blocks tar
 of client (a script's TLS fingerprint, no JavaScript) rather than the location; a retry with
 honest identification and full standard headers changed nothing except Minnesota. Sites that
 dropped the connection at DNS/TCP level (no HTTP answer at all) may be network-level geo
-filters and still need a browser check. Implemented so far: New York (connector `ny_omig`)
-and the federal OIG list (section at the end). Sample files are not kept in the repository.
+filters and still need a browser check. Implemented so far: New York (connector `ny_omig`),
+the federal OIG list (section at the end) and, since 2026-10-27, North Carolina, Maryland,
+Vermont, North Dakota, Washington, Iowa, Indiana and Pennsylvania (connectors `nc_medicaid`,
+`md_medicaid`, `vt_medicaid`, `nd_medicaid`, `wa_hca`, `ia_medicaid`, `in_fssa`,
+`pa_medicheck`; first-sync figures under each state). Workbooks are read with openpyxl
+(approved 2026-10-27). Sample files are not kept in the repository.
 
 Nevada's OMIG publishes a directory of other states' lists at
 https://www.omig.nv.gov/provider-enrollment--termination/provider-exclusions-sanctions-and-press-releases/provider-exclusions-sanctions-and-press-releases/
@@ -214,6 +218,7 @@ User-Agent:
 - ETag (Apache, Dynatrace suffix: compare as opaque string) and Last-Modified; both conditional headers → 304. "Updated monthly"; file lags about one month.
 - Header on row 7: `EXCLUDED ENTITY | NPI/ATYPICAL ID (EXCLUDED) | EFFECTIVE DATE | REASON FOR EXCLUSION | CITY | STATE | ZIP CODE | OWNERSHIP`. Rows 1–6 are a preamble. `OWNERSHIP` names are not excluded parties.
 - Quality: 167 NPIs, 11 "N/A", 3 eight-digit atypical IDs; 8 text dates among serials; reason codes STATE / OIG / FEDERAL and combinations; non-breaking spaces.
+- Implemented (2026-10-27, `nc_medicaid`): 181 rows, 170 distinct records (an entity row is repeated once per owner), none skipped; 102 individuals, 68 organizations; NPI on 154, atypical ID on 3. People are "FIRST MIDDLE LAST" (last word is the last name, surname particles joined); maiden names appear in parentheses ("FIRST LAST (MAIDEN)") and become aliases; "(DBA: ...)" aliases; entity names without a business word ("... EAR NOSE AND THROAT", "... COUNTY MENTAL AND BEHAVIORAL") made "AND" and "COUNTY" business words. `OWNERSHIP` stays in the raw row only.
 
 ### Maryland (MDH)
 - Landing: https://health.maryland.gov/mmcp/provider/Pages/sanctioned_list.aspx (SharePoint behind Cloudflare)
@@ -221,6 +226,7 @@ User-Agent:
 - Header row 1: `LAST NAME/ORGANIZATION | FIRST NAME | TYPE OF ENTITY/PROFESSION | SANCTION TYPE | NPI | LICENSE NO | TERMINATION/SANCTION DATE | ADDRESS | CITY/STATE/ZIP`.
 - Quality: NPI on 280 rows (two cells hold two); licence on 456; entities have empty first name; inconsistent profession vocabulary; sanction codes HHS, LB, MDH, F, MFVVU, MFVVU-A, OIG, LC, LB/HHS with only LB explained; 7 rows lack a date.
 - Access: robots.txt disallows `/_vti_bin/`, `/_layouts/`, `/_catalogs/` (do not use SharePoint APIs).
+- Implemented (2026-10-27, `md_medicaid`): the data ends at the first blank row (row 1,617); below it the sheet itself carries the code legend and the list date ("10.08.2026"), which the first parse loaded as 7 bogus organizations until the reader stopped at the blank row. Legend, word for word: A = Abuse of adult/vulnerable individual; LB = Licensing Board discipline (Suspended, surrendered, revoked license); HHS = Sanctioned by U.S. Department of Health and Human Services, other state Medicaid program, or Medicare program; MDH = Other sanction by Maryland Department of Health Department; MFVVU = Medicaid Fraud And Vulnerable Victims Unit conviction; F = Other Medicaid fraud conviction. MFVVU-A, OIG and LC remain unexplained. The legend's meaning is stored as the record's reason. 1,615 rows, 1,606 distinct records, none skipped; 1,436 individuals, 170 organizations; NPI on 272 (4 cells hold ten digits that are no valid NPI), licence on 455. Codes: HHS 582, LB 420, MDH 270, F 216, MFVVU-A 69, MFVVU 46, blank 7. Some city cells lack the state ("Glen Burnie 21060").
 
 ### Montana (DPHHS)
 - Landing: https://dphhs.mt.gov/montanahealthcareprograms/terminatedexcludedproviders holds the full HTML table (179 rows) and links a dated xlsx (`...Providers7.27.26.xlsx`).
@@ -233,18 +239,21 @@ User-Agent:
 - Files: `https://www.hca.wa.gov/assets/billers-and-providers/termination-exclusion.xlsx` (HCA, 28 KB, 234 rows) and `termination-exclusion-dshs.xlsx` (DSHS social services, 1 row, last edited 2022).
 - ETag and Last-Modified present, but the CDN returns 200 to conditional requests: compare headers ourselves.
 - HCA header on row 4: `Name | License # | NPI # or P1 # | Date of Exclusion | Action`. Names "Last, First CREDENTIAL"; 210 NPIs plus 34 ProviderOne IDs ("P1 - #"); 12 cells with several NPIs; Action is free text with typos mixing licence actions, OIG exclusion and termination.
+- Implemented (2026-10-27, `wa_hca`, HEAD then GET): 234 rows and records, none skipped; 226 individuals, 8 organizations; NPI on 180, ProviderOne ID on 32, licence on 232. Credentials seen after names: ARNP, PA-C, PAC, LD, DN, MW, LM, SUDP, AuD, OT, AAC, ML, MHC, SW, Psy, "MD/". Ten "Name" cells hold several lines ("Last, First MD" then "dba: Clinic", or two business names then the owner): the first line is the party, the rest aliases. Actions by keyword: suspension 80, sanction (licence surrendered/revoked/expired and others) 78, termination 56, exclusion 20. Some ten-digit identifiers (`52037...00`) fail the NPI check digit and stay raw.
 
 ### Iowa (HHS)
 - Landing: https://hhs.iowa.gov/medicaid/provider-services/excluded-individuals-and-entities
 - File: `https://hhs.iowa.gov/media/19531/download?inline` (Drupal media; inner filename carries the month, e.g. `External IME_Sanction_List_Sept2026_...xlsx`). Last-Modified, no ETag; `If-Modified-Since` → 304. Monthly in practice.
 - Columns: `Enrollment Type, Specialty, NPI, Affiliated NPI, Last Name, First Name, Legal Business Name, Type of Sanction, Effective Date, Sanction End Date, Eligible to Reapply Date, Authority, State License Type, State License Number`.
 - Quality: 1,318 rows; NPI filled on 761 (412 numeric, some not 10 digits; 344 shaped `X000429159`, Medicaid IDs); typos in enrollment type; end date mixes "Indefinite", "Federal Authority" and serials; one person can have several rows (state and federal).
+- Implemented (2026-10-27, `ia_medicaid`): 1,318 rows, 1,317 distinct records, none skipped; 1,061 individuals, 256 organizations; NPI on 410, Medicaid ID on 347, licence on 470; end date on 170, of which 141 are already past. Sanction types: Termination 482, Participation Suspension for Overpayment 371, Participation Suspension 237, Federal Exclusion 225. Also seen: end dates "2 Years", "On Payment Plan"; one effective date "12/17/2025 - on payment plan" (counted unreadable).
 
 ### Indiana (FSSA OMPP)
 - Landing: https://www.in.gov/fssa/ompp/provider-information/termination-of-provider-participation-in-medicaid-and-chip
 - Files: `https://www.in.gov/fssa/ompp/files/OMPP_Terminations.xlsx` (stable, 112 rows) and a re-enrolment PDF (`/dA/e4ba7227b8/Re-enrollments.pdf`). Weak ETag → 304; `If-Modified-Since` ignored.
 - Header on row 2: `Provider Name | National Provider Identification (NPI) | Service Location Address | Termination Effective Date`. City/state only. Names include credentials; stray newlines; one cell with two NPIs.
 - The state says this is "not an active or ongoing exclusionary list"; reinstatements only in the PDF.
+- Implemented (2026-10-27, `in_fssa`, display name "Indiana Medicaid Provider Terminations"): 112 rows and records, none skipped; 76 individuals, 36 organizations; NPI on 105. Not in the survey: people are written first name first with the credential after a comma ("Mark Pefley, DDS", "Russell Harms, Podiatrist", "Eddie Kemper M.D."); one-word names are businesses; a provider with several practice locations has all of them in the address cell (newlines or runs of spaces), and only the first is stored as the address.
 
 ### North Dakota (HHS) — corrected source
 - The owner's list pointed at Ohio's URL. Official page: https://www.hhs.nd.gov/healthcare/medicaid/provider/compliance/fraud-and-abuse
@@ -252,6 +261,7 @@ User-Agent:
 - Sheet `ND Provider Exclusion List`: merged title row with the list date, header on row 2 (Excel table), 192 data rows. Columns: `Provider Name | Street Address | City | State | Zip | NPI | License Number | Provider Type | Exclusion Date | Reason for Exclusion`. Real Excel dates. Full street address on every row. No DOB.
 - Quality: NPI on 50 rows (one is 9 digits, invalid) and `N/A` on 142; ZIP mixes numbers, text and ZIP+4; 5 rows with provider type `N/A`; trailing spaces in `Provider Type`; names "LAST, FIRST".
 - QSPs: 105 of 192 rows are Qualified Service Providers; 84 have no NPI, none has a licence; 10 are organizations. The state verifies QSPs by name, DOB and SSN last four. We never collect SSN fragments, so a QSP without an NPI can reach at most a potential match on name plus address and goes to a person.
+- Implemented (2026-10-27, `nd_medicaid`): 192 rows and records, none skipped; 177 individuals, 15 organizations; NPI on 49, licence on 54. Not in the survey: former names inside the name cell, "LAST (aka OTHER), FIRST" and "LAST (OTHER, OTHER), FIRST", stored as full-name aliases ("OTHER, FIRST"), and nicknames in parentheses.
 
 ### Georgia (DCH OIG)
 - Landing: https://dch.georgia.gov/office-inspector-general/georgia-oig-exclusions-list ("updated at least monthly")
@@ -292,6 +302,7 @@ User-Agent:
 - Sheet `Excluded Providers`: row 1 title "Vermont Monthly List of For Cause Exclusions - October 2026" (A1 holds a logo image, reads as `#VALUE!`), header on row 2, 69 data rows (3–71), footnotes and a key in rows 73–81.
 - Columns: `VT Medicaid Provider ID`, `Provider NPI` (53 of 69), `Provider Full Name`, `Provider Type`, `Provider City`, `State`, a second `State` column that is really a reason code (07 Medicare/other-state exclusion, 22 sanctions, 19 contract terms, 08 fraud conviction), `Reason or "Cause" for Exclusion`, `Provider Exclusion Status Effective Date` (real dates), `Provider Exclusion Status End Date` (placeholder 2382-12-31 = open-ended), `Reinstatement Date` (empty). No DOB, street address or licence.
 - Quality: names "LAST,FIRST M" with no space after the comma and heavy trailing padding; 12 organizations; one provider ID twice with different types; two NPIs under two provider IDs each.
+- Implemented (2026-10-27, `vt_medicaid`): the last header reads "Reinstatement Date with Vermont Medicaid if Applicable" (the first parse failed on it, so the file was re-parsed offline, without a second download). 69 rows, 68 distinct records, none skipped; 56 individuals, 12 organizations; NPI on 52; every end date is the 2382-12-31 placeholder (stored as none). Counsellor and social-worker credentials (LCMHC, LICSW) follow the names.
 
 ### District of Columbia (OCP)
 - https://ocp.dc.gov/page/excluded-parties-list is the **procurement debarment list** (DC Code § 2-359.07), not a Medicaid exclusion list. Four HTML tables (~100 rows), no NPI. Page validators are Drupal cache artefacts. The DC Medicaid (DHCF) source still needs to be identified.
@@ -311,6 +322,7 @@ User-Agent:
 - File: CSV, every value quoted, CRLF, 18 fields on every row, 6,751 data rows, 1.07 MB (370 KB gzip). No Last-Modified or ETag; conditional GET → 200; two downloads five minutes apart were byte-identical, so hashing the body works.
 - Columns: `ProviderName, LicenseNumber, Status, BeginDate, EndDate, CAO, ListDate, IND_CHGD, DTE_CHANGE_LAST, NAM_LAST_PROVR, NAM_FIRST_PROVR, NAM_MIDDLE_PROVR, NAM_TITLE_PROVR, NAM_SUFFIX_PROVR, NAM_PROVR_ALT, NAM_BUSNS_MP, IDN_NPI, NBR_FEIN`. NPI on 1,554 rows (all Luhn-valid); licence on 4,418; FEIN on 207; county (`CAO`) instead of address; no DOB, no reason.
 - Quality: it is a history table (981 name keys have several rows, up to 8); dates `MM/DD/YYYY 0:00:00`; an EndDate of year 2299; 466 blank statuses (454 of them with an EndDate); statuses Precluded, Terminated, Reinstated, Voluntary Withdrawal, Suspended, Permanent Preclusion and variants; inconsistent suffixes.
+- Implemented (2026-10-27, `pa_medicheck`): 6,753 rows (1,070,349 bytes, UTF-8), 6,734 distinct records, none skipped; 6,454 individuals, 280 organizations; NPI on 1,554, licence on 4,400. Actions: preclusion 5,426, termination 717, other (blank status or withdrawal) 504, reinstatement 78, suspension 8. End date on 2,253 rows, about 1,800 of them in the past; placeholders in 2299 and one in 2229. `NAM_TITLE_PROVR` is the credential (RN, MD, LPN, PCA, RPh) and joins the suffix; `NAM_BUSNS_MP` can hold "a/k/a" aliases. Of the reinstated people, nearly every earlier row carries its own end date; one preclusion row without an end date precedes a reinstatement, so that person stays "listed" (the cautious reading).
 
 ### Delaware (DHSS DMAP)
 - Landing: https://medicaid.dhss.delaware.gov/Default.aspx?TabId=2102 (DNN; first GET is a 302 cookie-support probe `AspxAutoDetectCookieSupport=1`, then 200). Link "Delaware Listing of Sanctioned Providers" → `https://medicaidpublications.dhss.delaware.gov/docs/Search?Command=Core_Download&EntryId=1671` → 302 → `https://medicaidpublications.dhss.delaware.gov/docs/DesktopModules/Bring2mind/DMX/API/Entries/Download?Command=Core_Download&EntryId=1671&language=en-US&PortalId=0&TabId=94` (PDF, 926 KB, no session needed). No robots.txt on either host.
@@ -373,10 +385,22 @@ User-Agent:
 ## Still open
 
 Nevada (robots.txt forbids automation); Oregon's SharePoint list API; the DC Medicaid source;
-the New Jersey Comptroller URL; Maryland's sanction-code legend; Delaware's Excel original;
-North Dakota QSPs without NPI top out at "potential match"; parser dependencies (xlsx reader,
-layout-aware PDF parser) when implementation starts; deduplication of state rows that mirror
-the federal OIG list.
+the New Jersey Comptroller URL; Maryland's codes MFVVU-A, OIG and LC (the file's own legend
+explains the others) and whether its HHS code, which the legend defines more broadly than a
+federal exclusion, should stay an exclusion; Delaware's Excel original; North Dakota QSPs
+without NPI top out at "potential match"; the layout-aware PDF parser (the xlsx reader is
+openpyxl); deduplication of state rows that mirror the federal OIG list; the ended-record
+policy below (implemented as the default, owner to confirm).
+
+## Ended records (default policy, 2026-10-27, owner to confirm)
+
+Iowa, Pennsylvania, Vermont (placeholder only) and later New Jersey publish end dates. A
+matched record has ended when its end date is before today, or when it is itself a
+reinstatement row (Pennsylvania keeps one row per action). A check whose matched records have
+all ended is still a found record, but its summary reads "Previously listed in <list>: ..."
+with the end date and the provider's verdict is "needs review", not "listed"; one standing
+record keeps the verdict "listed". End dates after the year 2100 are placeholders for
+"open-ended" and stored as none.
 
 ## Federal: OIG LEIE (observed 2026-10-25)
 

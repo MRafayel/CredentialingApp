@@ -9,6 +9,7 @@ from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import (
     CredentialType,
     EntityKind,
+    ExclusionAction,
     Finding,
     Freshness,
     MatchLevel,
@@ -291,3 +292,104 @@ async def test_another_organizations_provider_is_not_found() -> None:
 
     with pytest.raises(ProviderNotFoundError):
         await world.use_case.run(UUID(int=7), world.provider.id)
+
+
+async def test_a_found_record_that_has_ended_is_previously_listed() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    ended = exclusion(
+        source_id=STATE,
+        npi=NPI,
+        effective_date=date(2019, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE, ended)
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.finding is Finding.RECORD_FOUND
+    assert result.details["record_status"] == "ended"
+    assert result.summary == (
+        "Previously listed in Fake New York List: exclusion effective 2019-01-01 "
+        "\u2013 ended 2024-01-01"
+    )
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    assert verdict.listed_in == ()
+    assert verdict.review_in == (STATE,)
+
+
+async def test_a_record_ending_in_the_future_still_stands() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    standing = exclusion(
+        source_id=STATE, npi=NPI, effective_date=date(2025, 6, 1), end_date=date(2027, 6, 1)
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE, standing)
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.details["record_status"] == "active"
+    assert result.summary == (
+        "Listed in Fake New York List: exclusion effective 2025-06-01 \u2013 ends 2027-06-01"
+    )
+    assert verdict.verdict is Verdict.LISTED
+
+
+async def test_one_standing_record_among_ended_ones_keeps_the_provider_listed() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    ended = exclusion(
+        source_id=STATE, npi=NPI, effective_date=date(2015, 1, 1), end_date=date(2016, 1, 1)
+    )
+    standing = exclusion(
+        source_id=STATE, npi=NPI, effective_date=date(2020, 3, 1), action=ExclusionAction.SUSPENSION
+    )
+    reinstated = exclusion(
+        source_id=STATE,
+        npi=NPI,
+        effective_date=date(2016, 1, 1),
+        action=ExclusionAction.REINSTATEMENT,
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE, ended, standing, reinstated)
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.details["record_status"] == "active"
+    assert result.summary == (
+        "Listed in Fake New York List: suspension effective 2020-03-01 (3 matching records)"
+    )
+    assert verdict.verdict is Verdict.LISTED
+
+
+async def test_a_reinstatement_alone_is_previously_listed() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    reinstated = exclusion(
+        source_id=STATE,
+        npi=NPI,
+        effective_date=date(2016, 1, 1),
+        action=ExclusionAction.REINSTATEMENT,
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE, reinstated)
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.details["record_status"] == "ended"
+    assert result.summary == (
+        "Previously listed in Fake New York List: reinstatement effective 2016-01-01"
+    )
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+
+
+async def test_a_check_without_a_matched_record_has_no_record_status() -> None:
+    world = _World(_ny_provider())
+    await world.load(FEDERAL)
+    await world.load(STATE)
+
+    results = await world.check()
+
+    assert "record_status" not in results[STATE].details

@@ -26,6 +26,7 @@ const DETAIL_WORDS: Record<string, string> = {
   candidates_compared: 'Candidates compared',
   latest_fetch_outcome: 'Latest fetch',
   latest_fetch_at: 'Latest fetch at',
+  record_status: 'Record status',
 }
 
 /** One source's answer: status, source, time, the backend's sentence, and the evidence. */

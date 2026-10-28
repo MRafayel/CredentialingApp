@@ -1,12 +1,12 @@
 """Use case: check one provider against every exclusion list that covers them."""
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Final
 from uuid import UUID, uuid4
 
 from credentialing.application.errors import ProviderNotFoundError
-from credentialing.domain.enums import CredentialType, Finding, MatchLevel, Outcome
+from credentialing.domain.enums import CredentialType, Finding, MatchLevel, Outcome, RecordStatus
 from credentialing.domain.models import (
     ConnectorCapabilities,
     ExclusionRecord,
@@ -18,9 +18,12 @@ from credentialing.domain.models import (
     VerificationResult,
 )
 from credentialing.domain.policies import (
+    RECORD_STATUS_DETAIL,
     FreshnessPolicyTable,
     derive_verdict,
     match_provider_to_record,
+    record_has_ended,
+    record_status,
 )
 from credentialing.domain.ports import (
     BulkListConnector,
@@ -171,9 +174,17 @@ class CheckExclusions:
             pair for pair in ranked if pair[0].level is best and best is not MatchLevel.NONE
         ]
         matched = tuple(record.id for _, record in strongest)
+        matched_records = [record for _, record in strongest]
+        today = now.astimezone(UTC).date()
+        details = {
+            "list_fetched_at": completed.fetched_at.isoformat(),
+            "candidates_compared": str(len(candidates)),
+        }
+        if matched_records:
+            details[RECORD_STATUS_DETAIL] = record_status(matched_records, today).value
         if best in _FOUND:
             finding = Finding.RECORD_FOUND
-            summary = _listed_summary(capabilities, [record for _, record in strongest])
+            summary = _listed_summary(capabilities, matched_records, today)
         elif best in _REVIEW:
             finding = Finding.AMBIGUOUS
             summary = f"Possible match in {capabilities.display_name}: review required"
@@ -197,10 +208,7 @@ class CheckExclusions:
             summary=summary,
             provenance=provenance,
             fetched_at=completed.fetched_at,
-            details={
-                "list_fetched_at": completed.fetched_at.isoformat(),
-                "candidates_compared": str(len(candidates)),
-            },
+            details=details,
         )
 
 
@@ -225,16 +233,23 @@ def _provenance(
     )
 
 
-def _listed_summary(capabilities: ConnectorCapabilities, records: Sequence[ExclusionRecord]) -> str:
-    record = records[0]
+def _listed_summary(
+    capabilities: ConnectorCapabilities, records: Sequence[ExclusionRecord], today: date
+) -> str:
+    """The summary of a found listing: "Listed in" while one record stands, otherwise
+    "Previously listed in", with the end date."""
+    ended = record_status(records, today) is RecordStatus.ENDED
+    standing = [record for record in records if not record_has_ended(record, today)]
+    record = records[0] if ended else standing[0]
     effective = (
         f"effective {record.effective_date.isoformat()}"
         if record.effective_date
         else "effective date not published"
     )
-    summary = f"Listed in {capabilities.display_name}: {record.action.value} {effective}"
+    lead = "Previously listed in" if ended else "Listed in"
+    summary = f"{lead} {capabilities.display_name}: {record.action.value} {effective}"
     if record.end_date:
-        summary += f", ended {record.end_date.isoformat()}"
+        summary += f" \u2013 {'ended' if ended else 'ends'} {record.end_date.isoformat()}"
     if len(records) > 1:
         summary += f" ({len(records)} matching records)"
     return summary

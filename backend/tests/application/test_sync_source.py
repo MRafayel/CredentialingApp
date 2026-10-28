@@ -5,7 +5,11 @@ from uuid import UUID, uuid4
 import pytest
 
 from credentialing.application.errors import UnknownSourceError
-from credentialing.application.sync_source import SHRINK_GUARD_MIN_ROWS, SyncSource
+from credentialing.application.sync_source import (
+    DUE_TOLERANCE,
+    SHRINK_GUARD_MIN_ROWS,
+    SyncSource,
+)
 from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import Outcome
 from credentialing.domain.models import (
@@ -206,3 +210,48 @@ async def test_small_lists_and_moderate_drops_are_applied(before: int, after: in
     assert report.snapshot.outcome is Outcome.COMPLETED
     assert report.diff is not None
     assert report.diff.removed == before - after
+
+
+async def test_a_source_never_completed_is_due_now() -> None:
+    snapshots = InMemorySnapshots()
+    await snapshots.add(_snapshot(Outcome.BLOCKED))
+    use_case = _use_case(ScriptedConnector(make_capabilities(SOURCE)), snapshots, InMemoryRecords())
+
+    assert await use_case.next_due(SOURCE) is None
+
+
+async def test_the_next_poll_is_due_one_interval_after_the_last_completed_fetch() -> None:
+    snapshots = InMemorySnapshots()
+    await snapshots.add(_snapshot(hours=-48))
+    await snapshots.add(_snapshot(Outcome.SOURCE_UNAVAILABLE, hours=-1))
+    capabilities = make_capabilities(SOURCE)
+    use_case = _use_case(ScriptedConnector(capabilities), snapshots, InMemoryRecords())
+
+    due = await use_case.next_due(SOURCE)
+
+    assert due == NOW - timedelta(hours=48) + capabilities.poll_interval - DUE_TOLERANCE
+
+
+async def test_a_daily_source_fetched_yesterday_a_little_later_is_due_again() -> None:
+    snapshots = InMemorySnapshots()
+    await snapshots.add(
+        _snapshot(hours=-24).model_copy(
+            update={"fetched_at": NOW - timedelta(hours=23, minutes=59)}
+        )
+    )
+    capabilities = make_capabilities(SOURCE).model_copy(update={"poll_interval": timedelta(days=1)})
+    use_case = _use_case(ScriptedConnector(capabilities), snapshots, InMemoryRecords())
+
+    due = await use_case.next_due(SOURCE)
+
+    assert due is not None
+    assert due <= NOW
+
+
+async def test_next_due_of_an_unknown_source() -> None:
+    use_case = _use_case(
+        ScriptedConnector(make_capabilities(SOURCE)), InMemorySnapshots(), InMemoryRecords()
+    )
+
+    with pytest.raises(UnknownSourceError, match="fake_unknown"):
+        await use_case.next_due("fake_unknown")

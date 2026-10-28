@@ -1,7 +1,9 @@
 """The contract every registered connector passes. A new connector joins by being registered
 in ``bootstrap.build_registry`` and adding its fixture to ``CONNECTOR_FIXTURES``."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Final
 
 import pytest
@@ -12,16 +14,25 @@ from credentialing.connectors.framework.http import FetchedDocument, FetchFailur
 from credentialing.domain.enums import Outcome
 from credentialing.domain.models import ConnectorCapabilities
 from credentialing.domain.ports import BulkListConnector
-from tests.connectors.fixtures import fixture_bytes
+from tests.connectors.fixtures import builders, fixture_bytes
 from tests.fakes import ScriptedFetcher
 from tests.synthetic import NOW
 
 pytestmark = pytest.mark.anyio
 
-CONNECTOR_FIXTURES: Final = {
-    "oig_leie": "oig_leie.csv",
-    "ny_omig": "ny_omig.txt",
+CONNECTOR_FIXTURES: Final[dict[str, Callable[[], bytes]]] = {
+    "oig_leie": partial(fixture_bytes, "oig_leie.csv"),
+    "ny_omig": partial(fixture_bytes, "ny_omig.txt"),
+    "nc_medicaid": builders.nc_medicaid,
+    "md_medicaid": builders.md_medicaid,
+    "vt_medicaid": builders.vt_medicaid,
+    "nd_medicaid": builders.nd_medicaid,
+    "wa_hca": builders.wa_hca,
+    "ia_medicaid": builders.ia_medicaid,
+    "in_fssa": builders.in_fssa,
+    "pa_medicheck": partial(fixture_bytes, "pa_medicheck.csv"),
 }
+"""Each source's synthetic document: a recorded file, or a workbook built at test time."""
 
 _REGISTERED = build_registry(ScriptedFetcher()).bulk_connectors()
 _SOURCE_IDS = [connector.capabilities.source_id for connector in _REGISTERED]
@@ -72,7 +83,7 @@ def test_capabilities_report_the_url_the_connector_downloads(source_id: str) -> 
 
 @pytest.mark.parametrize("source_id", _SOURCE_IDS)
 async def test_the_fixture_parses_into_records_of_this_snapshot(source_id: str) -> None:
-    body = fixture_bytes(CONNECTOR_FIXTURES[source_id])
+    body = CONNECTOR_FIXTURES[source_id]()
 
     result = await _connector(source_id, ScriptedFetcher(_document(body))).fetch(None)
 

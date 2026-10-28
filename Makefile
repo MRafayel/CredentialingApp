@@ -18,7 +18,7 @@ API_TYPES_TMP := $(CURDIR)/frontend/node_modules/.tmp
 # Pinned Supabase CLI, kept in .tools/ (downloaded on first use).
 SUPABASE := ./scripts/supabase
 
-.PHONY: help setup setup-backend setup-frontend api web fmt lint typecheck test test-integration test-live test-web check build backend-add sync sources api-types api-types-check
+.PHONY: help setup setup-backend setup-frontend api web fmt lint typecheck test test-integration test-live test-web check build backend-add sync sync-due sources api-types api-types-check
 .PHONY: db-start db-stop db-status db-reset db-migrate db-new
 
 help: ## List available commands
@@ -107,6 +107,9 @@ check: lint typecheck test test-integration test-web build ## Everything that mu
 sync: ## Fetch a source: make sync SOURCE=oig_leie (or SOURCE=all; FORCE=1 re-parses)
 	@test -n "$(SOURCE)" || (echo "Usage: make sync SOURCE=oig_leie (or SOURCE=all)" && exit 1)
 	$(BIN)/python -m credentialing.cli sync $(if $(filter all,$(SOURCE)),--all,$(SOURCE)) $(if $(FORCE),--force)
+
+sync-due: ## Fetch only the sources whose poll interval has elapsed (for cron)
+	$(BIN)/python -m credentialing.cli sync --all --due
 
 sources: ## Source monitoring dashboard (make sources ARGS="--json")
 	@$(BIN)/python -m credentialing.cli sources $(ARGS)

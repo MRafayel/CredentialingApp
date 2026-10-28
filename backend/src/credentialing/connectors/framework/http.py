@@ -35,7 +35,7 @@ RETRY_ATTEMPTS: Final = 1
 RETRY_PAUSE_SECONDS: Final = 5.0
 """Pause before the retry, so a briefly overloaded server gets a moment."""
 
-MAX_BODY_BYTES: Final = 64 * 1024 * 1024
+MAX_BODY_BYTES: Final = 50 * 1024 * 1024
 """Largest body accepted; a bigger one is ``FAILED`` rather than read into memory."""
 
 _BLOCKING_STATUSES: Final = frozenset({401, 403, 429})

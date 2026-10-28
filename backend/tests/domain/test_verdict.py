@@ -25,6 +25,7 @@ def _result(
     at: datetime = NOW,
     list_updated: datetime | None = NOW - timedelta(days=6),
     id: UUID | None = None,
+    record_status: str | None = None,
 ) -> VerificationResult:
     return VerificationResult(
         id=id or uuid4(),
@@ -35,6 +36,7 @@ def _result(
         outcome=outcome,
         finding=finding if outcome is Outcome.COMPLETED else None,
         summary="synthetic result",
+        details={"record_status": record_status} if record_status else {},
         provenance=Provenance(
             source_id=source_id,
             source_url=f"https://example.test/{source_id}",
@@ -146,3 +148,42 @@ def test_a_source_given_twice_counts_only_its_newest_result() -> None:
     assert verdict.verdict is Verdict.NO_RECORDS
     assert verdict.results == (new, same_moment[1])
     assert verdict.sources_checked == 2
+
+
+def test_a_found_record_that_has_ended_needs_review_not_listed() -> None:
+    verdict = derive_verdict(
+        [_result("list_a", Finding.RECORD_FOUND, record_status="ended"), _result("list_b")]
+    )
+
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    assert verdict.listed_in == ()
+    assert verdict.review_in == ("list_a",)
+
+
+def test_one_standing_listing_is_listed_even_beside_an_ended_one() -> None:
+    verdict = derive_verdict(
+        [
+            _result("list_a", Finding.RECORD_FOUND, record_status="ended"),
+            _result("list_b", Finding.RECORD_FOUND, record_status="active"),
+        ]
+    )
+
+    assert verdict.verdict is Verdict.LISTED
+    assert verdict.listed_in == ("list_b",)
+    assert verdict.review_in == ("list_a",)
+
+
+def test_an_ended_listing_still_outranks_a_check_that_could_not_run() -> None:
+    verdict = derive_verdict(
+        [_result("list_a", Finding.RECORD_FOUND, record_status="ended"), _failed("list_b")]
+    )
+
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    assert verdict.unchecked == ("list_b",)
+
+
+def test_a_found_record_without_a_status_counts_as_standing() -> None:
+    verdict = derive_verdict([_result("list_a", Finding.RECORD_FOUND)])
+
+    assert verdict.verdict is Verdict.LISTED
+    assert verdict.listed_in == ("list_a",)
