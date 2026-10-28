@@ -6,8 +6,10 @@ import { ErrorNote } from '../../components/Note.tsx'
 import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
 import { Skeleton } from '../../components/Skeleton.tsx'
 import { ApiError, type Provider, type SourceStatus } from '../../lib/api.ts'
-import { displayName, expectedSources } from '../../lib/provider.ts'
+import { plural } from '../../lib/format.ts'
+import { displayName } from '../../lib/provider.ts'
 import { checkRuns } from '../../lib/history.ts'
+import { needsAttention } from '../../lib/results.ts'
 import {
   useProvider,
   useRunCheck,
@@ -67,7 +69,8 @@ function Loaded({ provider }: { provider: Provider }) {
   )
   const sourceName = (sourceId: string) => byId.get(sourceId)?.display_name ?? sourceId
   const latest = verdict.data?.results ?? []
-  const expected = expectedSources(sources.data ?? [], provider)
+  const shown = latest.filter(needsAttention)
+  const expected = sources.data ?? []
   const running = run.isPending
 
   return (
@@ -145,7 +148,7 @@ function Loaded({ provider }: { provider: Provider }) {
                       <ResultCardSkeleton sourceName={source?.display_name ?? 'Checking…'} />
                     </motion.div>
                   ))
-                : latest.map((result, index) => (
+                : shown.map((result, index) => (
                     <motion.div
                       key={result.id}
                       layout="position"
@@ -162,11 +165,13 @@ function Loaded({ provider }: { provider: Provider }) {
                     </motion.div>
                   ))}
             </AnimatePresence>
-            {!running && verdict.data && latest.length === 0 && (
+            {!running && verdict.data && shown.length === 0 && (
               <p className="rounded-card border border-line px-5 py-6 text-body text-ink-muted">
-                {expected.length
-                  ? `A check covers ${expected.map((s) => s.display_name).join(' and ')}.`
-                  : 'Run a check to see results here.'}
+                {latest.length
+                  ? `No record in ${plural(latest.length, 'list')}. Each list's answer is under What happened.`
+                  : expected.length
+                    ? `A check covers ${plural(expected.length, 'list')}.`
+                    : 'Run a check to see results here.'}
               </p>
             )}
           </section>

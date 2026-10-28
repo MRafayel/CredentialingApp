@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { displayName, entityKindWord, expectedSources, providerStates } from './provider.ts'
+import { displayName, entityKindWord, providerStates } from './provider.ts'
 
 const person = { last: 'Sampleperson', first: 'Avery', middle: 'J', suffix: null }
 
@@ -23,23 +23,17 @@ describe('displayName', () => {
   })
 })
 
-describe('expectedSources', () => {
-  const licences = [{ number: '1', state: 'NY', kind: null }]
-  const addresses = [
-    { line1: null, line2: null, city: 'Sampleville', state: 'NJ', postal_code: null },
-  ]
-
-  it('covers federal lists and the states of licences and addresses', () => {
-    const sources = [
-      { id: 'federal', jurisdictions: ['US'] },
-      { id: 'ny', jurisdictions: ['NY'] },
-      { id: 'ca', jurisdictions: ['CA'] },
+describe('providerStates', () => {
+  it('collects the states of licences and addresses, sorted and once each', () => {
+    const licences = [
+      { number: '1', state: 'NY', kind: null },
+      { number: '2', state: 'NJ', kind: null },
+    ]
+    const addresses = [
+      { line1: null, line2: null, city: 'Sampleville', state: 'NJ', postal_code: null },
+      { line1: null, line2: null, city: 'Testtown', state: null, postal_code: null },
     ]
     expect(providerStates({ licenses: licences, addresses })).toEqual(['NJ', 'NY'])
-    expect(expectedSources(sources, { licenses: licences, addresses }).map((s) => s.id)).toEqual([
-      'federal',
-      'ny',
-    ])
   })
 })
 

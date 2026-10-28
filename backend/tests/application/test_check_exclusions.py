@@ -168,11 +168,26 @@ async def test_without_a_covering_list_the_provider_is_not_checked() -> None:
     assert world.verifications.stored == []
 
 
-async def test_without_a_state_only_federal_lists_apply() -> None:
+async def test_a_provider_without_a_state_is_checked_against_every_list() -> None:
     world = _World(individual())
     await world.load(FEDERAL)
+    await world.load(STATE)
 
-    assert list(await world.check()) == [FEDERAL]
+    assert list(await world.check()) == [FEDERAL, STATE]
+
+
+async def test_a_licence_state_does_not_narrow_the_lists_checked() -> None:
+    world = _World(_ny_provider())
+    world.registry.register(
+        ScriptedConnector(
+            capabilities("fake_nj_list", frozenset({"NJ"}), display_name="Fake New Jersey List")
+        )
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE)
+    await world.load("fake_nj_list")
+
+    assert list(await world.check()) == [FEDERAL, "fake_nj_list", STATE]
 
 
 async def test_an_npi_match_is_a_record_found() -> None:

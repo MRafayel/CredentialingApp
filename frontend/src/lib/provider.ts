@@ -31,15 +31,6 @@ export function providerStates(provider: Pick<Provider, 'licenses' | 'addresses'
   return [...states].sort()
 }
 
-/** The sources a check of this provider consults: federal lists and their states' lists. */
-export function expectedSources<S extends { jurisdictions: string[] }>(
-  sources: readonly S[],
-  provider: Pick<Provider, 'licenses' | 'addresses'>,
-): S[] {
-  const covered = new Set(['US', ...providerStates(provider)])
-  return sources.filter((source) => source.jurisdictions.some((j) => covered.has(j)))
-}
-
 /** The kind of party in words; a source that does not say gives "Unknown kind". */
 export function entityKindWord(kind: Provider['entity_kind']): string {
   switch (kind) {

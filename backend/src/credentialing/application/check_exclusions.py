@@ -1,4 +1,4 @@
-"""Use case: check one provider against every exclusion list that covers them."""
+"""Use case: check one provider against every connected exclusion list."""
 
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -41,7 +41,6 @@ from credentialing.domain.ports import (
     SnapshotRepository,
     VerificationRepository,
 )
-from credentialing.domain.types import FEDERAL
 
 _STRENGTH: Final = {level: rank for rank, level in enumerate(MatchLevel)}
 """Match levels ranked strongest first, following the enum's declared order."""
@@ -75,11 +74,15 @@ class CheckExclusions:
         self._clock = clock
 
     async def run(self, organization_id: UUID, provider_id: UUID) -> ProviderVerdict:
-        """Check the provider against every list covering the U.S. and their states.
+        """Check the provider against every connected exclusion list, federal and state.
+
+        The provider's licence and address states do not narrow the check: an exclusion in
+        any state matters, since states must terminate providers that another state
+        terminated for cause.
 
         One result per list, each appended to the verification history, and the verdict
-        derived from them: every covered list has just answered, so older results do not
-        count. A list that was never loaded gives ``SOURCE_UNAVAILABLE``, never a clean result.
+        derived from them: every list has just answered, so older results do not count. A
+        list that was never loaded gives ``SOURCE_UNAVAILABLE``, never a clean result.
 
         Raises:
             ProviderNotFoundError: The organization has no provider with this id.
@@ -87,7 +90,7 @@ class CheckExclusions:
         provider = await self._providers.get(organization_id, provider_id)
         if provider is None:
             raise ProviderNotFoundError(provider_id)
-        connectors = self._connectors_for(provider)
+        connectors = self._exclusion_lists()
         if not connectors:
             return derive_verdict(())
         now = self._clock.now()
@@ -106,19 +109,13 @@ class CheckExclusions:
             results.append(result)
         return derive_verdict(results)
 
-    def _connectors_for(self, provider: Provider) -> list[BulkListConnector]:
-        jurisdictions = (
-            {FEDERAL}
-            | {license.state for license in provider.licenses}
-            | {address.state for address in provider.addresses if address.state}
-        )
-        selected: dict[str, BulkListConnector] = {}
-        for jurisdiction in sorted(jurisdictions):
-            for connector in self._connectors.bulk_connectors_for(
-                CredentialType.EXCLUSION, jurisdiction
-            ):
-                selected.setdefault(connector.capabilities.source_id, connector)
-        return [selected[source_id] for source_id in sorted(selected)]
+    def _exclusion_lists(self) -> list[BulkListConnector]:
+        """Every connected exclusion list, federal and state, ordered by source id."""
+        return [
+            connector
+            for connector in self._connectors.bulk_connectors()
+            if connector.capabilities.credential_type is CredentialType.EXCLUSION
+        ]
 
     async def _check(
         self,
