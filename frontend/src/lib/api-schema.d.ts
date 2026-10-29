@@ -163,7 +163,9 @@ export interface paths {
      *
      *     Every list searched is returned with its dates, so an empty answer says what was searched
      *     and as of when. The lists are shared reference data, but the route asks for a caller like
-     *     every other one. Fewer than two characters searches nothing.
+     *     every other one. Fewer than two characters searches nothing. ``state`` (two letters, any
+     *     case) keeps only records tied to that state: on its own lists, or with a licence or
+     *     address there.
      */
     get: operations['search_exclusions_exclusions_search_get']
     put?: never
@@ -391,6 +393,8 @@ export interface components {
     LookupResponse: {
       /** Query */
       query: string
+      /** State */
+      state: string | null
       /** Records */
       records: components['schemas']['LookupRecordResponse'][]
       /** Sources */
@@ -1211,6 +1215,7 @@ export interface operations {
       query?: {
         q?: string
         limit?: number
+        state?: string | null
       }
       header?: {
         'x-organization-id'?: string | null

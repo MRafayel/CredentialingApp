@@ -285,6 +285,8 @@ class LookupResponse(Schema):
     """Body of ``GET /exclusions/search``: the matching records and every list consulted."""
 
     query: str
+    state: str | None
+    """The state the search was narrowed to (upper case), or null for every state."""
     records: list[LookupRecordResponse]
     sources: list[SearchedSourceResponse]
 
@@ -293,6 +295,7 @@ class LookupResponse(Schema):
         """Map a lookup result into its HTTP shape."""
         return cls(
             query=result.query,
+            state=result.state,
             records=[LookupRecordResponse.from_lookup(found) for found in result.records],
             sources=[SearchedSourceResponse.from_source(source) for source in result.sources],
         )

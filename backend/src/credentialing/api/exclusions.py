@@ -19,14 +19,19 @@ async def search_exclusions(
     container: Container,
     q: Annotated[str, Query(max_length=200)] = "",
     limit: Annotated[int, Query(ge=1, le=MAX_RESULTS)] = 20,
+    state: Annotated[str | None, Query(pattern=r"^[A-Za-z]{2}$")] = None,
 ) -> LookupResponse:
     """Current exclusion records matching a name, NPI or licence number, best first.
 
     Every list searched is returned with its dates, so an empty answer says what was searched
     and as of when. The lists are shared reference data, but the route asks for a caller like
-    every other one. Fewer than two characters searches nothing.
+    every other one. Fewer than two characters searches nothing. ``state`` (two letters, any
+    case) keeps only records tied to that state: on its own lists, or with a licence or
+    address there.
     """
-    result = await container.lookup_exclusions.run(q, limit=limit)
+    result = await container.lookup_exclusions.run(
+        q, limit=limit, state=state.upper() if state else None
+    )
     return LookupResponse.from_result(result)
 
 

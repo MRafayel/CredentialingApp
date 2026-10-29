@@ -13,6 +13,10 @@
   --soft: #f3f4f6;
   /* A mid grey between soft and line-strong: inner faces of a drawing (EmptyDrawer's drawer walls). */
   --lift: #e4e6eb;
+  /* The darkest step of a slab's side (the Lookup map), below lift. */
+  --lift-deep: #b8bdc7;
+  /* The soft ground shadow under the Lookup map's slab (a radial gradient to transparent). */
+  --map-shadow: rgb(23 25 28 / 0.14);
   --line: #ececec;
   --line-strong: #dcdfe6;
 
@@ -26,10 +30,13 @@
   /*
    * The one blue, secondary: links, focus, the phone's active tab, selected states, the clear
    * status and the atmosphere. --accent marks, --accent-strong is text, --accent-soft tints.
+   * --accent-light is the Lookup map's state text, line and ring, chosen by the owner on
+   * 2026-10-29 (4.83:1 on --page, 5.04:1 on --surface). Nowhere else.
    */
   --accent: #2b5cf6;
   --accent-strong: #1e49d6;
   --accent-soft: #e9efff;
+  --accent-light: #2b6ad9;
 
   /* Status colours live in marks; the word next to a mark stays ink. */
   --status-clear: var(--accent);
@@ -84,6 +91,7 @@
   --color-surface: var(--surface);
   --color-soft: var(--soft);
   --color-lift: var(--lift);
+  --color-lift-deep: var(--lift-deep);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
   --color-ink: var(--ink);
@@ -94,6 +102,7 @@
   --color-accent: var(--accent);
   --color-accent-strong: var(--accent-strong);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-light: var(--accent-light);
 
   --color-status-clear: var(--status-clear);
   --color-status-review: var(--status-review);

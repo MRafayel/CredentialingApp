@@ -24,7 +24,7 @@ from credentialing.domain.models import (
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
 from credentialing.domain.policies import candidate_keys, license_key, party_key
-from credentialing.domain.types import Npi, SourceId
+from credentialing.domain.types import Npi, SourceId, StateCode
 
 _WORDS = re.compile(r"[^\W_]+")
 
@@ -168,8 +168,18 @@ class InMemoryRecords:
             or (record.license is not None and license_key(record.license.number) in licenses)
         ]
 
-    async def search(self, query: str, *, limit: int) -> Sequence[ExclusionRecord]:
-        """Every word of the query starts a word of the record's names or identifiers."""
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        source_ids: Sequence[SourceId] = (),
+        state: StateCode | None = None,
+    ) -> Sequence[ExclusionRecord]:
+        """Every word of the query starts a word of the record's names or identifiers.
+
+        With ``state``, only records from ``source_ids`` or with a licence or address there.
+        """
         term = query.strip()
         tokens = _WORDS.findall(term.casefold())
         if not tokens:
@@ -191,9 +201,18 @@ class InMemoryRecords:
             ]
             return _WORDS.findall(" ".join(t for t in texts if t).casefold())
 
+        def in_state(record: ExclusionRecord) -> bool:
+            return (
+                state is None
+                or record.source_id in source_ids
+                or (record.license is not None and record.license.state == state)
+                or (record.address is not None and record.address.state == state)
+            )
+
         def hit(record: ExclusionRecord) -> bool:
             own = words(record)
-            return record.npi == term or all(any(w.startswith(t) for w in own) for t in tokens)
+            matched = record.npi == term or all(any(w.startswith(t) for w in own) for t in tokens)
+            return matched and in_state(record)
 
         found = sorted(
             (r for r in self.current.values() if hit(r)),

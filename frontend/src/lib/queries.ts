@@ -23,7 +23,7 @@ export const keys = {
   provider: (id: string) => ['providers', 'detail', id] as const,
   verifications: (id: string) => ['providers', 'detail', id, 'verifications'] as const,
   verdict: (id: string) => ['providers', 'detail', id, 'verdict'] as const,
-  lookup: (q: string) => ['exclusions', 'search', q] as const,
+  lookup: (q: string, state: string | null) => ['exclusions', 'search', { q, state }] as const,
   record: (id: string) => ['exclusions', 'records', id] as const,
 }
 
@@ -39,12 +39,18 @@ export function useSources() {
   })
 }
 
-/** A direct exclusion lookup; `q` is already trimmed and long enough, or the query waits. */
-export function useExclusionLookup(q: string, enabled: boolean) {
+/**
+ * A direct exclusion lookup; `q` is already trimmed and long enough, or the query waits.
+ * `state` narrows it to the records the backend ties to that state.
+ */
+export function useExclusionLookup(q: string, state: string | null, enabled: boolean) {
   return useQuery({
-    queryKey: keys.lookup(q),
+    queryKey: keys.lookup(q, state),
     queryFn: ({ signal }) =>
-      get('/exclusions/search', { query: { q, limit: LOOKUP_LIMIT }, signal }),
+      get('/exclusions/search', {
+        query: state ? { q, limit: LOOKUP_LIMIT, state } : { q, limit: LOOKUP_LIMIT },
+        signal,
+      }),
     enabled,
     placeholderData: keepPreviousData,
   })

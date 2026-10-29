@@ -84,9 +84,21 @@ export function searchedLine(sources: readonly SearchedSource[], options: Format
   ].join(' · ')
 }
 
-/** The calm empty answer: what was searched, never just "nothing". */
-export function noMatchesLine(sources: readonly SearchedSource[]): string {
-  return `No matches in ${plural(searchedCount(sources), 'list')}`
+/**
+ * The calm empty answer: what was searched, never just "nothing". `place` is the state the
+ * search was narrowed to ("No matches in Washington across 11 lists").
+ */
+export function noMatchesLine(sources: readonly SearchedSource[], place?: string | null): string {
+  const lists = plural(searchedCount(sources), 'list')
+  return place ? `No matches in ${place} across ${lists}` : `No matches in ${lists}`
+}
+
+/** "3 matches", "3 matches in Washington", or a hint to narrow a full page of them. */
+export function matchesLine(count: number, limit: number, place?: string | null): string {
+  const where = place ? ` in ${place}` : ''
+  return count >= limit
+    ? `The best ${count} matches${where}; add a word to narrow them`
+    : `${plural(count, 'match', 'matches')}${where}`
 }
 
 /** "Sampleville, NY", "NY" or null. */

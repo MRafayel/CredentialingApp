@@ -112,6 +112,39 @@ async def test_search_returns_records_with_their_lists(client: httpx2.AsyncClien
     ]
 
 
+async def test_search_narrowed_to_a_state(client: httpx2.AsyncClient) -> None:
+    own = await client.get(
+        "/exclusions/search", params={"q": "sampleville", "state": "NY"}, headers=HEADERS
+    )
+    elsewhere = await client.get(
+        "/exclusions/search", params={"q": "sampleville", "state": "wa"}, headers=HEADERS
+    )
+
+    assert (own.status_code, elsewhere.status_code) == (200, 200)
+    assert own.json()["state"] == "NY"
+    assert [record["npi"] for record in own.json()["records"]] == [NPI]
+    assert elsewhere.json()["state"] == "WA"
+    assert elsewhere.json()["records"] == []
+    assert [source["source_id"] for source in elsewhere.json()["sources"]] == [SOURCE]
+
+
+async def test_search_without_a_state_echoes_null(client: httpx2.AsyncClient) -> None:
+    body = (await client.get("/exclusions/search", params={"q": NPI}, headers=HEADERS)).json()
+
+    assert body["state"] is None
+
+
+@pytest.mark.parametrize("state", ["xyz", "N", "N1", ""])
+async def test_search_rejects_a_state_that_is_not_two_letters(
+    client: httpx2.AsyncClient, state: str
+) -> None:
+    response = await client.get(
+        "/exclusions/search", params={"q": "sampleville", "state": state}, headers=HEADERS
+    )
+
+    assert response.status_code == 422
+
+
 async def test_search_by_npi(client: httpx2.AsyncClient) -> None:
     body = (await client.get("/exclusions/search", params={"q": NPI}, headers=HEADERS)).json()
 
@@ -185,7 +218,7 @@ async def test_no_match_still_names_the_lists_searched(client: httpx2.AsyncClien
 async def test_a_short_query_searches_nothing(client: httpx2.AsyncClient, q: str) -> None:
     body = (await client.get("/exclusions/search", params={"q": q}, headers=HEADERS)).json()
 
-    assert body == {"query": q.strip(), "records": [], "sources": []}
+    assert body == {"query": q.strip(), "state": None, "records": [], "sources": []}
 
 
 @pytest.mark.parametrize("query", ["limit=0", "limit=51", f"q={'a' * 201}"])

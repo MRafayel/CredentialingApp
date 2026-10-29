@@ -322,6 +322,35 @@ async def test_search_ranks_whole_words_in_names_first(database: ConnectionSourc
     assert await _search_ids(repository, "1 qzxstop") == [whole_word.id, prefix_only.id]
 
 
+async def test_search_narrowed_to_a_state(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    plain = exclusion(snapshot_id=snapshot_id, last="Qzxstate", first="Plain")
+    licensed = exclusion(
+        snapshot_id=snapshot_id,
+        last="Qzxstate",
+        first="Licensed",
+        license=License(number="QZX1", state="WA"),
+    )
+    living = exclusion(snapshot_id=snapshot_id, last="Qzxstate", first="Living").model_copy(
+        update={"address": Address(city="Sampleville", state="WA")}
+    )
+    elsewhere = exclusion(snapshot_id=snapshot_id, last="Qzxstate", first="Elsewhere").model_copy(
+        update={"address": Address(city="Sampleville", state="NY")}
+    )
+    await repository.replace_current(SOURCE, snapshot_id, [plain, licensed, living, elsewhere], NOW)
+
+    async def ids(source_ids: Sequence[str], state: str | None) -> set[UUID]:
+        found = await repository.search("qzxstate", limit=50, source_ids=source_ids, state=state)
+        return _ours(found)
+
+    everyone = {plain.id, licensed.id, living.id, elsewhere.id}
+    assert await ids([], None) == everyone
+    assert await ids([SOURCE], "WA") == everyone
+    assert await ids([], "WA") == {licensed.id, living.id}
+    assert await ids(["test_other_list"], "TX") == set()
+
+
 async def test_search_limit_is_capped(database: ConnectionSource) -> None:
     repository = PostgresExclusionRecordRepository(database)
     snapshot_id = await _snapshot(database)

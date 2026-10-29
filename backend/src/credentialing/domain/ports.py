@@ -113,13 +113,21 @@ class ExclusionRecordRepository(Protocol):
         """
         ...
 
-    async def search(self, query: str, *, limit: int) -> Sequence[ExclusionRecord]:
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        source_ids: Sequence[SourceId] = (),
+        state: StateCode | None = None,
+    ) -> Sequence[ExclusionRecord]:
         """Current rows matching a free-text lookup by name, NPI or licence, best first.
 
         Every word of ``query`` must start a word of the row's names (aliases and related
         parties included) or identifiers (related NPIs included); a ten-digit query also
-        matches the NPI exactly, and those rows come first. At most ``limit`` rows, never
-        more than 50.
+        matches the NPI exactly, and those rows come first. With ``state``, only rows tied to
+        that state: from one of ``source_ids`` (the state's own lists), or with a licence or
+        address in it. At most ``limit`` rows, never more than 50.
         """
         ...
 

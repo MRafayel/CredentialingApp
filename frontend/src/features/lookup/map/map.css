@@ -1,0 +1,133 @@
+/*
+ * The Lookup states map (StatesMap.tsx). Colours come from the tokens; nothing here moves (a
+ * hovered or filtered state rises as a Motion block over the plane). The plane is still: tilted
+ * 22 degrees on a phone, 34 on desktop.
+ */
+.map-tilt {
+  perspective: 1400px;
+}
+.map-plane {
+  transform: rotateX(22deg);
+  transform-origin: 50% 60%;
+}
+.us-map {
+  --label-size: 22px;
+  overflow: visible;
+}
+@media (width >= 40rem) {
+  .us-map {
+    --label-size: 15px;
+  }
+}
+@media (width >= 64rem) {
+  /*
+   * The desktop map is about 1100 px wide; the viewer stands back in proportion (1400 px at
+   * 860 px wide), so the plane keeps its shape and the stage's percentage margins still fit.
+   */
+  .map-tilt {
+    perspective: 1800px;
+  }
+  .map-plane {
+    transform: rotateX(34deg);
+  }
+  .us-map {
+    --label-size: 12px;
+  }
+}
+
+/* The ground shadow's gradient colour (the ellipse under the slab). */
+.us-map .map-ground-stop {
+  stop-color: var(--map-shadow);
+}
+
+/*
+ * The slab: copies of the nation stacked downwards, a thick side under the states that darkens
+ * towards the bottom, so the block's edge reads against the page.
+ */
+.us-map .map-slab {
+  fill: var(--lift);
+  stroke: var(--line-strong);
+  stroke-width: 0.6;
+}
+.us-map .map-slab [data-tone='mid'] {
+  fill: color-mix(in oklab, var(--lift) 50%, var(--lift-deep));
+}
+.us-map .map-slab [data-tone='deep'] {
+  fill: var(--lift-deep);
+}
+
+.us-map .state > path {
+  fill: var(--soft);
+  fill-rule: evenodd;
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  cursor: pointer;
+}
+.us-map .state[data-listed] > path {
+  fill: var(--surface);
+}
+
+.us-map .map-label {
+  font-size: var(--label-size);
+  font-weight: 600;
+  fill: var(--ink);
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+/*
+ * The small north-eastern states: the same label, smaller, so neighbours never collide. Desktop
+ * has room for a little more.
+ */
+.us-map .map-label-small {
+  font-size: calc(var(--label-size) * 0.7);
+}
+@media (width >= 64rem) {
+  .us-map .map-label-small {
+    font-size: calc(var(--label-size) * 0.85);
+  }
+}
+
+/* A target for a state too small to point at (DC): invisible, over its neighbours. */
+.us-map .state-hit {
+  fill: transparent;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+/* A hovered or filtered state, raised: a darker side under a blue top. */
+.us-map .map-side {
+  fill: var(--accent-strong);
+  stroke: var(--accent-strong);
+  stroke-width: 1;
+}
+.us-map .map-top {
+  fill: var(--accent);
+  stroke: var(--accent-strong);
+  stroke-width: 1;
+  cursor: pointer;
+}
+/* The raised copy of the abbreviation: the base label's place and size, white on the blue top. */
+.us-map .map-top-label {
+  fill: var(--on-ink);
+  stroke: none;
+}
+
+/* Keyboard focus on a state's button: its outline in the focus colour, above its neighbours. */
+.us-map .map-focus {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+/*
+ * The shown state's name and total over the map (StateCard.tsx): plain text with no frame,
+ * kept legible over borders and labels by a halo in the surface colour behind the glyphs.
+ */
+.map-callout {
+  -webkit-text-stroke: 3px var(--surface);
+  paint-order: stroke fill;
+}

@@ -1,4 +1,11 @@
-import { AnimatePresence, motion } from 'motion/react'
+import {
+  AnimatePresence,
+  motion,
+  useIsPresent,
+  useReducedMotion,
+  type Transition,
+  type Variants,
+} from 'motion/react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { Button } from '../../components/Button.tsx'
@@ -6,7 +13,7 @@ import { CopyValue } from '../../components/CopyValue.tsx'
 import { SEARCH_INPUT } from '../../components/Field.tsx'
 import { EmptyDrawer, VerdictBlocked } from '@/components/illustrations'
 import { Icon } from '../../components/Icon.tsx'
-import { rise, stagger } from '../../components/motion.ts'
+import { EASE, quick, rise, settle, stagger } from '../../components/motion.ts'
 import { ErrorNote } from '../../components/Note.tsx'
 import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
 import { Skeleton } from '../../components/Skeleton.tsx'
@@ -21,6 +28,7 @@ import {
   draftFromRecord,
   isSearchable,
   listAges,
+  matchesLine,
   noMatchesLine,
   placeText,
   searchedCount,
@@ -31,6 +39,8 @@ import { useRecedingHero } from '../../lib/scroll.ts'
 import { AddProviderSheet } from '../providers/AddProviderSheet.tsx'
 import { CARD, CARD_LINK } from './cards.ts'
 import { useLookupState } from './lookupState.ts'
+import { stateName } from './map/mapInfo.ts'
+import { StatesMap } from './map/StatesMap.tsx'
 
 const SEARCH_DELAY_MS = 300
 
@@ -56,18 +66,26 @@ type View =
 
 /**
  * Search every exclusion list directly, open a hit to see what the lists hold around it, or
- * turn it into a tracked provider. The search is kept above the routes, so it is still there
- * when the reader comes back from a record.
+ * turn it into a tracked provider. A state chosen on the map narrows the search to it; the map
+ * folds away while the field holds anything. The search and its state are kept above the
+ * routes, so they are still there when the reader comes back from a record.
  */
 export function LookupPage() {
-  const { draft, q, setDraft, setQ } = useLookupState()
+  const { draft, q, state, setDraft, setQ, setState } = useLookupState()
   const [prefill, setPrefill] = useState<ProviderDraft | null>(null)
   const [focused, setFocused] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const typed = useTypedPlaceholder(EXAMPLES, !focused && draft === '')
-  const searchable = isSearchable(q)
-  const lookup = useExclusionLookup(q, searchable)
+  const typing = draft.trim() !== ''
+  // An emptied field searches nothing, even before the pause that updates `q`.
+  const searchable = isSearchable(q) && typing
+  const lookup = useExclusionLookup(q, state, searchable)
   const { anchor: heroAnchor, ...hero } = useRecedingHero()
+  const reduced = useReducedMotion() ?? false
+  // The swap runs one way at a time. Typing: the map leaves, then results may show. Clearing:
+  // the results leave, then the map comes back (at once when no results were on screen).
+  const [mapGone, setMapGone] = useState(typing)
+  const [resultsGone, setResultsGone] = useState(true)
 
   useEffect(() => {
     const term = draft.trim()
@@ -76,17 +94,24 @@ export function LookupPage() {
     return () => clearTimeout(timer)
   }, [draft, q, setQ])
 
-  const view: View = !searchable
-    ? { kind: 'idle' }
-    : lookup.isError
-      ? { kind: 'error', message: lookup.error.message, retry: () => void lookup.refetch() }
-      : lookup.data === undefined
-        ? { kind: 'loading' }
-        : {
-            kind: lookup.data.records.length ? 'results' : 'empty',
-            data: lookup.data,
-            refreshing: lookup.isPlaceholderData,
-          }
+  const view: View =
+    !searchable || !mapGone
+      ? { kind: 'idle' }
+      : lookup.isError
+        ? { kind: 'error', message: lookup.error.message, retry: () => void lookup.refetch() }
+        : lookup.data === undefined
+          ? { kind: 'loading' }
+          : {
+              kind: lookup.data.records.length ? 'results' : 'empty',
+              data: lookup.data,
+              refreshing: lookup.isPlaceholderData,
+            }
+  const showResults = view.kind !== 'idle'
+  const showMap = !typing && resultsGone
+  // Whatever is on screen is no longer gone. Set during render, so the other one never mounts
+  // beside it; each becomes gone again only when its exit completes.
+  if (showResults && resultsGone) setResultsGone(false)
+  if (showMap && mapGone) setMapGone(false)
 
   return (
     <>
@@ -149,7 +174,50 @@ export function LookupPage() {
               </AnimatePresence>
             </div>
           </search>
+          {/* The state filter, under the field, so it stays in view while the map is folded. */}
+          <AnimatePresence initial={false}>
+            {state && (
+              <motion.div
+                key="state-filter"
+                initial={{ height: 0, opacity: 0, y: 10 }}
+                animate={{ height: 'auto', opacity: 1, y: 0, transition: reduced ? INSTANT : RISE }}
+                exit={{ height: 0, opacity: 0, transition: reduced ? INSTANT : quick }}
+                className="overflow-hidden"
+              >
+                <div className="flex justify-center px-1 pt-3 pb-1">
+                  <StateFilter
+                    name={stateName(state)}
+                    onClear={() => {
+                      setState(null)
+                      input.current?.focus()
+                    }}
+                  />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
+
+        {/* The map under the field (16 px, desktop 24 px, then the stage's own room for a state's
+            text); it leaves while the field holds anything and returns when it is empty. */}
+        <AnimatePresence initial={false} onExitComplete={() => setMapGone(true)}>
+          {showMap && (
+            <MapSlot key="map" reduced={reduced}>
+              <div className="pt-4 lg:pt-6">
+                <StatesMap
+                  filter={state}
+                  onFilter={(code) => {
+                    setState(state === code ? null : code)
+                    // The map can sit below the fold: bring the title, field and chip back
+                    // into view so the choice is seen, and let typing start at once.
+                    window.scrollTo({ top: 0, behavior: reduced ? 'instant' : 'smooth' })
+                    input.current?.focus({ preventScroll: true })
+                  }}
+                />
+              </div>
+            </MapSlot>
+          )}
+        </AnimatePresence>
 
         <motion.section
           style={hero.results}
@@ -158,11 +226,20 @@ export function LookupPage() {
           aria-label="Lookup results"
           className="mt-5 lg:mt-12"
         >
-          <LookupView
-            view={view}
-            query={q}
-            onCheck={(record) => setPrefill(draftFromRecord(record))}
-          />
+          <AnimatePresence initial={false} onExitComplete={() => setResultsGone(true)}>
+            {showResults && (
+              <motion.div
+                key="results"
+                exit={{ opacity: 0, y: -6, transition: reduced ? INSTANT : quick }}
+              >
+                <LookupView
+                  view={view}
+                  query={q}
+                  onCheck={(record) => setPrefill(draftFromRecord(record))}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.section>
       </PageBody>
       <AnimatePresence>
@@ -215,7 +292,8 @@ function LookupView({
         >
           <EmptyDrawer />
           <p className="mt-4 text-title">
-            {noMatchesLine(view.data.sources)} for “{query}”
+            {noMatchesLine(view.data.sources, view.data.state && stateName(view.data.state))} for “
+            {query}”
           </p>
           <ListsLine sources={view.data.sources} className="max-w-xl" />
         </motion.div>
@@ -231,9 +309,11 @@ function LookupView({
         >
           <div className="flex flex-col gap-1">
             <p className="text-subheading">
-              {records.length >= LOOKUP_LIMIT
-                ? `The best ${records.length} matches; add a word to narrow them`
-                : plural(records.length, 'match', 'matches')}
+              {matchesLine(
+                records.length,
+                LOOKUP_LIMIT,
+                view.data.state && stateName(view.data.state),
+              )}
             </p>
             <ListsLine sources={sources} className="max-w-5xl" />
           </div>
@@ -257,6 +337,60 @@ function LookupView({
       )
     }
   }
+}
+
+const INSTANT: Transition = { duration: 0 }
+/** The map's and the filter chip's arrival: a list row's rise, a touch longer. */
+const RISE: Transition = { duration: 0.36, ease: EASE }
+
+/**
+ * The map's return. It waits 80 ms at opacity 0 first: the freshly mounted map, a large SVG under
+ * a 3D tilt, is rasterized during that pause, while still invisible, so the rise itself runs on
+ * a painted layer and drops no frames.
+ */
+const MAP_RISE: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  shown: { opacity: 1, y: 0, transition: { ...RISE, delay: 0.08 } },
+}
+
+/**
+ * The map's slot. It leaves the way the receding hero does (fading and shrinking to 0.96 in
+ * place, `settle`) and comes back the way a list row arrives (`MAP_RISE`); instant under reduced
+ * motion. While it leaves it is hidden from assistive technology and out of the tab order.
+ */
+function MapSlot({ reduced, children }: { reduced: boolean; children: ReactNode }) {
+  const present = useIsPresent()
+  return (
+    <motion.div
+      variants={MAP_RISE}
+      initial={reduced ? false : 'hidden'}
+      animate="shown"
+      exit={{ opacity: 0, scale: 0.96, transition: reduced ? INSTANT : settle }}
+      aria-hidden={present ? undefined : true}
+      inert={!present}
+    >
+      {children}
+    </motion.div>
+  )
+}
+
+/** "Searching in Washington" with a way out: the state the lookup is narrowed to. */
+function StateFilter({ name, onClear }: { name: string; onClear: () => void }) {
+  return (
+    <p className="inline-flex h-9 items-center gap-1 rounded-full border border-line-strong bg-surface pr-1 pl-4 text-small text-ink">
+      <span>
+        Searching in <span className="font-semibold">{name}</span>
+      </span>
+      <button
+        type="button"
+        aria-label="Clear state filter"
+        onClick={onClear}
+        className="grid size-7 place-items-center rounded-full text-ink-muted transition-colors hover:bg-soft hover:text-ink"
+      >
+        <Icon name="close" size={14} />
+      </button>
+    </p>
+  )
 }
 
 /** "Searched 2 lists · <list> updated <date> · ...": what an answer covers, and as of when. */

@@ -5,6 +5,7 @@ import {
   draftFromRecord,
   isSearchable,
   listAges,
+  matchesLine,
   noMatchesLine,
   placeText,
   searchedCount,
@@ -95,6 +96,9 @@ describe('list ages', () => {
       'Searched 2 lists · Fake Federal List updated Oct 9, 2026 · Fake State List fetched Oct 26, 2026 · Fake Unloaded List not loaded, not searched',
     )
     expect(noMatchesLine([federal])).toBe('No matches in 1 list')
+    expect(noMatchesLine([federal, state, never], 'Washington')).toBe(
+      'No matches in Washington across 2 lists',
+    )
   })
 })
 
@@ -139,5 +143,20 @@ describe('draftFromRecord', () => {
       npi: '',
       licences: [],
     })
+  })
+})
+
+describe('matchesLine', () => {
+  it('counts the matches, and names the state a search was narrowed to', () => {
+    expect(matchesLine(1, 25)).toBe('1 match')
+    expect(matchesLine(3, 25, 'Washington')).toBe('3 matches in Washington')
+    expect(matchesLine(3, 25, null)).toBe('3 matches')
+  })
+
+  it('asks for another word when the page is full', () => {
+    expect(matchesLine(25, 25)).toBe('The best 25 matches; add a word to narrow them')
+    expect(matchesLine(25, 25, 'Iowa')).toBe(
+      'The best 25 matches in Iowa; add a word to narrow them',
+    )
   })
 })

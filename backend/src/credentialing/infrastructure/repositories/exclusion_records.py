@@ -24,7 +24,7 @@ from credentialing.domain.models import (
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
 from credentialing.domain.policies import candidate_keys, license_key, party_key
-from credentialing.domain.types import Npi, SourceId
+from credentialing.domain.types import Npi, SourceId, StateCode
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.jsonb import mapping_jsonb, model_jsonb
 
@@ -246,7 +246,14 @@ class PostgresExclusionRecordRepository:
             rows = await cursor.fetchall()
         return [row.to_domain() for row in rows]
 
-    async def search(self, query: str, *, limit: int) -> Sequence[ExclusionRecord]:
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int,
+        source_ids: Sequence[SourceId] = (),
+        state: StateCode | None = None,
+    ) -> Sequence[ExclusionRecord]:
         """Current rows matching a free-text lookup, best first, at most 50.
 
         Every run of letters and digits in ``query`` must start a word of the row's names,
@@ -254,7 +261,9 @@ class PostgresExclusionRecordRepository:
         (``"stop pharm"`` finds "1 Stop Pharmacy"). A query of exactly ten digits also matches
         the NPI itself; those rows come first, then rows where more query words are whole
         words (names outrank related parties, which outrank identifiers), then by prefix
-        rank, then by name.
+        rank, then by name. With ``state``, only rows from one of ``source_ids`` or with a
+        licence or address in that state; the text match bounds the rows first, so the filter
+        needs no index of its own.
         """
         term = query.strip()
         tokens = _SEARCH_TOKEN.findall(term.casefold())
@@ -273,6 +282,12 @@ class PostgresExclusionRecordRepository:
                 {_SELECT:q}
                 where valid_to is null
                   and (npi = {npi} or search_vector @@ to_tsquery('simple', {tsquery}))
+                  and (
+                    {state}::text is null
+                    or source_id = any({list(source_ids)}::text[])
+                    or license_state = {state}
+                    or address->>'state' = {state}
+                  )
                 order by
                     coalesce(npi = {npi}, false) desc,
                     ts_rank(search_vector, to_tsquery('simple', {whole_words})) desc,

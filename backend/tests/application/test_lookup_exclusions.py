@@ -6,7 +6,7 @@ import pytest
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import EntityKind, Outcome
-from credentialing.domain.models import ExclusionRecord, License, SourceSnapshot
+from credentialing.domain.models import Address, ExclusionRecord, License, SourceSnapshot
 from tests.fakes import InMemoryRecords, InMemorySnapshots, ScriptedConnector, capabilities
 from tests.synthetic import NOW, exclusion, make_npi
 
@@ -14,12 +14,13 @@ pytestmark = pytest.mark.anyio
 
 FEDERAL = "fake_federal"
 STATE = "fake_ny_list"
+OTHER_STATE = "fake_wa_list"
 NPI = make_npi("100000001")
 LIST_UPDATED = datetime(2026, 1, 9, 12, 0, tzinfo=UTC)
 
 
 class _World:
-    def __init__(self) -> None:
+    def __init__(self, *, with_washington: bool = False) -> None:
         registry = ConnectorRegistry()
         registry.register(ScriptedConnector(capabilities(FEDERAL, display_name="B Federal List")))
         registry.register(
@@ -29,6 +30,12 @@ class _World:
                 )
             )
         )
+        if with_washington:
+            registry.register(
+                ScriptedConnector(
+                    capabilities(OTHER_STATE, frozenset({"WA"}), display_name="C Washington List")
+                )
+            )
         self.records = InMemoryRecords()
         self.snapshots = InMemorySnapshots()
         self.use_case = LookupExclusions(self.records, self.snapshots, registry)
@@ -119,3 +126,58 @@ async def test_the_limit_is_clamped() -> None:
 
     assert len((await world.use_case.run("Testperson", limit=500)).records) == 50
     assert len((await world.use_case.run("Testperson", limit=0)).records) == 1
+
+
+def _living_in(record: ExclusionRecord, state: str) -> ExclusionRecord:
+    return record.model_copy(update={"address": Address(city="Sampleville", state=state)})
+
+
+async def test_a_state_keeps_its_own_lists_and_records_tied_to_it() -> None:
+    world = _World(with_washington=True)
+    on_the_list = exclusion(source_id=STATE, first="Onlist")
+    licensed_there = exclusion(
+        source_id=OTHER_STATE, first="Licensed", license=License(number="QZ1", state="NY")
+    )
+    federal_there = _living_in(exclusion(source_id=FEDERAL, first="Federal"), "NY")
+    federal_elsewhere = _living_in(exclusion(source_id=FEDERAL, first="Elsewhere"), "WA")
+    other_list = _living_in(exclusion(source_id=OTHER_STATE, first="Otherlist"), "WA")
+    await world.load(STATE, on_the_list)
+    await world.load(OTHER_STATE, licensed_there, other_list)
+    await world.load(FEDERAL, federal_there, federal_elsewhere)
+
+    result = await world.use_case.run("Testperson", limit=50, state="NY")
+
+    assert result.state == "NY"
+    assert {found.record.id for found in result.records} == {
+        on_the_list.id,
+        licensed_there.id,
+        federal_there.id,
+    }
+    assert [s.source_id for s in result.sources] == [STATE, FEDERAL, OTHER_STATE]
+
+
+async def test_without_a_state_every_record_is_kept() -> None:
+    world = _World(with_washington=True)
+    await world.load(STATE, exclusion(source_id=STATE))
+    await world.load(OTHER_STATE, _living_in(exclusion(source_id=OTHER_STATE), "WA"))
+
+    result = await world.use_case.run("Testperson", limit=50)
+
+    assert result.state is None
+    assert len(result.records) == 2
+
+
+async def test_a_state_without_lists_still_finds_records_living_there() -> None:
+    world = _World()
+    living = _living_in(exclusion(source_id=FEDERAL), "TX")
+    await world.load(FEDERAL, living, exclusion(source_id=FEDERAL, first="Nowhere"))
+
+    result = await world.use_case.run("Testperson", limit=50, state="TX")
+
+    assert [found.record.id for found in result.records] == [living.id]
+
+
+async def test_a_short_query_keeps_the_state() -> None:
+    result = await _World().use_case.run("a", limit=20, state="NY")
+
+    assert (result.state, result.records) == ("NY", ())

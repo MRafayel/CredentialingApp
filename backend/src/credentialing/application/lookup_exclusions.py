@@ -16,7 +16,7 @@ from credentialing.domain.ports import (
     ExclusionRecordRepository,
     SnapshotRepository,
 )
-from credentialing.domain.types import SourceId
+from credentialing.domain.types import SourceId, StateCode
 
 MIN_QUERY_LENGTH: Final = 2
 """Shorter queries (after trimming) are not searched."""
@@ -53,6 +53,8 @@ class LookupResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     query: str
+    state: StateCode | None
+    """The state the search was narrowed to, if any."""
     records: tuple[LookupRecord, ...]
     sources: tuple[SearchedSource, ...]
 
@@ -70,24 +72,34 @@ class LookupExclusions:
         self._snapshots = snapshots
         self._connectors = connectors
 
-    async def run(self, query: str, *, limit: int) -> LookupResult:
+    async def run(self, query: str, *, limit: int, state: StateCode | None = None) -> LookupResult:
         """Search for ``query`` (trimmed); fewer than two characters searches nothing.
 
-        ``limit`` is clamped to 1..50. Sources are every registered exclusion list, ordered by
-        display name.
+        ``limit`` is clamped to 1..50. With ``state``, only records tied to it: on one of the
+        state's own lists, or with a licence or address there (a federal record included).
+        Every list is still consulted that way, so sources are every registered exclusion
+        list, ordered by display name.
         """
         term = query.strip()
         if len(term) < MIN_QUERY_LENGTH:
-            return LookupResult(query=term, records=(), sources=())
+            return LookupResult(query=term, state=state, records=(), sources=())
         capabilities = {
             connector.capabilities.source_id: connector.capabilities
             for connector in self._connectors.bulk_connectors()
             if connector.capabilities.credential_type is CredentialType.EXCLUSION
         }
-        found = await self._records.search(term, limit=min(max(limit, 1), MAX_RESULTS))
+        own_lists = (
+            [c.source_id for c in capabilities.values() if state in c.jurisdictions]
+            if state
+            else []
+        )
+        found = await self._records.search(
+            term, limit=min(max(limit, 1), MAX_RESULTS), source_ids=own_lists, state=state
+        )
         sources = [await self._searched(c) for c in capabilities.values()]
         return LookupResult(
             query=term,
+            state=state,
             records=tuple(
                 LookupRecord(
                     record=r, provider_type=provider_type(r, capabilities.get(r.source_id))
