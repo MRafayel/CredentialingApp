@@ -64,8 +64,22 @@
   stroke-linejoin: round;
   cursor: pointer;
 }
+/*
+ * A listed state's fill on the heat scale: --heat (0 to 1, set on the state by StatesMap.tsx
+ * from `heat` in mapInfo.ts) runs Ice Blue to Soft Azure over its first half and Soft Azure to
+ * Accent Blue over its second. A listed state without data has no --heat and stays Ice Blue.
+ */
 .us-map .state[data-listed] > path {
-  fill: var(--surface);
+  --heat-a: color-mix(
+    in oklab,
+    var(--heat-low),
+    var(--heat-mid) calc(min(var(--heat, 0), 0.5) * 200%)
+  );
+  fill: color-mix(
+    in oklab,
+    var(--heat-a),
+    var(--heat-high) calc(max(var(--heat, 0) - 0.5, 0) * 200%)
+  );
 }
 
 .us-map .map-label {

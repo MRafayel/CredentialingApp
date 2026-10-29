@@ -4,34 +4,50 @@ import {
   actionLabel,
   draftFromRecord,
   isSearchable,
-  listAges,
   matchesLine,
   noMatchesLine,
   placeText,
   searchedCount,
   searchedLine,
+  searchedScope,
 } from './lookup.ts'
-
-const UTC = { locale: 'en-US', timeZone: 'UTC' }
 
 const federal: SearchedSource = {
   source_id: 'fake_federal',
   display_name: 'Fake Federal List',
+  jurisdictions: ['US'],
   list_last_updated: '2026-10-09T12:51:03Z',
   fetched_at: '2026-10-25T13:12:41Z',
 }
 const state: SearchedSource = {
-  source_id: 'fake_state',
-  display_name: 'Fake State List',
+  source_id: 'fake_wa',
+  display_name: 'Fake Washington List',
+  jurisdictions: ['WA'],
   list_last_updated: null,
   fetched_at: '2026-10-26T08:12:51Z',
+}
+const older: SearchedSource = {
+  source_id: 'fake_ny',
+  display_name: 'Fake New York List',
+  jurisdictions: ['NY'],
+  list_last_updated: '2026-07-27T00:00:00Z',
+  fetched_at: '2026-10-27T09:00:00Z',
+}
+const regional: SearchedSource = {
+  source_id: 'fake_regional',
+  display_name: 'Fake Regional List',
+  jurisdictions: ['NY', 'NJ'],
+  list_last_updated: '2026-10-09T03:00:00Z',
+  fetched_at: '2026-10-27T09:00:00Z',
 }
 const never: SearchedSource = {
   source_id: 'fake_never',
   display_name: 'Fake Unloaded List',
+  jurisdictions: ['IA'],
   list_last_updated: null,
   fetched_at: null,
 }
+const WASHINGTON = { code: 'WA', name: 'Washington' }
 
 const record: LookupRecord = {
   id: '00000000-0000-0000-0000-0000000000aa',
@@ -81,24 +97,59 @@ describe('actionLabel', () => {
   })
 })
 
-describe('list ages', () => {
-  it("uses the source's own date, then the fetch date, and says when a list was never loaded", () => {
-    expect(listAges([federal, state, never]).map((age) => [age.kind, age.at])).toEqual([
-      ['updated', federal.list_last_updated],
-      ['fetched', state.fetched_at],
-      ['not_loaded', null],
-    ])
+describe('searchedLine', () => {
+  it('counts distinct states and the federal list, never naming lists', () => {
+    expect(searchedLine([federal, state, older, regional])).toBe(
+      'Searched 3 states and the federal list',
+    )
   })
 
+  it('says how many lists were not loaded', () => {
+    expect(searchedLine([federal, regional, never])).toBe(
+      'Searched 2 states and the federal list · 1 list not loaded',
+    )
+  })
+
+  it('names several federal lists, and states or the federal list alone', () => {
+    const second = { ...federal, source_id: 'fake_federal_2' }
+    expect(searchedLine([federal, second])).toBe('Searched the federal lists')
+    expect(searchedLine([state])).toBe('Searched 1 state')
+  })
+
+  it('never counts a list that was not loaded as searched', () => {
+    expect(searchedLine([never])).toBe('Searched no lists · 1 list not loaded')
+    expect(searchedScope([never, federal])).toEqual({
+      where: 'Searched the federal list',
+      notLoaded: 1,
+    })
+  })
+
+  it('narrowed to a state, names its own list and the federal list', () => {
+    expect(searchedLine([federal, state, older], WASHINGTON)).toBe(
+      'Searched in Washington · its state list and the federal list',
+    )
+  })
+
+  it('says when the state has no list of its own yet', () => {
+    expect(searchedLine([federal, older], WASHINGTON)).toBe(
+      'Searched in Washington · no state list yet, the federal list only',
+    )
+    expect(searchedLine([older], WASHINGTON)).toBe('Searched in Washington · no state list yet')
+  })
+
+  it("says when the state's own list was not loaded, without counting it twice", () => {
+    const unloaded = { ...state, fetched_at: null }
+    expect(searchedLine([federal, unloaded, never], WASHINGTON)).toBe(
+      'Searched in Washington · its state list not loaded, the federal list only · 1 list not loaded',
+    )
+  })
+})
+
+describe('searchedCount', () => {
   it('counts only loaded lists as searched', () => {
     expect(searchedCount([federal, state, never])).toBe(2)
-    expect(searchedLine([federal, state, never], UTC)).toBe(
-      'Searched 2 lists · Fake Federal List updated Oct 9, 2026 · Fake State List fetched Oct 26, 2026 · Fake Unloaded List not loaded, not searched',
-    )
     expect(noMatchesLine([federal])).toBe('No matches in 1 list')
-    expect(noMatchesLine([federal, state, never], 'Washington')).toBe(
-      'No matches in Washington across 2 lists',
-    )
+    expect(noMatchesLine([federal, state, never], 'Washington')).toBe('No matches in Washington')
   })
 })
 

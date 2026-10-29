@@ -268,10 +268,14 @@ class LookupRecordResponse(MatchedRecordResponse):
 
 
 class SearchedSourceResponse(Schema):
-    """A list a lookup searched; ``fetched_at`` is null when the list was never loaded."""
+    """A list a lookup searched; ``fetched_at`` is null when the list was never loaded.
+
+    ``jurisdictions`` are the states the list covers, sorted; "US" is the federal list.
+    """
 
     source_id: str
     display_name: str
+    jurisdictions: list[str]
     list_last_updated: datetime | None
     fetched_at: datetime | None
 

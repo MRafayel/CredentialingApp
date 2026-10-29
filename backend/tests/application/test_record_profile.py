@@ -105,6 +105,7 @@ async def test_a_record_with_everything_around_it() -> None:
     assert profile.record.source_name == "Fake Washington List"
     assert profile.record.status is RecordStatus.ENDED
     assert profile.source.display_name == "Fake Washington List"
+    assert profile.source.jurisdictions == ("WA",)
     assert profile.source.source_url == f"https://example.test/{STATE}"
     assert profile.source.fetched_at == NOW
     assert profile.source.freshness is Freshness.LIVE
@@ -163,6 +164,7 @@ async def test_an_unregistered_source_is_named_by_its_id() -> None:
 
     assert profile.source.display_name == "retired_list"
     assert profile.source.source_url is None
+    assert profile.source.jurisdictions == ()
     assert profile.source.freshness is None
 
 

@@ -92,9 +92,9 @@ async def test_reports_every_list_with_its_dates_even_without_matches() -> None:
     result = await world.use_case.run("Nobodyperson", limit=20)
 
     assert result.records == ()
-    assert [(s.source_id, s.display_name) for s in result.sources] == [
-        (STATE, "A New York List"),
-        (FEDERAL, "B Federal List"),
+    assert [(s.source_id, s.display_name, s.jurisdictions) for s in result.sources] == [
+        (STATE, "A New York List", ("NY",)),
+        (FEDERAL, "B Federal List", ("US",)),
     ]
     loaded, never = result.sources
     assert (loaded.fetched_at, loaded.list_last_updated) == (state.fetched_at, LIST_UPDATED)

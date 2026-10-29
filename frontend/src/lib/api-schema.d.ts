@@ -726,6 +726,8 @@ export interface components {
       source_id: string
       /** Display Name */
       display_name: string
+      /** Jurisdictions */
+      jurisdictions: string[]
       /** List Last Updated */
       list_last_updated: string | null
       /** Fetched At */
@@ -763,12 +765,16 @@ export interface components {
     /**
      * SearchedSourceResponse
      * @description A list a lookup searched; ``fetched_at`` is null when the list was never loaded.
+     *
+     *     ``jurisdictions`` are the states the list covers, sorted; "US" is the federal list.
      */
     SearchedSourceResponse: {
       /** Source Id */
       source_id: string
       /** Display Name */
       display_name: string
+      /** Jurisdictions */
+      jurisdictions: string[]
       /** List Last Updated */
       list_last_updated: string | null
       /** Fetched At */

@@ -1,11 +1,11 @@
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'motion/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent, MouseEvent, PointerEvent } from 'react'
+import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from 'react'
 import { EASE } from '../../../components/motion.ts'
 import { DESKTOP, useMedia } from '../../../lib/media.ts'
 import { useSources } from '../../../lib/queries.ts'
 import { labelFor, type StateLabel } from './labels.ts'
-import { coveredStates } from './mapInfo.ts'
+import { coveredStates, heat, heatScale } from './mapInfo.ts'
 import { StateCard, type MapPoint } from './StateCard.tsx'
 import { MAP_HEIGHT, MAP_WIDTH, NATION, STATES, type MapState } from './states.ts'
 import './map.css'
@@ -66,6 +66,12 @@ export function StatesMap({
 }) {
   const sources = useSources()
   const covered = useMemo(() => coveredStates(sources.data ?? []), [sources.data])
+  // Each listed state's place on the heat scale (map.css turns it into its fill).
+  const heats = useMemo(() => {
+    const data = sources.data ?? []
+    const scale = heatScale(data)
+    return new Map(STATES.map((state) => [state.code, heat(data, state.code, scale)]))
+  }, [sources.data])
   const [hover, setHover] = useState<Hover>(NO_HOVER)
   const hovered = hover.code
   const [point, setPoint] = useState<(MapPoint & { code: string }) | null>(null)
@@ -227,6 +233,7 @@ export function StatesMap({
                   className="state"
                   data-code={state.code}
                   data-listed={covered.has(state.code) ? '' : undefined}
+                  style={heatStyle(heats.get(state.code))}
                 >
                   <path d={state.d} vectorEffect="non-scaling-stroke" />
                 </g>
@@ -321,6 +328,11 @@ export function StatesMap({
       </div>
     </div>
   )
+}
+
+/** The state's heat for map.css, or nothing for a state off the scale. */
+function heatStyle(value: number | null | undefined): CSSProperties | undefined {
+  return value == null ? undefined : ({ '--heat': value } as CSSProperties)
 }
 
 const labelClass = (label: StateLabel) => (label.small ? 'map-label map-label-small' : 'map-label')

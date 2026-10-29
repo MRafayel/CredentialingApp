@@ -38,6 +38,15 @@
   --accent-soft: #e9efff;
   --accent-light: #2b6ad9;
 
+  /*
+   * The Lookup map's heat scale (owner's choice, 2026-10-29): a listed state's fill runs from
+   * Ice Blue (fewest excluded) through Soft Azure to Accent Blue (most), on a log scale
+   * (map.css, `heat` in mapInfo.ts). The map's state fills only.
+   */
+  --heat-low: #e5f2ff;
+  --heat-mid: #a8c9ed;
+  --heat-high: #3b82ed;
+
   /* Status colours live in marks; the word next to a mark stays ink. */
   --status-clear: var(--accent);
   --status-review: #9a5b00;

@@ -32,6 +32,8 @@ class SearchedSource(BaseModel):
 
     source_id: SourceId
     display_name: str
+    jurisdictions: tuple[StateCode, ...]
+    """The states the list covers, sorted ("US" for the federal list)."""
     list_last_updated: AwareDatetime | None
     """The source's own last-modified time for the searched copy, when it publishes one."""
     fetched_at: AwareDatetime | None
@@ -114,6 +116,7 @@ class LookupExclusions:
         return SearchedSource(
             source_id=capabilities.source_id,
             display_name=capabilities.display_name,
+            jurisdictions=tuple(sorted(capabilities.jurisdictions)),
             list_last_updated=completed.last_modified if completed else None,
             fetched_at=completed.fetched_at if completed else None,
         )

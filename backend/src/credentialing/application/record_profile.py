@@ -170,6 +170,7 @@ class RecordProfileQuery:
             source=RecordSource(
                 source_id=record.source_id,
                 display_name=own.display_name if own else record.source_id,
+                jurisdictions=tuple(sorted(own.jurisdictions)) if own else (),
                 source_url=own.source_url if own else None,
                 list_last_updated=completed.last_modified if completed else None,
                 fetched_at=completed.fetched_at if completed else None,

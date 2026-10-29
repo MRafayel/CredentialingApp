@@ -106,6 +106,7 @@ async def test_search_returns_records_with_their_lists(client: httpx2.AsyncClien
         {
             "source_id": SOURCE,
             "display_name": "Fake New York List",
+            "jurisdictions": ["NY"],
             "list_last_updated": None,
             "fetched_at": (NOW - timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
         }

@@ -20,18 +20,17 @@ import { Skeleton } from '../../components/Skeleton.tsx'
 import { StatusLabel } from '../../components/Status.tsx'
 import { TypedPlaceholder } from '../../components/TypedPlaceholder.tsx'
 import { useTypedPlaceholder } from '../../components/useTypedPlaceholder.ts'
-import { CalendarDate, DateOf } from '../../components/Time.tsx'
+import { CalendarDate } from '../../components/Time.tsx'
 import type { Lookup, LookupRecord, SearchedSource } from '../../lib/api.ts'
-import { plural } from '../../lib/format.ts'
 import {
   actionLabel,
   draftFromRecord,
   isSearchable,
-  listAges,
   matchesLine,
   noMatchesLine,
+  notLoadedText,
   placeText,
-  searchedCount,
+  searchedScope,
 } from '../../lib/lookup.ts'
 import { displayName, type ProviderDraft } from '../../lib/provider.ts'
 import { LOOKUP_LIMIT, useExclusionLookup } from '../../lib/queries.ts'
@@ -295,7 +294,7 @@ function LookupView({
             {noMatchesLine(view.data.sources, view.data.state && stateName(view.data.state))} for “
             {query}”
           </p>
-          <ListsLine sources={view.data.sources} className="max-w-xl" />
+          <ListsLine sources={view.data.sources} state={view.data.state} className="max-w-xl" />
         </motion.div>
       )
     case 'results': {
@@ -315,7 +314,7 @@ function LookupView({
                 view.data.state && stateName(view.data.state),
               )}
             </p>
-            <ListsLine sources={sources} className="max-w-5xl" />
+            <ListsLine sources={sources} state={view.data.state} className="max-w-5xl" />
           </div>
           <motion.ul
             key={query}
@@ -393,33 +392,33 @@ function StateFilter({ name, onClear }: { name: string; onClear: () => void }) {
   )
 }
 
-/** "Searched 2 lists · <list> updated <date> · ...": what an answer covers, and as of when. */
+/**
+ * "Searched 9 states and the federal list": where an answer looked. Lists never loaded are
+ * named as such, never counted as searched.
+ */
 function ListsLine({
   sources,
+  state,
   className,
 }: {
   sources: readonly SearchedSource[]
+  /** The state the search was narrowed to, from the response. */
+  state: string | null
   className?: string
 }) {
+  const scope = searchedScope(sources, state ? { code: state, name: stateName(state) } : null)
   return (
     <p className={`text-caption text-ink-muted ${className ?? ''}`}>
-      Searched {plural(searchedCount(sources), 'list')}
-      {listAges(sources).map((age) => (
-        <span key={age.sourceId}>
+      {scope.where}
+      {scope.notLoaded > 0 && (
+        <>
           {' · '}
-          {age.kind === 'not_loaded' ? (
-            <span className="inline-flex items-center gap-1 font-semibold text-ink">
-              <VerdictBlocked size={12} className="shrink-0" />
-              {age.name} not loaded, not searched
-            </span>
-          ) : (
-            <>
-              {age.name} {age.kind === 'updated' ? 'updated' : 'fetched'}{' '}
-              {age.at && <DateOf at={age.at} />}
-            </>
-          )}
-        </span>
-      ))}
+          <span className="inline-flex items-center gap-1 font-semibold text-ink">
+            <VerdictBlocked size={12} className="shrink-0" />
+            {notLoadedText(scope.notLoaded)}
+          </span>
+        </>
+      )}
     </p>
   )
 }
