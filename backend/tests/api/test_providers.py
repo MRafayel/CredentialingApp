@@ -71,7 +71,7 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
             DEFAULT_FRESHNESS,
             clock,
         ),
-        lookup_exclusions=LookupExclusions(records, snapshots, registry),
+        lookup_exclusions=LookupExclusions(records, snapshots, registry, clock),
         record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),

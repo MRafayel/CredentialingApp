@@ -2,6 +2,7 @@ import pytest
 
 from credentialing.connectors.framework.delimited import read_delimited
 from credentialing.connectors.framework.errors import ParseError
+from credentialing.connectors.framework.rows import UnreadableRow
 
 COLUMNS = ("NAME", "CODE")
 
@@ -71,3 +72,26 @@ def test_headerless_files_use_the_expected_columns() -> None:
     )
 
     assert rows == [{"NAME": "Testperson", "CODE": "A"}]
+
+
+def test_ragged_rows_become_unreadable_rows_instead_of_rejecting_the_file() -> None:
+    body = b"Testperson\tA\r\nstray fragment\r\nSampleton\tB\textra\r\nMockfield\tC\r\n"
+
+    rows = list(
+        read_delimited(
+            body,
+            delimiter="\t",
+            encoding="utf-8",
+            has_header=False,
+            expected_columns=COLUMNS,
+            quoted=False,
+            ragged=True,
+        )
+    )
+
+    assert rows == [
+        {"NAME": "Testperson", "CODE": "A"},
+        UnreadableRow("data row 2 has 1 fields, expected 2"),
+        UnreadableRow("data row 3 has 3 fields, expected 2"),
+        {"NAME": "Mockfield", "CODE": "C"},
+    ]

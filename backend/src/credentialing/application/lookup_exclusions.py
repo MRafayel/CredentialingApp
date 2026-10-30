@@ -5,13 +5,16 @@ can be read for what it is: nothing in these lists, as of these dates. A list th
 loaded is reported as such, never counted as searched.
 """
 
+from datetime import UTC
 from typing import Final
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from credentialing.domain.enums import CredentialType
+from credentialing.domain.enums import CredentialType, RecordStatus
 from credentialing.domain.models import ConnectorCapabilities, ExclusionRecord
+from credentialing.domain.policies import record_status
 from credentialing.domain.ports import (
+    Clock,
     ConnectorDirectory,
     ExclusionRecordRepository,
     SnapshotRepository,
@@ -41,12 +44,14 @@ class SearchedSource(BaseModel):
 
 
 class LookupRecord(BaseModel):
-    """A record a lookup found, with the provider type its source wrote down."""
+    """A record a lookup found, with the provider type its source wrote down and whether it
+    still stands, has ended or was removed from its published list."""
 
     model_config = ConfigDict(frozen=True)
 
     record: ExclusionRecord
     provider_type: str | None
+    status: RecordStatus
 
 
 class LookupResult(BaseModel):
@@ -62,17 +67,22 @@ class LookupResult(BaseModel):
 
 
 class LookupExclusions:
-    """Searches the current rows of every exclusion list by name, NPI or licence number."""
+    """Searches the latest rows of every exclusion list by name, NPI or licence number.
+
+    Latest rows include those removed from their published list, reported with that status.
+    """
 
     def __init__(
         self,
         records: ExclusionRecordRepository,
         snapshots: SnapshotRepository,
         connectors: ConnectorDirectory,
+        clock: Clock,
     ) -> None:
         self._records = records
         self._snapshots = snapshots
         self._connectors = connectors
+        self._clock = clock
 
     async def run(self, query: str, *, limit: int, state: StateCode | None = None) -> LookupResult:
         """Search for ``query`` (trimmed); fewer than two characters searches nothing.
@@ -99,12 +109,15 @@ class LookupExclusions:
             term, limit=min(max(limit, 1), MAX_RESULTS), source_ids=own_lists, state=state
         )
         sources = [await self._searched(c) for c in capabilities.values()]
+        today = self._clock.now().astimezone(UTC).date()
         return LookupResult(
             query=term,
             state=state,
             records=tuple(
                 LookupRecord(
-                    record=r, provider_type=provider_type(r, capabilities.get(r.source_id))
+                    record=r,
+                    provider_type=provider_type(r, capabilities.get(r.source_id)),
+                    status=record_status([r], today),
                 )
                 for r in found
             ),

@@ -6,7 +6,7 @@ import type { LinkedRecord, ProfileRecord, RecordProfile, RecordVersion } from '
 import { calendarDate, type FormatOptions } from './format.ts'
 import { actionLabel } from './lookup.ts'
 
-export type RecordStepKind = 'seen' | 'changed' | 'left'
+export type RecordStepKind = 'seen' | 'changed' | 'left' | 'back' | 'rewritten'
 
 export type RecordStep = {
   key: string
@@ -22,46 +22,73 @@ const STEP_TITLES: Record<RecordStepKind, string> = {
   seen: 'First seen in this list',
   changed: 'Changed in this list',
   left: 'No longer in this list',
+  back: 'Back in this list',
+  rewritten: 'Row rewritten by the list',
 }
 
 /**
  * The record's history in its list, newest first: when it was first seen, each later version
- * with what changed, and when it left the list. `versions` come oldest first, as the API gives
- * them.
+ * with what changed, and when it left the list. A version closed before the next one began
+ * means the row left the list and came back: a "left" step, then a "back" one. A version the
+ * backend marks `rewritten` replaced the one before it when the list rewrote the row's name,
+ * licence or NPI: one "rewritten" step saying what is new. `versions` come oldest first, as
+ * the API gives them.
  */
 export function recordSteps(
   versions: readonly RecordVersion[],
   options: FormatOptions = {},
 ): RecordStep[] {
-  const steps: RecordStep[] = versions.map((version, index) => {
+  const steps: RecordStep[] = versions.flatMap((version, index) => {
     const previous = versions[index - 1]
-    const kind: RecordStepKind = previous ? 'changed' : 'seen'
-    const detail = previous ? changes(previous, version, options) : firstDetail(version)
-    return {
-      key: `${kind}-${version.valid_from}`,
-      kind,
-      at: version.valid_from,
-      // A new version that changed nothing shown here changed something else on the row.
-      title: detail === OTHER_DETAILS ? 'Updated in this list' : STEP_TITLES[kind],
-      detail,
+    if (!previous) {
+      return [step('seen', version.valid_from, firstDetail(version))]
     }
+    if (version.rewritten) {
+      return [step('rewritten', version.valid_from, rewrite(previous, version, options))]
+    }
+    const detail = changes(previous, version, options)
+    if (previous.valid_to && Date.parse(previous.valid_to) < Date.parse(version.valid_from)) {
+      return [
+        step('left', previous.valid_to, null),
+        step('back', version.valid_from, detail === OTHER_DETAILS ? null : detail),
+      ]
+    }
+    // A new version that changed nothing shown here changed something else on the row.
+    const title = detail === OTHER_DETAILS ? 'Updated in this list' : STEP_TITLES.changed
+    return [{ ...step('changed', version.valid_from, detail), title }]
   })
   const last = versions.at(-1)
-  if (last?.valid_to) {
-    steps.push({
-      key: `left-${last.valid_to}`,
-      kind: 'left',
-      at: last.valid_to,
-      title: STEP_TITLES.left,
-      detail: null,
-    })
-  }
+  if (last?.valid_to) steps.push(step('left', last.valid_to, null))
   return steps.reverse()
+}
+
+function step(kind: RecordStepKind, at: string, detail: string | null): RecordStep {
+  return { key: `${kind}-${at}`, kind, at, title: STEP_TITLES[kind], detail }
 }
 
 function firstDetail(version: RecordVersion): string {
   const word = actionLabel(version.action).word
   return version.action_raw ? `${word} · as published: ${version.action_raw}` : word
+}
+
+/** What a rewrite changed: the identity fields first, then anything else that changed. */
+function rewrite(before: RecordVersion, after: RecordVersion, options: FormatOptions): string {
+  const parts: string[] = []
+  if (before.name !== after.name) parts.push(`Name now ${after.name}`)
+  if (
+    before.license_number !== after.license_number ||
+    before.license_state !== after.license_state
+  ) {
+    parts.push(
+      after.license_number
+        ? `Licence now ${[after.license_number, after.license_state].filter(Boolean).join(' ')}`
+        : 'Licence removed',
+    )
+  }
+  if (before.npi !== after.npi) parts.push(after.npi ? `NPI now ${after.npi}` : 'NPI removed')
+  const rest = changes(before, after, options)
+  if (rest !== OTHER_DETAILS) parts.push(rest)
+  return parts.length ? parts.join(' · ') : OTHER_DETAILS
 }
 
 /** What a version changed from the one before it, in a few words. */

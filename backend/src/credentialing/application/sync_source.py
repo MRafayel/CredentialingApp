@@ -32,6 +32,21 @@ DUE_TOLERANCE: Final = timedelta(hours=1)
 run finished a few seconds after today's started."""
 
 
+def source_changed(applied: SourceSnapshot | None, snapshot: SourceSnapshot) -> bool:
+    """Whether ``snapshot``'s bytes differ from the last applied (completed) snapshot's.
+
+    Only a change in the source can remove a row from its published list; the same bytes
+    parsed again (a parser fix under ``--force``) cannot. Without a hash on either side the
+    sameness is unproven, so the source counts as changed and a missing row as removed.
+    """
+    return (
+        applied is None
+        or applied.content_hash is None
+        or snapshot.content_hash is None
+        or applied.content_hash != snapshot.content_hash
+    )
+
+
 class SyncReport(BaseModel):
     """What one sync did: the stored snapshot and, when a new list was loaded, its diff."""
 
@@ -68,6 +83,10 @@ class SyncSource:
         reinstatement, and applying it would close every missing row. The snapshot is stored
         as ``FAILED`` with the counts in its note; ``force`` applies it anyway.
 
+        Rows missing from the new list count as removed from the published list only when the
+        source's bytes changed since the last applied snapshot (:func:`source_changed`); a
+        forced re-parse of the same bytes only supersedes them.
+
         If storing the records fails after the snapshot was stored, a ``FAILED`` snapshot is
         added after it, so the next poll does not trust the stored validators and downloads
         the list again.
@@ -81,14 +100,19 @@ class SyncSource:
         previous = None if force else await self._snapshots.latest(source_id)
         result = await connector.fetch(previous)
         snapshot, records = result.snapshot, result.records
+        applied = await self._snapshots.latest_completed(source_id)
         if records is not None and not force:
-            snapshot, records = await self._guard_shrink(snapshot, records)
+            snapshot, records = await self._guard_shrink(snapshot, records, applied)
         await self._snapshots.add(snapshot)
         if records is None:
             return SyncReport(snapshot=snapshot)
         try:
             diff = await self._records.replace_current(
-                source_id, snapshot.id, records, self._clock.now()
+                source_id,
+                snapshot.id,
+                records,
+                self._clock.now(),
+                source_changed=source_changed(applied, snapshot),
             )
         except Exception:
             logger.exception("storing records failed source_id=%s", source_id)
@@ -115,9 +139,11 @@ class SyncSource:
         return completed.fetched_at + connector.capabilities.poll_interval - DUE_TOLERANCE
 
     async def _guard_shrink(
-        self, snapshot: SourceSnapshot, records: tuple[ExclusionRecord, ...]
+        self,
+        snapshot: SourceSnapshot,
+        records: tuple[ExclusionRecord, ...],
+        applied: SourceSnapshot | None,
     ) -> tuple[SourceSnapshot, tuple[ExclusionRecord, ...] | None]:
-        applied = await self._snapshots.latest_completed(snapshot.source_id)
         before = applied.row_count if applied is not None else None
         if (
             before is None

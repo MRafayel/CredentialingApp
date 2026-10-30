@@ -31,6 +31,8 @@ const STEP_ICONS: Record<RecordStepKind, IconName> = {
   seen: 'plus',
   changed: 'refresh',
   left: 'close',
+  back: 'plus',
+  rewritten: 'copy',
 }
 
 const MUTED = <span className="text-ink-muted">Not published</span>
@@ -86,7 +88,10 @@ function Loaded({ profile }: { profile: RecordProfile }) {
           title={displayName(record)}
           subtitle={`${kind} · ${record.source_name}`}
         />
-        <StatusHero profile={profile} onCheck={() => setPrefill(draftFromRecord(record))} />
+        <div className="flex flex-col gap-3">
+          <StatusHero profile={profile} onCheck={() => setPrefill(draftFromRecord(record))} />
+          {profile.rewritten_by && <RewrittenNote successor={profile.rewritten_by} />}
+        </div>
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
           <div className="flex min-w-0 flex-col gap-12 lg:gap-14">
             <History profile={profile} />
@@ -191,6 +196,22 @@ function StatusHero({ profile, onCheck }: { profile: RecordProfile; onCheck: () 
         )}
       </p>
     </section>
+  )
+}
+
+/** A quiet pointer from a row the list rewrote to the record that replaced it. */
+function RewrittenNote({ successor }: { successor: string }) {
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 px-2 text-small text-ink-muted">
+      <Icon name="copy" size={13} className="text-ink-faint" />
+      <Link
+        to={`/lookup/${successor}`}
+        className="inline-flex items-center gap-1 rounded-full font-medium text-accent-strong underline-offset-4 hover:underline"
+      >
+        This row was rewritten by the list
+        <Icon name="chevronRight" size={13} />
+      </Link>
+    </p>
   )
 }
 

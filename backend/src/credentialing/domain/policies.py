@@ -37,7 +37,7 @@ from credentialing.domain.models import (
     VerificationResult,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
-from credentialing.domain.types import SourceId
+from credentialing.domain.types import Npi, SourceId
 
 # --- Freshness -----------------------------------------------------------------------------
 
@@ -531,6 +531,39 @@ def _explain(level: MatchLevel, evidence: tuple[MatchEvidence, ...], note: str |
     return f"{_LEVEL_LABELS[level]}: {', '.join(parts)}{ending}."
 
 
+# --- Record versions -----------------------------------------------------------------------
+
+type RewriteKey = tuple[Npi | None, date | None]
+"""A row's NPI and effective date: what a row the list rewrote keeps across the rewrite."""
+
+
+def pair_rewritten_rows(
+    vanished: Mapping[str, RewriteKey], added: Mapping[str, RewriteKey]
+) -> dict[str, str]:
+    """Pair rows the list rewrote in one sync: ``{added record_hash: vanished record_hash}``.
+
+    A vanished identity and a new one are the same row with an identity field rewritten (a
+    spelling, a licence number) when they share NPI and effective date and are the only
+    vanished and the only new row with that pair. Rows without an NPI, and pairs shared by
+    more than one row on either side, are not paired: they stay removed and added, for a
+    person to weigh (owner decision 2026-10-30).
+    """
+
+    def by_key(rows: Mapping[str, RewriteKey]) -> dict[RewriteKey, list[str]]:
+        grouped: dict[RewriteKey, list[str]] = {}
+        for record_hash, key in rows.items():
+            if key[0] is not None:
+                grouped.setdefault(key, []).append(record_hash)
+        return grouped
+
+    old, new = by_key(vanished), by_key(added)
+    return {
+        new[key][0]: hashes[0]
+        for key, hashes in sorted(old.items(), key=lambda item: item[1])
+        if len(hashes) == 1 and len(new.get(key, ())) == 1
+    }
+
+
 # --- Record status -------------------------------------------------------------------------
 
 RECORD_STATUS_DETAIL: Final = "record_status"
@@ -546,17 +579,33 @@ def record_has_ended(record: ExclusionRecord, today: date) -> bool:
     return record.end_date is not None and record.end_date < today
 
 
+def record_is_removed(record: ExclusionRecord) -> bool:
+    """Whether the record left its published list (its newest version was closed). A list
+    dropping a row does not say why, so this never counts as a reinstatement."""
+    return record.valid_to is not None
+
+
 def record_status(records: Sequence[ExclusionRecord], today: date) -> RecordStatus:
-    """``ENDED`` only when every record has ended; one standing record makes it ``ACTIVE``."""
-    if records and all(record_has_ended(record, today) for record in records):
+    """``ENDED`` when every record has ended; otherwise ``REMOVED`` when every record that has
+    not ended was removed from its list; otherwise ``ACTIVE`` (one standing, listed record)."""
+    if not records:
+        return RecordStatus.ACTIVE
+    standing = [record for record in records if not record_has_ended(record, today)]
+    if not standing:
         return RecordStatus.ENDED
+    if all(record_is_removed(record) for record in standing):
+        return RecordStatus.REMOVED
     return RecordStatus.ACTIVE
 
 
 # --- Verdict -------------------------------------------------------------------------------
 
 _FOUND_FINDINGS: Final = frozenset({Finding.RECORD_FOUND, Finding.RELATED_PARTY})
-"""Findings of a record that names the provider; once it has ended it goes to review."""
+"""Findings of a record that names the provider; once it has ended or was removed from its
+list it goes to review."""
+
+_NOT_STANDING: Final = frozenset({RecordStatus.ENDED.value, RecordStatus.REMOVED.value})
+"""Record statuses of found records that no longer stand on a published list."""
 
 
 def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderVerdict:
@@ -565,7 +614,8 @@ def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderV
     The most serious answer wins: a found record that still stands is LISTED; otherwise a
     standing record of another party that names the provider (``Finding.RELATED_PARTY``) is
     FLAGGED; otherwise an ambiguous match, or a found or related-party record that has ended
-    ("previously listed" or "previously flagged", see :func:`record_status`), is NEEDS_REVIEW;
+    ("previously listed" or "previously flagged") or was removed from its published list
+    (reinstatement not confirmed), see :func:`record_status`, is NEEDS_REVIEW;
     otherwise a source that could not be checked is COULD_NOT_CHECK, never clean; NO_RECORDS
     only when every source answered with none; NOT_CHECKED without results. Should a source
     appear twice, its newest result counts. A result without a record status (stored before it
@@ -579,15 +629,15 @@ def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderV
     results = tuple(newest[source_id] for source_id in sorted(newest))
 
     listed_in = tuple(
-        r.source_id for r in results if r.finding is Finding.RECORD_FOUND and not _ended(r)
+        r.source_id for r in results if r.finding is Finding.RECORD_FOUND and not _not_standing(r)
     )
     flagged_in = tuple(
-        r.source_id for r in results if r.finding is Finding.RELATED_PARTY and not _ended(r)
+        r.source_id for r in results if r.finding is Finding.RELATED_PARTY and not _not_standing(r)
     )
     review_in = tuple(
         r.source_id
         for r in results
-        if r.finding is Finding.AMBIGUOUS or (r.finding in _FOUND_FINDINGS and _ended(r))
+        if r.finding is Finding.AMBIGUOUS or (r.finding in _FOUND_FINDINGS and _not_standing(r))
     )
     unchecked = tuple(r.source_id for r in results if r.outcome is not Outcome.COMPLETED)
     if listed_in:
@@ -621,5 +671,6 @@ def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderV
     )
 
 
-def _ended(result: VerificationResult) -> bool:
-    return result.details.get(RECORD_STATUS_DETAIL) == RecordStatus.ENDED.value
+def _not_standing(result: VerificationResult) -> bool:
+    """Whether the result's records no longer stand: ended or removed from the list."""
+    return result.details.get(RECORD_STATUS_DETAIL) in _NOT_STANDING

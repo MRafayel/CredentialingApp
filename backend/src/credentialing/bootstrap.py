@@ -23,12 +23,19 @@ from credentialing.application.register_provider import RegisterProvider
 from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
 from credentialing.application.verification_history import VerificationHistory
+from credentialing.connectors.ca_dhcs import CaDhcsConnector
 from credentialing.connectors.framework.http import Fetcher, HttpFetcher
+from credentialing.connectors.ga_dch import GaDchConnector
 from credentialing.connectors.ia_medicaid import IaMedicaidConnector
 from credentialing.connectors.in_fssa import InFssaConnector
 from credentialing.connectors.md_medicaid import MdMedicaidConnector
+from credentialing.connectors.mn_dhs_individuals import MnDhsIndividualsConnector
+from credentialing.connectors.mn_dhs_organizations import MnDhsOrganizationsConnector
+from credentialing.connectors.mo_mmac import MoMmacConnector
+from credentialing.connectors.mt_dphhs import MtDphhsConnector
 from credentialing.connectors.nc_medicaid import NcMedicaidConnector
 from credentialing.connectors.nd_medicaid import NdMedicaidConnector
+from credentialing.connectors.nj_treasury import NjTreasuryConnector
 from credentialing.connectors.ny_omig import NyOmigConnector
 from credentialing.connectors.oig_leie import OigLeieConnector
 from credentialing.connectors.pa_medicheck import PaMedicheckConnector
@@ -105,6 +112,13 @@ def build_registry(fetcher: Fetcher) -> ConnectorRegistry:
     registry.register(IaMedicaidConnector(fetcher))
     registry.register(InFssaConnector(fetcher))
     registry.register(PaMedicheckConnector(fetcher))
+    registry.register(NjTreasuryConnector(fetcher))
+    registry.register(MtDphhsConnector(fetcher))
+    registry.register(MoMmacConnector(fetcher))
+    registry.register(GaDchConnector(fetcher))
+    registry.register(CaDhcsConnector(fetcher))
+    registry.register(MnDhsIndividualsConnector(fetcher))
+    registry.register(MnDhsOrganizationsConnector(fetcher))
     return registry
 
 
@@ -128,7 +142,7 @@ def build_services(
         check_exclusions=CheckExclusions(
             registry, providers, records, snapshots, verifications, DEFAULT_FRESHNESS, clock
         ),
-        lookup_exclusions=LookupExclusions(records, snapshots, registry),
+        lookup_exclusions=LookupExclusions(records, snapshots, registry, clock),
         record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
         register_provider=RegisterProvider(providers, clock),
         list_providers=ListProviders(providers),

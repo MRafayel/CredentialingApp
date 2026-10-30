@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx2
@@ -50,12 +50,25 @@ async def _fetch(
     previous: SourceSnapshot | None = None,
     signal: ChangeSignal = ChangeSignal.CONTENT_HASH,
     max_body_bytes: int = 1024,
+    crawl_delay: timedelta = timedelta(0),
+    sleeps: list[float] | None = None,
 ) -> FetchOutcome:
-    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+    async def sleep(seconds: float) -> None:
+        if sleeps is not None:
+            sleeps.append(seconds)
+
+    transport = httpx2.MockTransport(handler)
+    async with httpx2.AsyncClient(transport=transport, follow_redirects=True) as client:
         fetcher = HttpFetcher(
-            client, FixedClock(NOW), retry_pause_seconds=0, max_body_bytes=max_body_bytes
+            client,
+            FixedClock(NOW),
+            retry_pause_seconds=0,
+            max_body_bytes=max_body_bytes,
+            sleep=sleep,
         )
-        return await fetcher.fetch(URL, previous=previous, change_signal=signal)
+        return await fetcher.fetch(
+            URL, previous=previous, change_signal=signal, crawl_delay=crawl_delay
+        )
 
 
 async def test_a_new_body_is_returned_with_hash_and_validators() -> None:
@@ -235,6 +248,91 @@ async def test_a_304_to_an_unconditional_request_fails() -> None:
     assert result.outcome is Outcome.FAILED
 
 
-async def test_change_signals_without_an_implementation_say_why() -> None:
-    with pytest.raises(NotImplementedError, match="no connector uses it yet"):
-        await _fetch(lambda request: httpx2.Response(200), signal=ChangeSignal.LINK_DISCOVERY)
+@pytest.mark.parametrize("signal", [ChangeSignal.LINK_DISCOVERY, ChangeSignal.API_METADATA])
+async def test_resolved_urls_are_fetched_like_a_conditional_get(signal: ChangeSignal) -> None:
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(304)
+
+    result = await _fetch(handler, previous=_previous(etag='"v1"'), signal=signal)
+
+    assert isinstance(result, NotModified)
+    assert seen[0].headers["if-none-match"] == '"v1"'
+
+
+def _redirecting(target: str, content_type: str) -> Handler:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "example.test":
+            return httpx2.Response(302, headers={"location": target})
+        return httpx2.Response(200, content=BODY, headers={"content-type": content_type})
+
+    return handler
+
+
+async def test_an_html_page_on_another_host_after_a_redirect_is_blocked() -> None:
+    handler = _redirecting("https://validate.botcheck.test/?ssa=1", "text/html; charset=utf-8")
+
+    result = await _fetch(handler)
+
+    assert isinstance(result, FetchFailure)
+    assert result.outcome is Outcome.BLOCKED
+    assert result.note == "redirected to validate.botcheck.test"
+
+
+async def test_a_file_on_another_host_after_a_redirect_is_downloaded() -> None:
+    target = "https://bucket.storage.test/list.csv?X-Signature=abc"
+
+    result = await _fetch(_redirecting(target, "text/csv"))
+
+    assert isinstance(result, FetchedDocument)
+    assert result.final_url == target
+
+
+async def test_an_html_page_on_the_same_host_is_not_a_redirect_block() -> None:
+    page = b"<html><body>Landing page</body></html>"
+
+    result = await _fetch(
+        lambda request: httpx2.Response(200, content=page, headers={"content-type": "text/html"})
+    )
+
+    assert isinstance(result, FetchedDocument)
+
+
+async def test_the_crawl_delay_is_waited_before_every_request() -> None:
+    sleeps: list[float] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = b"" if request.method == "HEAD" else BODY
+        return httpx2.Response(200, headers={"etag": '"v2"'}, content=body)
+
+    result = await _fetch(
+        handler,
+        previous=_previous(etag='"v1"'),
+        signal=ChangeSignal.HEADER_COMPARE,
+        crawl_delay=timedelta(seconds=10),
+        sleeps=sleeps,
+    )
+
+    assert isinstance(result, FetchedDocument)
+    assert sleeps == [10.0, 10.0]
+
+
+async def test_the_crawl_delay_is_waited_before_the_retry_too() -> None:
+    sleeps: list[float] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("refused", request=request)
+
+    await _fetch(handler, crawl_delay=timedelta(seconds=5), sleeps=sleeps)
+
+    assert sleeps == [5.0, 0, 5.0]
+
+
+async def test_no_crawl_delay_means_no_wait() -> None:
+    sleeps: list[float] = []
+
+    await _fetch(lambda request: httpx2.Response(200, content=BODY), sleeps=sleeps)
+
+    assert sleeps == []

@@ -69,7 +69,12 @@ class SnapshotRepository(Protocol):
 
 
 class ExclusionRecordRepository(Protocol):
-    """Exclusion list rows, versioned by ``valid_from``/``valid_to`` (shared reference data)."""
+    """Exclusion list rows, versioned by ``valid_from``/``valid_to`` (shared reference data).
+
+    The *latest* row of an identity is its newest version, still listed (``valid_to`` null) or
+    removed from the published list (``valid_to`` set). Reads return latest rows, so a party
+    who left a list keeps matching and its removal can be reported, never read as clean.
+    """
 
     async def replace_current(
         self,
@@ -77,19 +82,30 @@ class ExclusionRecordRepository(Protocol):
         snapshot_id: UUID,
         records: Sequence[ExclusionRecord],
         now: datetime,
+        *,
+        source_changed: bool,
     ) -> SnapshotDiff:
         """Make ``records`` the source's current list, atomically, and report the diff.
 
         For each incoming identity (``record_hash``):
 
-        - not current: inserted as of ``now`` under ``snapshot_id`` (added);
+        - never seen in the list: inserted as of ``now`` under ``snapshot_id`` (added);
+        - removed earlier: a new version inserted as of ``now``, the removed one no longer
+          latest (readded);
         - current with the same ``content_hash``: kept with its original ``valid_from``
           (unchanged);
         - current with a different ``content_hash``: the old version is closed with
-          ``valid_to = now`` and the new one inserted as of ``now`` (changed).
+          ``valid_to = now`` and no longer latest, the new one inserted as of ``now`` (changed).
 
-        Current identities missing from ``records`` are closed with ``valid_to = now``
-        (removed). Rows are never deleted, so every version stays readable. Search keys
+        Current identities missing from ``records`` are closed with ``valid_to = now``. When
+        ``source_changed`` (the snapshot's bytes differ from the previous completed one's)
+        they stay latest (removed from the published list); otherwise only the parser changed,
+        so they lose latest too (reparsed) and never read as removed. When ``source_changed``,
+        a missing identity that pairs one to one by NPI and effective date with a never-seen
+        incoming one (:func:`~credentialing.domain.policies.pair_rewritten_rows`) was rewritten
+        by the list: it is closed and loses latest, and the new row's ``rewrites`` holds its id
+        (rewritten, neither added nor removed). Rows are never deleted,
+        so every version stays readable. Search keys
         derived from the names are refreshed on unchanged rows when the domain's name
         normalization has changed; that is derived data, not a new version.
         """
@@ -103,7 +119,7 @@ class ExclusionRecordRepository(Protocol):
         *,
         license_numbers: Sequence[str] = (),
     ) -> Sequence[ExclusionRecord]:
-        """Current rows with this NPI (own or related), name, or licence number.
+        """Latest rows with this NPI (own or related), name, or licence number.
 
         The NPI is looked up as the row's own NPI and among its related NPIs. Names are the
         normalized last name, organization name, alias and related-party keys
@@ -121,7 +137,7 @@ class ExclusionRecordRepository(Protocol):
         source_ids: Sequence[SourceId] = (),
         state: StateCode | None = None,
     ) -> Sequence[ExclusionRecord]:
-        """Current rows matching a free-text lookup by name, NPI or licence, best first.
+        """Latest rows matching a free-text lookup by name, NPI or licence, best first.
 
         Every word of ``query`` must start a word of the row's names (aliases and related
         parties included) or identifiers (related NPIs included); a ten-digit query also
@@ -143,8 +159,13 @@ class ExclusionRecordRepository(Protocol):
         """Every version of one row identity in one source, current or not, oldest first."""
         ...
 
+    async def rewritten_by(self, record_id: UUID) -> ExclusionRecord | None:
+        """The row whose ``rewrites`` is ``record_id``: the version that replaced it when the
+        list rewrote an identity field; None when it was not rewritten."""
+        ...
+
     async def same_name(self, record: ExclusionRecord, *, limit: int) -> Sequence[ExclusionRecord]:
-        """At most ``limit`` current rows other than ``record`` whose name keys include its
+        """At most ``limit`` latest rows other than ``record`` whose name keys include its
         party key (:func:`~credentialing.domain.policies.party_key`), rows with the same first
         name first, then by source and id; none without a party key."""
         ...
@@ -152,7 +173,7 @@ class ExclusionRecordRepository(Protocol):
     async def same_license(
         self, record: ExclusionRecord, *, limit: int
     ) -> Sequence[ExclusionRecord]:
-        """At most ``limit`` current rows other than ``record`` with its licence number
+        """At most ``limit`` latest rows other than ``record`` with its licence number
         (whitespace and case ignored) in the same state, by source and id; none without a
         licence."""
         ...
@@ -160,7 +181,7 @@ class ExclusionRecordRepository(Protocol):
     async def linked_by_npi(
         self, npis: Sequence[Npi], *, exclude_id: UUID
     ) -> Sequence[ExclusionRecord]:
-        """Current rows other than ``exclude_id`` whose own or related NPIs include any of
+        """Latest rows other than ``exclude_id`` whose own or related NPIs include any of
         ``npis``, ordered by source and id; none when ``npis`` is empty."""
         ...
 

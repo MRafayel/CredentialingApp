@@ -1,7 +1,8 @@
 """Use case: everything the stored lists say about one exclusion record.
 
 From one row it gathers what is known around it: every version of the row in its list (what
-it said and since when), other current rows that are the same party (same NPI, or the same
+it said and since when, across rewrites of its identity by the list), other rows that are the
+same party (same NPI, or the same
 licence number and state), rows tied to it through the other NPIs it publishes, and rows that
 only share the name, which a person must weigh. Most records have little beyond themselves;
 the profile holds as much as the lists do and no more.
@@ -21,7 +22,6 @@ from credentialing.domain.enums import (
     ExclusionAction,
     Freshness,
     RecordLink,
-    RecordStatus,
 )
 from credentialing.domain.models import ConnectorCapabilities, ExclusionRecord
 from credentialing.domain.policies import (
@@ -52,6 +52,9 @@ surname ("Smith": about 800 current rows) never loads in full."""
 MAX_SAME_LICENSE: Final = 25
 """The most records with the same licence number and state a profile lists."""
 
+MAX_REWRITE_HOPS: Final = 20
+"""The most rewrites followed in each direction from the profiled row's identity."""
+
 
 class RecordSource(SearchedSource):
     """The list a record comes from, with the age of the copy that holds it."""
@@ -63,10 +66,10 @@ class RecordSource(SearchedSource):
 
 
 class ProfileRecord(LookupRecord):
-    """A record with the name of its list and whether it still stands."""
+    """A record with the name of its list; ``status`` is that of the row's newest version,
+    across rewrites by the list, so an old version of a row still listed reads as standing."""
 
     source_name: str
-    status: RecordStatus
 
 
 class LinkedRecord(ProfileRecord):
@@ -78,7 +81,12 @@ class LinkedRecord(ProfileRecord):
 
 
 class RecordVersion(BaseModel):
-    """One version of the row in its list: what it said, from when until when."""
+    """One version of the row in its list: what it said, from when until when.
+
+    ``rewritten`` marks the first version of an identity that replaced a previous one when the
+    list rewrote an identity field; ``name`` (last name first for a person), the licence and
+    the NPI say what the rewrite changed. Never a date of birth or an address.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -88,6 +96,11 @@ class RecordVersion(BaseModel):
     action_raw: str | None
     end_date: date | None
     reason: str | None
+    rewritten: bool
+    name: str
+    license_number: str | None
+    license_state: str | None
+    npi: Npi | None
 
 
 class RecordProfile(BaseModel):
@@ -95,7 +108,9 @@ class RecordProfile(BaseModel):
 
     ``same_party`` holds records by NPI, then by licence; ``related`` the records tied through
     the row's other NPIs; ``same_name`` the records that only share the name. No record
-    appears in two of them, and none is another version of the profiled row.
+    appears in two of them, and none is another version of the profiled row. ``versions`` run
+    oldest first across the rewrites of the row's identity; ``rewritten_by`` is the id of the
+    row that replaced the profiled identity when the list rewrote it, None otherwise.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -107,6 +122,7 @@ class RecordProfile(BaseModel):
     same_party: tuple[LinkedRecord, ...]
     related: tuple[LinkedRecord, ...]
     same_name: tuple[LinkedRecord, ...]
+    rewritten_by: UUID | None = None
 
 
 class RecordProfileQuery:
@@ -140,7 +156,7 @@ class RecordProfileQuery:
             for connector in self._connectors.bulk_connectors()
             if connector.capabilities.credential_type is CredentialType.EXCLUSION
         }
-        versions = await self._records.versions(record.source_id, record.record_hash)
+        versions, successor = await self._history(record)
         own_npis = [record.npi] if record.npi else []
         by_npi = await self._records.linked_by_npi(
             [*own_npis, *record.related_npis], exclude_id=record.id
@@ -158,7 +174,7 @@ class RecordProfileQuery:
             else None
         )
 
-        links = _Links(record, capabilities, now.date())
+        links = _Links(record, versions, capabilities, now.date())
         same_party = [
             *links.add(by_npi, _same_npi),
             *links.add(by_licence, _same_license),
@@ -166,7 +182,7 @@ class RecordProfileQuery:
         related = links.add(by_npi, _npi_link)
         same_name = links.add(by_name, _same_name, limit=MAX_SAME_NAME)
         return RecordProfile(
-            record=links.profile(record),
+            record=links.profile(record, newest=versions[-1]),
             source=RecordSource(
                 source_id=record.source_id,
                 display_name=own.display_name if own else record.source_id,
@@ -176,22 +192,81 @@ class RecordProfileQuery:
                 fetched_at=completed.fetched_at if completed else None,
                 freshness=freshness,
             ),
-            first_seen=min((v.valid_from for v in versions), default=record.valid_from),
-            versions=tuple(
-                RecordVersion(
-                    valid_from=v.valid_from,
-                    valid_to=v.valid_to,
-                    action=v.action,
-                    action_raw=v.action_raw,
-                    end_date=v.end_date,
-                    reason=v.reason,
-                )
-                for v in versions or [record]
-            ),
+            first_seen=min(v.valid_from for v in versions),
+            versions=tuple(_version(v) for v in versions),
             same_party=tuple(same_party),
             related=tuple(related),
             same_name=tuple(same_name),
+            rewritten_by=successor.id if successor else None,
         )
+
+    async def _history(
+        self, record: ExclusionRecord
+    ) -> tuple[list[ExclusionRecord], ExclusionRecord | None]:
+        """Every version of the record's row, oldest first, across rewrites by the list, and
+        the row that rewrote the record's own identity (None when it was not rewritten).
+
+        Backwards, each identity's version that ``rewrites`` another leads to the version it
+        replaced, and that identity's versions up to it come first; forwards, the row that
+        rewrote an identity's newest version and its identity's versions from it follow. At
+        most :data:`MAX_REWRITE_HOPS` rewrites each way.
+        """
+        own = list(await self._records.versions(record.source_id, record.record_hash))
+        history = own or [record]
+        seen = {v.id for v in history}
+        segment = history
+        for _ in range(MAX_REWRITE_HOPS):
+            pointer = next((v.rewrites for v in segment if v.rewrites is not None), None)
+            older = await self._records.get(pointer) if pointer else None
+            if older is None or older.id in seen:
+                break
+            segment = [
+                v
+                for v in await self._records.versions(older.source_id, older.record_hash)
+                if v.valid_from <= older.valid_from and v.id not in seen
+            ] or [older]
+            seen.update(v.id for v in segment)
+            history = [*segment, *history]
+        successor = await self._records.rewritten_by(history[-1].id)
+        newer = successor
+        for _ in range(MAX_REWRITE_HOPS):
+            if newer is None or newer.id in seen:
+                break
+            segment = [
+                v
+                for v in await self._records.versions(newer.source_id, newer.record_hash)
+                if v.valid_from >= newer.valid_from and v.id not in seen
+            ] or [newer]
+            seen.update(v.id for v in segment)
+            history = [*history, *segment]
+            newer = await self._records.rewritten_by(segment[-1].id)
+        return history, successor
+
+
+def _version(record: ExclusionRecord) -> RecordVersion:
+    license = record.license
+    return RecordVersion(
+        valid_from=record.valid_from,
+        valid_to=record.valid_to,
+        action=record.action,
+        action_raw=record.action_raw,
+        end_date=record.end_date,
+        reason=record.reason,
+        rewritten=record.rewrites is not None,
+        name=_display_name(record),
+        license_number=license.number if license else None,
+        license_state=license.state if license else None,
+        npi=record.npi,
+    )
+
+
+def _display_name(record: ExclusionRecord) -> str:
+    """The row's name as shown: "Last, First Middle Suffix" for a person."""
+    name = record.person_name
+    if name is None:
+        return record.organization_name or ""
+    given = " ".join(part for part in (name.first, name.middle, name.suffix) if part)
+    return f"{name.last}, {given}" if given else name.last
 
 
 type _Link = tuple[RecordLink, Npi | None]
@@ -199,11 +274,13 @@ type _Classifier = Callable[[ExclusionRecord, ExclusionRecord], _Link | None]
 
 
 class _Links:
-    """Places each other record in at most one section, never a version of the profiled row."""
+    """Places each other record in at most one section, never a version of the profiled row
+    (its rewritten identities included)."""
 
     def __init__(
         self,
         record: ExclusionRecord,
+        versions: Sequence[ExclusionRecord],
         capabilities: Mapping[str, ConnectorCapabilities],
         today: date,
     ) -> None:
@@ -211,14 +288,19 @@ class _Links:
         self._capabilities = capabilities
         self._today = today
         self._seen = {record.id}
+        self._identities = {(v.source_id, v.record_hash) for v in (record, *versions)}
 
-    def profile(self, record: ExclusionRecord) -> ProfileRecord:
+    def profile(
+        self, record: ExclusionRecord, *, newest: ExclusionRecord | None = None
+    ) -> ProfileRecord:
+        """``record`` with its status, taken from ``newest`` (its identity's newest version)
+        when given: an older version is closed even while the row is still listed."""
         own = self._capabilities.get(record.source_id)
         return ProfileRecord(
             record=record,
             provider_type=provider_type(record, own),
             source_name=own.display_name if own else record.source_id,
-            status=record_status([record], self._today),
+            status=record_status([newest or record], self._today),
         )
 
     def add(
@@ -232,10 +314,7 @@ class _Links:
         for other in candidates:
             if limit is not None and len(linked) >= limit:
                 break
-            if other.id in self._seen or (
-                other.source_id == self._record.source_id
-                and other.record_hash == self._record.record_hash
-            ):
+            if other.id in self._seen or (other.source_id, other.record_hash) in self._identities:
                 continue
             link = classify(self._record, other)
             if link is None:

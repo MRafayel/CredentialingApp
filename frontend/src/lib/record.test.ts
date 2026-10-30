@@ -11,6 +11,11 @@ const first: RecordVersion = {
   action_raw: 'Terminate Medicaid Authority',
   end_date: null,
   reason: null,
+  rewritten: false,
+  name: 'Samplespeling, Avery',
+  license_number: 'QZ001',
+  license_state: 'NY',
+  npi: '1000000014',
 }
 const ended: RecordVersion = {
   ...first,
@@ -49,6 +54,50 @@ describe('recordSteps', () => {
     ])
   })
 
+  it('shows a row that left the list and came back as leaving, then back', () => {
+    const back: RecordVersion = { ...first, valid_from: '2026-10-27T08:00:00Z', valid_to: null }
+
+    expect(recordSteps([first, back], UTC)).toEqual([
+      {
+        key: 'back-2026-10-27T08:00:00Z',
+        kind: 'back',
+        at: '2026-10-27T08:00:00Z',
+        title: 'Back in this list',
+        detail: null,
+      },
+      {
+        key: 'left-2026-10-20T08:00:00Z',
+        kind: 'left',
+        at: '2026-10-20T08:00:00Z',
+        title: 'No longer in this list',
+        detail: null,
+      },
+      {
+        key: 'seen-2026-10-01T08:00:00Z',
+        kind: 'seen',
+        at: '2026-10-01T08:00:00Z',
+        title: 'First seen in this list',
+        detail: 'Termination · as published: Terminate Medicaid Authority',
+      },
+    ])
+  })
+
+  it('says what changed when a row comes back different, and when it left again', () => {
+    const back: RecordVersion = {
+      ...first,
+      valid_from: '2026-10-27T08:00:00Z',
+      valid_to: '2026-10-29T08:00:00Z',
+      end_date: '2026-10-15',
+    }
+
+    expect(recordSteps([first, back], UTC).map((step) => [step.kind, step.detail])).toEqual([
+      ['left', null],
+      ['back', 'End date Oct 15, 2026'],
+      ['left', null],
+      ['seen', 'Termination · as published: Terminate Medicaid Authority'],
+    ])
+  })
+
   it('calls a version that changed nothing shown an update to other details', () => {
     const same = { ...first, valid_from: '2026-10-20T08:00:00Z', valid_to: null }
     const step = recordSteps([first, same], UTC)[0]
@@ -69,6 +118,58 @@ describe('recordSteps', () => {
     expect(recordSteps([before, after], UTC)[0]?.detail).toBe(
       'Action now exclusion · End date removed',
     )
+  })
+
+  it('shows a rewrite by the list as one step saying what is new', () => {
+    const rewritten: RecordVersion = {
+      ...first,
+      valid_from: '2026-10-20T08:00:00Z',
+      valid_to: null,
+      rewritten: true,
+      name: 'Samplespelling, Avery',
+      license_number: 'QZ002',
+    }
+
+    expect(recordSteps([first, rewritten], UTC)).toEqual([
+      {
+        key: 'rewritten-2026-10-20T08:00:00Z',
+        kind: 'rewritten',
+        at: '2026-10-20T08:00:00Z',
+        title: 'Row rewritten by the list',
+        detail: 'Name now Samplespelling, Avery · Licence now QZ002 NY',
+      },
+      {
+        key: 'seen-2026-10-01T08:00:00Z',
+        kind: 'seen',
+        at: '2026-10-01T08:00:00Z',
+        title: 'First seen in this list',
+        detail: 'Termination · as published: Terminate Medicaid Authority',
+      },
+    ])
+  })
+
+  it('names a new NPI and other changes on a rewrite, and the row leaving later', () => {
+    const before = { ...first, valid_to: '2026-10-20T08:00:00Z' }
+    const after: RecordVersion = {
+      ...first,
+      valid_from: '2026-10-20T08:00:00Z',
+      valid_to: '2026-10-27T08:00:00Z',
+      rewritten: true,
+      npi: '1000000022',
+      end_date: '2026-10-15',
+    }
+
+    expect(recordSteps([before, after], UTC).map((step) => [step.kind, step.detail])).toEqual([
+      ['left', null],
+      ['rewritten', 'NPI now 1000000022 · End date Oct 15, 2026'],
+      ['seen', 'Termination · as published: Terminate Medicaid Authority'],
+    ])
+  })
+
+  it('calls a rewrite that changed nothing shown a change to other details', () => {
+    const after = { ...first, valid_from: '2026-10-20T08:00:00Z', valid_to: null, rewritten: true }
+
+    expect(recordSteps([first, after], UTC)[0]?.detail).toBe('Other details of the row changed')
   })
 
   it('is empty without versions', () => {

@@ -5,9 +5,15 @@ import pytest
 
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import EntityKind, Outcome
+from credentialing.domain.enums import EntityKind, Outcome, RecordStatus
 from credentialing.domain.models import Address, ExclusionRecord, License, SourceSnapshot
-from tests.fakes import InMemoryRecords, InMemorySnapshots, ScriptedConnector, capabilities
+from tests.fakes import (
+    FixedClock,
+    InMemoryRecords,
+    InMemorySnapshots,
+    ScriptedConnector,
+    capabilities,
+)
 from tests.synthetic import NOW, exclusion, make_npi
 
 pytestmark = pytest.mark.anyio
@@ -38,7 +44,7 @@ class _World:
             )
         self.records = InMemoryRecords()
         self.snapshots = InMemorySnapshots()
-        self.use_case = LookupExclusions(self.records, self.snapshots, registry)
+        self.use_case = LookupExclusions(self.records, self.snapshots, registry, FixedClock(NOW))
 
     async def load(self, source_id: str, *records: ExclusionRecord) -> SourceSnapshot:
         snapshot = SourceSnapshot(
@@ -51,7 +57,9 @@ class _World:
         )
         await self.snapshots.add(snapshot)
         own = tuple(r.model_copy(update={"snapshot_id": snapshot.id}) for r in records)
-        await self.records.replace_current(source_id, snapshot.id, own, snapshot.fetched_at)
+        await self.records.replace_current(
+            source_id, snapshot.id, own, snapshot.fetched_at, source_changed=True
+        )
         return snapshot
 
 
@@ -83,6 +91,22 @@ async def test_finds_a_record_by_npi_name_words_or_licence(query: str) -> None:
         pharmacy.organization_name
     ]
     assert result.records[0].provider_type == "Pharmacy"
+
+
+async def test_a_record_removed_from_its_list_is_found_with_that_status() -> None:
+    world = _World()
+    pharmacy = _pharmacy()
+    standing = exclusion(source_id=STATE, last="Samplestanding")
+    await world.load(STATE, pharmacy, standing)
+    await world.load(STATE, standing)
+
+    (removed,) = (await world.use_case.run("star pharm", limit=20)).records
+    (listed,) = (await world.use_case.run("Samplestanding", limit=20)).records
+
+    assert removed.record.id == pharmacy.id
+    assert removed.record.valid_to is not None
+    assert removed.status is RecordStatus.REMOVED
+    assert listed.status is RecordStatus.ACTIVE
 
 
 async def test_reports_every_list_with_its_dates_even_without_matches() -> None:

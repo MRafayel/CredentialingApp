@@ -6,7 +6,7 @@
 import type { ExclusionAction, LookupRecord, SearchedSource } from './api.ts'
 import { plural } from './format.ts'
 import type { ProviderDraft } from './provider.ts'
-import type { Label } from './labels.ts'
+import { recordStatusLabel, type Label } from './labels.ts'
 
 /** The lookup searches nothing below this many characters (the backend's own minimum). */
 export const MIN_LOOKUP_LENGTH = 2
@@ -23,6 +23,7 @@ const ACTION_WORDS: Record<ExclusionAction, string> = {
   debarment: 'Debarment',
   preclusion: 'Preclusion',
   sanction: 'Sanction',
+  disqualification: 'Disqualification',
   reinstatement: 'Reinstatement',
   other: 'Other action',
 }
@@ -37,6 +38,14 @@ export function actionLabel(action: ExclusionAction): Label {
     default:
       return { tone: 'listed', word: ACTION_WORDS[action] }
   }
+}
+
+/**
+ * A found record's mark on its card: the listed action while the backend says the record stands,
+ * otherwise its status ("Previously listed", "Removed from published list").
+ */
+export function recordLabel(record: Pick<LookupRecord, 'action' | 'status'>): Label {
+  return record.status === 'active' ? actionLabel(record.action) : recordStatusLabel(record.status)
 }
 
 /** The federal jurisdiction: a list that covers every state. */

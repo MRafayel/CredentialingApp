@@ -7,19 +7,27 @@ and the configured User-Agent, a standard browser string by default) is wrapped 
 - skips the download when the source did not change, using the connector's change signal;
 - caps the body size and hashes it;
 - retries once, after a pause, on a connection error or timeout, and never on an HTTP status;
+- waits the source's crawl delay (robots.txt ``Crawl-delay``) before every request it sends;
 - translates every failure into a normalized outcome: timeouts, connection errors and 5xx are
-  ``SOURCE_UNAVAILABLE``; 401, 403, 429 and challenge pages are ``BLOCKED``; anything else
+  ``SOURCE_UNAVAILABLE``; 401, 403, 429, challenge pages and an HTML page served after a
+  redirect to another host (a bot manager's validation page) are ``BLOCKED``; anything else
   unexpected is ``FAILED``. A failure never looks like an empty list.
+
+Which URL to fetch, and whether to fetch at all, is the connector's business: link-discovery
+and API-metadata sources resolve the file's URL first (``framework/base.py``) and then fetch
+it here like any other.
 """
 
 import asyncio
 import hashlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Final, Protocol
+from urllib.parse import urlsplit
 
 import httpx2
 
@@ -95,9 +103,17 @@ class Fetcher(Protocol):
     """What a bulk-list connector needs to download its source."""
 
     async def fetch(
-        self, url: str, *, previous: SourceSnapshot | None, change_signal: ChangeSignal
+        self,
+        url: str,
+        *,
+        previous: SourceSnapshot | None,
+        change_signal: ChangeSignal,
+        crawl_delay: timedelta = timedelta(0),
     ) -> FetchOutcome:
-        """Download ``url`` unless ``previous`` shows it unchanged, or report the failure."""
+        """Download ``url`` unless ``previous`` shows it unchanged, or report the failure.
+
+        ``crawl_delay`` is waited before every request sent.
+        """
         ...
 
 
@@ -121,39 +137,48 @@ class HttpFetcher:
         *,
         retry_pause_seconds: float = RETRY_PAUSE_SECONDS,
         max_body_bytes: int = MAX_BODY_BYTES,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client = client
         self._clock = clock
         self._retry_pause = retry_pause_seconds
         self._max_body_bytes = max_body_bytes
+        self._sleep = sleep
 
     async def fetch(
-        self, url: str, *, previous: SourceSnapshot | None, change_signal: ChangeSignal
+        self,
+        url: str,
+        *,
+        previous: SourceSnapshot | None,
+        change_signal: ChangeSignal,
+        crawl_delay: timedelta = timedelta(0),
     ) -> FetchOutcome:
         """Fetch ``url`` with the change detection ``change_signal`` names.
 
         - ``CONDITIONAL_GET``: ``If-None-Match``/``If-Modified-Since`` from ``previous``; a 304
-          is unchanged.
+          is unchanged. ``LINK_DISCOVERY`` and ``API_METADATA`` fetch the URL their
+          connector resolved the same way.
         - ``CONTENT_HASH``: a plain GET; a body hashing equal to ``previous`` is unchanged.
         - ``HEADER_COMPARE``: HEAD first; equal ETag/Last-Modified is unchanged, otherwise GET.
 
         After any GET, a body hashing equal to ``previous`` is reported as unchanged too, for
-        servers that ignore conditional requests.
+        servers that ignore conditional requests. ``crawl_delay`` is waited before every
+        request (HEAD, GET and the retry).
         """
         started = time.perf_counter()
         fetched_at = self._clock.now()
+        delay = crawl_delay.total_seconds()
         match change_signal:
-            case ChangeSignal.CONDITIONAL_GET:
-                result = await self._get(url, previous, fetched_at, conditional=True)
+            case (
+                ChangeSignal.CONDITIONAL_GET
+                | ChangeSignal.LINK_DISCOVERY
+                | ChangeSignal.API_METADATA
+            ):
+                result = await self._get(url, previous, fetched_at, delay, conditional=True)
             case ChangeSignal.CONTENT_HASH:
-                result = await self._get(url, previous, fetched_at, conditional=False)
+                result = await self._get(url, previous, fetched_at, delay, conditional=False)
             case ChangeSignal.HEADER_COMPARE:
-                result = await self._header_compare(url, previous, fetched_at)
-            case ChangeSignal.API_METADATA | ChangeSignal.LINK_DISCOVERY:
-                raise NotImplementedError(
-                    f"{change_signal} needs a source-specific metadata request or link "
-                    "extraction; no connector uses it yet"
-                )
+                result = await self._header_compare(url, previous, fetched_at, delay)
         logger.info(
             "http fetch url=%s signal=%s result=%s status=%s bytes=%s duration_ms=%d",
             url,
@@ -166,9 +191,9 @@ class HttpFetcher:
         return result
 
     async def _header_compare(
-        self, url: str, previous: SourceSnapshot | None, fetched_at: datetime
+        self, url: str, previous: SourceSnapshot | None, fetched_at: datetime, delay: float
     ) -> FetchOutcome:
-        head = await self._request("HEAD", url, {}, fetched_at)
+        head = await self._request("HEAD", url, {}, fetched_at, delay)
         if isinstance(head, FetchFailure):
             return head
         if previous is not None and _same_validators(previous, head):
@@ -179,13 +204,14 @@ class HttpFetcher:
                 fetched_at=fetched_at,
                 status=head.status,
             )
-        return await self._get(url, previous, fetched_at, conditional=False)
+        return await self._get(url, previous, fetched_at, delay, conditional=False)
 
     async def _get(
         self,
         url: str,
         previous: SourceSnapshot | None,
         fetched_at: datetime,
+        delay: float,
         *,
         conditional: bool,
     ) -> FetchOutcome:
@@ -195,7 +221,7 @@ class HttpFetcher:
                 headers["If-None-Match"] = previous.etag
             if previous.last_modified:
                 headers["If-Modified-Since"] = _http_date(previous.last_modified)
-        response = await self._request("GET", url, headers, fetched_at)
+        response = await self._request("GET", url, headers, fetched_at, delay)
         if isinstance(response, FetchFailure):
             return response
         if response.status == 304:
@@ -235,20 +261,25 @@ class HttpFetcher:
         )
 
     async def _request(
-        self, method: str, url: str, headers: dict[str, str], fetched_at: datetime
+        self, method: str, url: str, headers: dict[str, str], fetched_at: datetime, delay: float
     ) -> _Response | FetchFailure:
-        """Send one request, retrying once on a transport error, and classify the answer."""
+        """Send one request, retrying once on a transport error, and classify the answer.
+
+        ``delay`` (the crawl delay, in seconds) is waited before each attempt.
+        """
         attempts = RETRY_ATTEMPTS + 1
         for attempt in range(1, attempts + 1):
+            if delay > 0:
+                await self._sleep(delay)
             try:
                 async with self._client.stream(method, url, headers=headers) as response:
-                    return await self._read(response, method, fetched_at)
+                    return await self._read(response, method, url, fetched_at)
             except httpx2.TransportError as error:
                 if attempt < attempts:
                     logger.warning(
                         "http retry url=%s error=%s attempt=%d", url, type(error).__name__, attempt
                     )
-                    await asyncio.sleep(self._retry_pause)
+                    await self._sleep(self._retry_pause)
                     continue
                 return FetchFailure(
                     outcome=Outcome.SOURCE_UNAVAILABLE,
@@ -266,7 +297,7 @@ class HttpFetcher:
         raise AssertionError("unreachable: the loop always returns")
 
     async def _read(
-        self, response: httpx2.Response, method: str, fetched_at: datetime
+        self, response: httpx2.Response, method: str, requested_url: str, fetched_at: datetime
     ) -> _Response | FetchFailure:
         status = response.status_code
 
@@ -301,6 +332,9 @@ class HttpFetcher:
         content_type = response.headers.get("content-type")
         if _is_challenge(content_type, body):
             return failure(Outcome.BLOCKED, f"challenge page (HTTP {status})")
+        final_host = _host(str(response.url))
+        if final_host != _host(requested_url) and _is_html(content_type):
+            return failure(Outcome.BLOCKED, f"redirected to {final_host}")
         return _Response(
             status=status,
             body=body,
@@ -311,9 +345,17 @@ class HttpFetcher:
         )
 
 
+def _is_html(content_type: str | None) -> bool:
+    return content_type is not None and "html" in content_type.lower()
+
+
+def _host(url: str) -> str:
+    return (urlsplit(url).hostname or "").lower()
+
+
 def _is_challenge(content_type: str | None, body: bytes) -> bool:
     """Whether an HTML body is a bot-manager challenge or CAPTCHA page rather than data."""
-    if not content_type or "html" not in content_type.lower():
+    if not _is_html(content_type):
         return False
     head = body[:_CHALLENGE_SCAN_BYTES].lower()
     return any(marker in head for marker in _CHALLENGE_MARKERS)

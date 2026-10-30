@@ -146,15 +146,19 @@ class ExclusionAction(StrEnum):
     DEBARMENT = "debarment"
     PRECLUSION = "preclusion"
     SANCTION = "sanction"
+    DISQUALIFICATION = "disqualification"
     REINSTATEMENT = "reinstatement"
     OTHER = "other"
 
 
 class RecordStatus(StrEnum):
-    """Whether a matched exclusion record still stands or has ended (end date passed)."""
+    """Whether a matched exclusion record still stands, has ended (end date passed), or was
+    removed from the published list."""
 
     ACTIVE = "active"
     ENDED = "ended"
+    REMOVED = "removed"
+    """No longer on the published list; reinstatement is not confirmed."""
 
 
 class RecordLink(StrEnum):

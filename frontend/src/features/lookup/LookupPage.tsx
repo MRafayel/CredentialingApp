@@ -30,6 +30,7 @@ import {
   noMatchesLine,
   notLoadedText,
   placeText,
+  recordLabel,
   searchedScope,
 } from '../../lib/lookup.ts'
 import { displayName, type ProviderDraft } from '../../lib/provider.ts'
@@ -437,7 +438,7 @@ function LookupRow({
   sourceName: string
   onCheck: () => void
 }) {
-  const label = actionLabel(record.action)
+  const label = recordLabel(record)
   const place = placeText(record)
   const extras: { key: string; node: ReactNode }[] = []
   if (place) extras.push({ key: 'place', node: place })
@@ -474,6 +475,7 @@ function LookupRow({
         <div className="flex flex-col gap-1 text-small">
           <StatusLabel label={label} size={15} chip className="text-body" />
           <div className="flex flex-col gap-0.5 pl-9 text-ink-muted">
+            {record.status !== 'active' && <span>{actionLabel(record.action).word}</span>}
             {record.action_raw && <span>As published: {record.action_raw}</span>}
             <span className="tabular-nums">
               Effective{' '}

@@ -218,6 +218,34 @@ def test_create_and_direct_construction_agree() -> None:
     assert rebuilt == record
 
 
+def test_rewrites_is_left_out_of_both_hashes() -> None:
+    record = exclusion(npi=make_npi("100000001"))
+    rewritten = ExclusionRecord(**{**record.model_dump(), "rewrites": uuid4()})
+    recomputed = ExclusionRecord.create(
+        id=uuid4(),
+        source_id=record.source_id,
+        snapshot_id=record.snapshot_id,
+        entity_kind=record.entity_kind,
+        action=record.action,
+        raw=record.raw,
+        valid_from=record.valid_from,
+        person_name=record.person_name,
+        npi=record.npi,
+        effective_date=record.effective_date,
+    )
+
+    assert record.rewrites is None
+    assert rewritten.rewrites is not None
+    assert (recomputed.record_hash, recomputed.content_hash) == (
+        record.record_hash,
+        record.content_hash,
+    )
+    assert (rewritten.record_hash, rewritten.content_hash) == (
+        record.record_hash,
+        record.content_hash,
+    )
+
+
 def test_content_hash_without_related_fields_is_unchanged() -> None:
     def content(related_npis: tuple[str, ...], related_parties: tuple[str, ...]) -> str:
         return compute_content_hash(

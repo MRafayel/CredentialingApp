@@ -6,6 +6,8 @@ column names, legends and footnotes below the data, Excel dates next to dates ty
 No real row is ever copied here.
 """
 
+import hashlib
+import json
 from collections.abc import Sequence
 from datetime import date
 from io import BytesIO
@@ -581,3 +583,168 @@ def in_fssa() -> bytes:
             ("Casey Mc Example, DDS", NPI_F, "Phoenix AZ", "07/04/2019"),
         ],
     )
+
+
+def mo_mmac() -> bytes:
+    """Missouri: a title row, the header on row 2, one row per provider type (merged), a
+    text date among Excel dates, a licence with another state's prefix."""
+    return workbook(
+        [
+            ("PROVIDER SANCTION LIST - CURRENT THROUGH SEPTEMBER 2026",),
+            (
+                "PROVIDER NAME",
+                "NPI",
+                "TERM DATE",
+                "LETTER DATE",
+                "PROV TYPE/SPECIALTY",
+                "LICENSE #",
+                "TERMINATION REASON",
+            ),
+            (
+                "SAMPLE CARE SERVICES LLC",
+                int(NPI_A),
+                date(2024, 6, 12),
+                date(2024, 5, 13),
+                "26-CDS",
+                "N/A",
+                "FAILURE TO USE EVV",
+            ),
+            (
+                "SAMPLE CARE SERVICES LLC",
+                int(NPI_A),
+                date(2024, 6, 12),
+                date(2024, 5, 13),
+                "27-REASSESS ",
+                "N/A",
+                "FAILURE TO USE EVV",
+            ),
+            (
+                "TESTPERSON, AVERY J JR",
+                NPI_B,
+                "02/28/19",
+                date(2019, 1, 29),
+                "20-PHYSICIAN",
+                "KS 0412345, MO R1234",
+                "OTHER STATE TERMINATION",
+            ),
+            (
+                "A MOCK CDS",
+                "N/A",
+                date(2018, 9, 16),
+                date(2018, 8, 16),
+                "26-CDS ONLY",
+                "N/A",
+                "BAD DEBT",
+            ),
+            (
+                "JORDAN K EXAMPLEDOC MD",
+                int(NPI_C),
+                date(2022, 11, 27),
+                date(2022, 10, 27),
+                "20-PHYSICIAN",
+                2007012345,
+                "OIG EXCLUSION",
+            ),
+            (
+                "MOCKVILLE ADULT DAY CENTER",
+                "N/A",
+                date(2014, 7, 11),
+                date(2014, 7, 9),
+                "29- ADULT DAY HEALTH CARE",
+                532,
+                "FRAUD",
+            ),
+            (
+                "MOCKVILLE ADULT DAY CENTER",
+                "N/A",
+                date(2014, 7, 11),
+                date(2014, 7, 9),
+                "58-HOME HEALTH AGENCY",
+                756,
+                "FRAUD",
+            ),
+        ],
+        title="CURRENT",
+    )
+
+
+def ga_dch_oig() -> bytes:
+    """Georgia: a title cell and a blank row above the header, YYYYMMDD dates as text and as
+    integers, an Excel date, a made-up DOB, empty sheets after the data sheet."""
+    rows: Rows = (
+        (
+            None,
+            "Department of Community Health \nOffice of Inspector General\n"
+            "List of Excluded Individuals and Entities as of 10/05/2026"
+            "*Highlighted individuals recently added*",
+        ),
+        (),
+        (
+            "LAST NAME",
+            "FIRST NAME",
+            "MIDDLE NAME",
+            "BUSINESS NAME",
+            "GENERAL",
+            "STATE",
+            "SANCDATE",
+            "NPI",
+            "DOB",
+        ),
+        ("TESTPERSON", "AVERY", None, "", "MEDICAL PRACTICE, MD", "GA", "19820415", None),
+        (
+            "EXAMPLEDOC",
+            "JORDAN ",
+            "K",
+            "",
+            "NURSING PROFESSION",
+            "AL, GA",
+            20250630,
+            int(NPI_A),
+            date(1970, 1, 1),
+        ),
+        (None, None, None, "SAMPLE MEDICAL EQUIPMENT, INC", "DME COMPANY", "GA", 20111012),
+        ("MOCKPERSON (MAIDENMOCK)", "RILEY", None, "", "REGISTERED NURSE", "GA", "20200101"),
+        (
+            "SAMPLEOWNER",
+            "CASEY",
+            None,
+            "SAMPLE TRANSPORT CO",
+            "BUS OWNER/EXEC",
+            "GA",
+            date(2026, 8, 27),
+        ),
+        ("FAKENAME", "QUINN", None, "", "PRIVATE CITIZEN", "GA", "20223108"),
+    )
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Sheet1"
+    for row in rows:
+        sheet.append(list(row))
+    for name in ("Sheet4", "Sheet2", "Sheet3"):
+        book.create_sheet(name)
+    buffer = BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def ca_dhcs_resource_show(body: bytes) -> bytes:
+    """California: a CKAN ``resource_show`` answer (the real one's shape) describing ``body``."""
+    return json.dumps(
+        {
+            "help": "https://data.chhs.ca.gov/api/3/action/help_show?name=resource_show",
+            "success": True,
+            "result": {
+                "id": "48630a37-b5ba-4d3d-af54-e82b30e658a0",
+                "url": (
+                    "https://data.chhs.ca.gov/dataset/8f70e05d-baa5-4296-a5ab-36318d530670/"
+                    "resource/48630a37-b5ba-4d3d-af54-e82b30e658a0/download/"
+                    "suspended-ineligible-list-september-2026.csv"
+                ),
+                "last_modified": "2026-10-12T17:41:37.794529",
+                "hash": hashlib.md5(body, usedforsecurity=False).hexdigest(),
+                "size": len(body),
+                "format": "CSV",
+                "url_type": "upload",
+            },
+        }
+    ).encode()

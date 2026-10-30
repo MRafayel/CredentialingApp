@@ -90,7 +90,9 @@ class _World:
         await self.snapshots.add(snapshot)
         if outcome is Outcome.COMPLETED:
             own = tuple(r.model_copy(update={"snapshot_id": snapshot.id}) for r in records)
-            await self.records.replace_current(source_id, snapshot.id, own, snapshot.fetched_at)
+            await self.records.replace_current(
+                source_id, snapshot.id, own, snapshot.fetched_at, source_changed=True
+            )
         return snapshot
 
     async def verdict(self) -> ProviderVerdict:
@@ -139,10 +141,12 @@ async def test_the_run_returns_the_verdict_of_its_own_results() -> None:
 
     assert earlier.verdict is Verdict.LISTED
     assert earlier.listed_in == (FEDERAL,)
-    # The federal list no longer names them: the earlier finding does not linger.
-    assert verdict.verdict is Verdict.NO_RECORDS
+    # The federal list no longer names them: the earlier "listed" does not linger, and the
+    # removal (not a confirmed reinstatement) goes to review.
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
     assert verdict.sources_checked == 2
     assert verdict.listed_in == ()
+    assert verdict.review_in == (FEDERAL,)
     assert verdict.last_checked_at == NOW
     assert verdict.oldest_list_updated_at == LIST_UPDATED
     assert [r.source_id for r in verdict.results] == [FEDERAL, STATE]
@@ -399,6 +403,48 @@ async def test_a_reinstatement_alone_is_previously_listed() -> None:
         "Previously listed in Fake New York List: reinstatement effective 2016-01-01"
     )
     assert verdict.verdict is Verdict.NEEDS_REVIEW
+
+
+async def test_a_record_removed_from_its_list_is_found_and_needs_review() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    listed = exclusion(source_id=STATE, npi=NPI, effective_date=date(2021, 2, 1))
+    await world.load(FEDERAL)
+    await world.load(STATE, listed, age=timedelta(days=2))
+    await world.load(STATE)
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.finding is Finding.RECORD_FOUND
+    assert result.matched_record_ids == (listed.id,)
+    assert result.details["record_status"] == "removed"
+    assert result.summary == (
+        "Removed from published list of Fake New York List: exclusion effective 2021-02-01 "
+        "\u2013 not in the list since 2026-01-15"
+    )
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    assert verdict.listed_in == verdict.flagged_in == ()
+    assert verdict.review_in == (STATE,)
+
+
+async def test_a_listed_record_outweighs_one_removed_from_its_list() -> None:
+    world = _World(_ny_provider(npi=NPI))
+    removed = exclusion(source_id=STATE, npi=NPI, effective_date=date(2019, 1, 1))
+    standing = exclusion(
+        source_id=STATE, npi=NPI, effective_date=date(2022, 5, 1), action=ExclusionAction.SUSPENSION
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE, removed, age=timedelta(days=2))
+    await world.load(STATE, standing)
+
+    verdict = await world.verdict()
+    result = {r.source_id: r for r in verdict.results}[STATE]
+
+    assert result.details["record_status"] == "active"
+    assert result.summary == (
+        "Listed in Fake New York List: suspension effective 2022-05-01 (2 matching records)"
+    )
+    assert verdict.verdict is Verdict.LISTED
 
 
 async def test_a_check_without_a_matched_record_has_no_record_status() -> None:

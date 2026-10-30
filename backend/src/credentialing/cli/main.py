@@ -122,7 +122,8 @@ def _line(source_id: str, report: SyncReport, seconds: float) -> str:
     snapshot = report.snapshot
     diff = report.diff
     counts = (
-        f"added={diff.added} changed={diff.changed} removed={diff.removed} "
+        f"added={diff.added} readded={diff.readded} changed={diff.changed} "
+        f"rewritten={diff.rewritten} removed={diff.removed} reparsed={diff.reparsed} "
         f"unchanged={diff.unchanged}"
         if diff
         else "no new list"

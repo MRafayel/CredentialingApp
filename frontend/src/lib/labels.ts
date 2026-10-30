@@ -57,11 +57,15 @@ const OUTCOME_WORDS: Record<Exclude<Outcome, 'completed'>, string> = {
   failed: 'Failed',
 }
 
+/** The word for a record the backend marks as removed from its published list. */
+const REMOVED_WORD = 'Removed from published list'
+
 /**
  * One source's result as a pill: the finding when it ran, the outcome when it could not. A
  * record of another party naming the provider (`related_party`) reads "Flagged". A found or
  * related-party record the backend marks as ended (`details.record_status`) reads "Previously
- * listed" or "Previously flagged" in the review tone, as the backend's verdict counts it.
+ * listed" or "Previously flagged", and one marked as removed from its published list "Removed
+ * from published list", in the review tone, as the backend's verdict counts them.
  */
 export function resultLabel(
   result: Pick<Verification, 'outcome' | 'finding'> & Partial<Pick<Verification, 'details'>>,
@@ -71,10 +75,12 @@ export function resultLabel(
   }
   switch (result.finding) {
     case 'record_found':
+      if (result.details?.record_status === 'removed') return { tone: 'review', word: REMOVED_WORD }
       return result.details?.record_status === 'ended'
         ? { tone: 'review', word: 'Previously listed' }
         : { tone: 'listed', word: 'Record found' }
     case 'related_party':
+      if (result.details?.record_status === 'removed') return { tone: 'review', word: REMOVED_WORD }
       return result.details?.record_status === 'ended'
         ? { tone: 'review', word: 'Previously flagged' }
         : { tone: 'flagged', word: 'Flagged' }
@@ -89,13 +95,19 @@ export function resultLabel(
 
 /**
  * A listed record's own status, as the backend decided it: a record that still stands reads
- * "Listed", one whose end date has passed (or a reinstatement) "Previously listed", in the same
- * tones a provider's results use.
+ * "Listed", one whose end date has passed (or a reinstatement) "Previously listed", and one no
+ * longer on its published list (reinstatement not confirmed) "Removed from published list", in
+ * the same tones a provider's results use.
  */
 export function recordStatusLabel(status: RecordStatus): Label {
-  return status === 'ended'
-    ? { tone: 'review', word: 'Previously listed' }
-    : { tone: 'listed', word: 'Listed' }
+  switch (status) {
+    case 'active':
+      return { tone: 'listed', word: 'Listed' }
+    case 'ended':
+      return { tone: 'review', word: 'Previously listed' }
+    case 'removed':
+      return { tone: 'review', word: REMOVED_WORD }
+  }
 }
 
 /** Words for a fetch outcome the backend recorded in `details` ("source_unavailable"). */

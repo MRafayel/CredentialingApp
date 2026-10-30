@@ -56,7 +56,9 @@ class _World:
         )
         await self.snapshots.add(snapshot)
         own = [r.model_copy(update={"snapshot_id": snapshot.id}) for r in records]
-        await self.records.replace_current(source_id, snapshot.id, own, snapshot.fetched_at)
+        await self.records.replace_current(
+            source_id, snapshot.id, own, snapshot.fetched_at, source_changed=True
+        )
 
 
 def _business(**changes: object) -> ExclusionRecord:
@@ -124,6 +126,27 @@ async def test_a_record_with_everything_around_it() -> None:
     ]
     assert all(r.source_name == "Fake Federal" for r in profile.related)
     assert all(r.status is RecordStatus.ACTIVE for r in profile.related)
+
+
+async def test_a_record_removed_from_its_list_reads_removed() -> None:
+    world = _World()
+    first = _business(valid_from=NOW - timedelta(days=30))
+    current = _business(end_date=date(2030, 1, 1))
+    owner = exclusion(source_id=FEDERAL, last="Exampleowner", first="Jordan", npi=OWNER_NPI)
+    await world.load(STATE, first)
+    await world.load(STATE, current)
+    await world.load(FEDERAL, owner)
+
+    older = await world.use_case.run(first.id)
+    await world.records.replace_current(STATE, uuid4(), [], NOW, source_changed=True)
+    await world.records.replace_current(FEDERAL, uuid4(), [], NOW, source_changed=True)
+    removed = await world.use_case.run(current.id)
+
+    # An older version of a row still listed reads as its row does: standing.
+    assert older.record.status is RecordStatus.ACTIVE
+    assert removed.record.status is RecordStatus.REMOVED
+    assert (await world.use_case.run(first.id)).record.status is RecordStatus.REMOVED
+    assert [(r.record.id, r.status) for r in removed.related] == [(owner.id, RecordStatus.REMOVED)]
 
 
 async def test_a_record_alone_has_only_itself() -> None:
@@ -207,3 +230,71 @@ async def test_a_licence_in_another_state_is_not_the_same_party() -> None:
     profile = await world.use_case.run(subject.id)
 
     assert profile.same_party == ()
+
+
+async def test_the_history_follows_rewrites_of_the_row_both_ways() -> None:
+    world = _World()
+    npi = make_npi("100000006")
+    licence = License(number="QZ001", state="WA")
+
+    def row(days_ago: int, **changes: object) -> ExclusionRecord:
+        fields: dict[str, object] = {
+            "source_id": STATE,
+            "last": "Samplespeling",
+            "npi": npi,
+            "license": licence,
+            "valid_from": NOW - timedelta(days=days_ago),
+            **changes,
+        }
+        return exclusion(**fields)  # type: ignore[arg-type]  # fields of mixed types
+
+    first = row(30)
+    changed = row(20, end_date=date(2030, 1, 1))
+    respelled = row(10, last="Samplespelling", end_date=date(2030, 1, 1))
+    relicensed = row(
+        0, last="Samplespelling", license=License(number="QZ002", state="WA"), end_date=None
+    )
+    for version in (first, changed, respelled, relicensed):
+        await world.load(STATE, version)
+    other = exclusion(source_id=FEDERAL, last="Otherlisted", npi=npi)
+    await world.load(FEDERAL, other)
+
+    middle = await world.use_case.run(respelled.id)
+    oldest = await world.use_case.run(first.id)
+    newest = await world.use_case.run(relicensed.id)
+
+    expected = [
+        (False, "Samplespeling, Avery", "QZ001"),
+        (False, "Samplespeling, Avery", "QZ001"),
+        (True, "Samplespelling, Avery", "QZ001"),
+        (True, "Samplespelling, Avery", "QZ002"),
+    ]
+    for profile in (middle, oldest, newest):
+        assert [(v.rewritten, v.name, v.license_number) for v in profile.versions] == expected
+        assert [v.valid_from for v in profile.versions] == [
+            NOW - timedelta(days=d) for d in (30, 20, 10, 0)
+        ]
+        assert profile.first_seen == NOW - timedelta(days=30)
+        assert profile.record.status is RecordStatus.ACTIVE
+        # Other versions of the row, rewritten ones included, are not other records.
+        assert [r.record.id for r in profile.same_party] == [other.id]
+    assert all(v.npi == npi and v.license_state == "WA" for v in middle.versions)
+    assert oldest.rewritten_by == respelled.id
+    assert middle.rewritten_by == relicensed.id
+    assert newest.rewritten_by is None
+
+
+async def test_a_rewrite_needs_a_single_match_on_npi_and_date() -> None:
+    world = _World()
+    npi = make_npi("100000007")
+    twin = exclusion(source_id=STATE, last="Twinone", npi=npi)
+    other_twin = exclusion(source_id=STATE, last="Twintwo", npi=npi)
+    await world.load(STATE, twin, other_twin)
+    renamed = exclusion(source_id=STATE, last="Twinthree", npi=npi)
+    await world.load(STATE, renamed)
+
+    profile = await world.use_case.run(twin.id)
+
+    assert profile.rewritten_by is None
+    assert profile.record.status is RecordStatus.REMOVED
+    assert [v.rewritten for v in profile.versions] == [False]

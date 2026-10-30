@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
+
 from credentialing.domain.enums import (
     CredentialType,
     Finding,
@@ -222,4 +224,30 @@ def test_an_ended_related_party_record_needs_review_not_flagged() -> None:
 
     assert verdict.verdict is Verdict.NEEDS_REVIEW
     assert verdict.flagged_in == ()
+    assert verdict.review_in == ("list_a",)
+
+
+@pytest.mark.parametrize("finding", [Finding.RECORD_FOUND, Finding.RELATED_PARTY])
+def test_a_record_removed_from_its_list_needs_review_never_listed_or_clean(
+    finding: Finding,
+) -> None:
+    verdict = derive_verdict(
+        [_result("list_a", finding, record_status="removed"), _result("list_b")]
+    )
+
+    assert verdict.verdict is Verdict.NEEDS_REVIEW
+    assert verdict.listed_in == verdict.flagged_in == ()
+    assert verdict.review_in == ("list_a",)
+
+
+def test_one_standing_listing_is_listed_even_beside_a_removed_one() -> None:
+    verdict = derive_verdict(
+        [
+            _result("list_a", Finding.RECORD_FOUND, record_status="removed"),
+            _result("list_b", Finding.RECORD_FOUND, record_status="active"),
+        ]
+    )
+
+    assert verdict.verdict is Verdict.LISTED
+    assert verdict.listed_in == ("list_b",)
     assert verdict.review_in == ("list_a",)

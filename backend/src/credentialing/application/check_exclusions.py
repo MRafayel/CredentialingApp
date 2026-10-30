@@ -30,6 +30,7 @@ from credentialing.domain.policies import (
     derive_verdict,
     match_provider_to_record,
     record_has_ended,
+    record_is_removed,
     record_status,
 )
 from credentialing.domain.ports import (
@@ -50,6 +51,9 @@ _ROLE: Final = {relation: rank for rank, relation in enumerate(MatchRelation)}
 
 _FOUND: Final = frozenset({MatchLevel.EXACT, MatchLevel.HIGH})
 _REVIEW: Final = frozenset({MatchLevel.POTENTIAL, MatchLevel.AMBIGUOUS})
+
+_REMOVED_LEAD: Final = "Removed from published list of"
+"""The summary lead of found records that left their list; reinstatement is not confirmed."""
 
 
 class CheckExclusions:
@@ -270,20 +274,28 @@ def _found_summary(
     context: str = "",
 ) -> str:
     """The summary of found records: the ``standing`` lead ("Listed in") while one record
-    stands, otherwise the ``ended`` lead ("Previously listed in") and the end date;
-    ``context`` goes before the action ("named with a listed party, ")."""
-    has_ended = record_status(records, today) is RecordStatus.ENDED
+    stands on its list, the removed lead ("Removed from published list of") and the date it
+    left when every standing record was removed from its list, otherwise the ``ended`` lead
+    ("Previously listed in") and the end date; ``context`` goes before the action ("named
+    with a listed party, ")."""
+    status = record_status(records, today)
+    has_ended = status is RecordStatus.ENDED
     current = [record for record in records if not record_has_ended(record, today)]
+    if status is RecordStatus.ACTIVE:
+        current = [record for record in current if not record_is_removed(record)]
     record = records[0] if has_ended else current[0]
     effective = (
         f"effective {record.effective_date.isoformat()}"
         if record.effective_date
         else "effective date not published"
     )
-    lead = ended if has_ended else standing
+    lead = {RecordStatus.ENDED: ended, RecordStatus.REMOVED: _REMOVED_LEAD}.get(status, standing)
     summary = f"{lead} {capabilities.display_name}: {context}{record.action.value} {effective}"
     if record.end_date:
         summary += f" \u2013 {'ended' if has_ended else 'ends'} {record.end_date.isoformat()}"
+    if status is RecordStatus.REMOVED and record.valid_to is not None:
+        left = record.valid_to.astimezone(UTC).date()
+        summary += f" \u2013 not in the list since {left.isoformat()}"
     if len(records) > 1:
         summary += f" ({len(records)} matching records)"
     return summary

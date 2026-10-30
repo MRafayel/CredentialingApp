@@ -257,6 +257,7 @@ export interface components {
       | 'debarment'
       | 'preclusion'
       | 'sanction'
+      | 'disqualification'
       | 'reinstatement'
       | 'other'
     /**
@@ -339,13 +340,13 @@ export interface components {
       place: components['schemas']['RecordPlaceResponse'] | null
       /** Raw Provider Type */
       raw_provider_type: string | null
+      status: components['schemas']['RecordStatus']
       /** Source Name */
       source_name: string
       /** State Provider Id */
       state_provider_id: string | null
       /** Reason */
       reason: string | null
-      status: components['schemas']['RecordStatus']
       link: components['schemas']['RecordLink']
       /** Via Npi */
       via_npi: string | null
@@ -353,6 +354,9 @@ export interface components {
     /**
      * LookupRecordResponse
      * @description An exclusion record a lookup found. The date of birth and street address are left out.
+     *
+     *     ``status`` says whether it still stands, has ended, or was removed from its published list
+     *     (reinstatement not confirmed).
      */
     LookupRecordResponse: {
       /**
@@ -385,6 +389,7 @@ export interface components {
       place: components['schemas']['RecordPlaceResponse'] | null
       /** Raw Provider Type */
       raw_provider_type: string | null
+      status: components['schemas']['RecordStatus']
     }
     /**
      * LookupResponse
@@ -560,13 +565,13 @@ export interface components {
       place: components['schemas']['RecordPlaceResponse'] | null
       /** Raw Provider Type */
       raw_provider_type: string | null
+      status: components['schemas']['RecordStatus']
       /** Source Name */
       source_name: string
       /** State Provider Id */
       state_provider_id: string | null
       /** Reason */
       reason: string | null
-      status: components['schemas']['RecordStatus']
     }
     /**
      * ProvenanceResponse
@@ -692,10 +697,12 @@ export interface components {
      * RecordProfileResponse
      * @description Body of ``GET /exclusions/records/{id}``: one record and what the lists hold around it.
      *
-     *     ``versions`` run oldest first. ``same_party`` lists records by NPI, then by licence;
-     *     ``related`` the records tied through the row's other NPIs; ``same_name`` records that
-     *     only share the name, for a person to weigh. Dates of birth, street addresses and raw rows
-     *     are never included.
+     *     ``versions`` run oldest first, across rewrites of the row's identity by the list.
+     *     ``same_party`` lists records by NPI, then by licence; ``related`` the records tied through
+     *     the row's other NPIs; ``same_name`` records that only share the name, for a person to
+     *     weigh. ``rewritten_by`` is the id of the record that replaced this one when the list
+     *     rewrote it, null otherwise. Dates of birth, street addresses and raw rows are never
+     *     included.
      */
     RecordProfileResponse: {
       record: components['schemas']['ProfileRecordResponse']
@@ -713,6 +720,8 @@ export interface components {
       related: components['schemas']['LinkedRecordResponse'][]
       /** Same Name */
       same_name: components['schemas']['LinkedRecordResponse'][]
+      /** Rewritten By */
+      rewritten_by: string | null
     }
     /**
      * RecordSourceResponse
@@ -738,13 +747,18 @@ export interface components {
     }
     /**
      * RecordStatus
-     * @description Whether a matched exclusion record still stands or has ended (end date passed).
+     * @description Whether a matched exclusion record still stands, has ended (end date passed), or was
+     *     removed from the published list.
      * @enum {string}
      */
-    RecordStatus: 'active' | 'ended'
+    RecordStatus: 'active' | 'ended' | 'removed'
     /**
      * RecordVersionResponse
      * @description One version of a row in its list; ``valid_to`` is null while it is current.
+     *
+     *     ``rewritten`` is true on the first version of an identity that replaced the previous one
+     *     when the list rewrote an identity field; ``name`` (last name first for a person), the
+     *     licence and the NPI say what changed.
      */
     RecordVersionResponse: {
       /**
@@ -761,6 +775,16 @@ export interface components {
       end_date: string | null
       /** Reason */
       reason: string | null
+      /** Rewritten */
+      rewritten: boolean
+      /** Name */
+      name: string
+      /** License Number */
+      license_number: string | null
+      /** License State */
+      license_state: string | null
+      /** Npi */
+      npi: string | null
     }
     /**
      * SearchedSourceResponse

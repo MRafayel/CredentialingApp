@@ -243,11 +243,16 @@ class RecordPlaceResponse(Schema):
 
 
 class LookupRecordResponse(MatchedRecordResponse):
-    """An exclusion record a lookup found. The date of birth and street address are left out."""
+    """An exclusion record a lookup found. The date of birth and street address are left out.
+
+    ``status`` says whether it still stands, has ended, or was removed from its published list
+    (reinstatement not confirmed).
+    """
 
     license: RecordLicenseResponse | None
     place: RecordPlaceResponse | None
     raw_provider_type: str | None
+    status: RecordStatus
 
     @classmethod
     def from_lookup(cls, found: LookupRecord) -> LookupRecordResponse:
@@ -264,6 +269,7 @@ class LookupRecordResponse(MatchedRecordResponse):
             license=RecordLicenseResponse.model_validate(license.model_dump()) if license else None,
             place=place,
             raw_provider_type=found.provider_type,
+            status=found.status,
         )
 
 
@@ -311,7 +317,6 @@ class ProfileRecordResponse(LookupRecordResponse):
     source_name: str
     state_provider_id: str | None
     reason: str | None
-    status: RecordStatus
 
     @classmethod
     def from_profile(cls, found: ProfileRecord) -> ProfileRecordResponse:
@@ -321,7 +326,6 @@ class ProfileRecordResponse(LookupRecordResponse):
             source_name=found.source_name,
             state_provider_id=found.record.state_provider_id,
             reason=found.record.reason,
-            status=found.status,
         )
 
 
@@ -358,7 +362,12 @@ class RecordSourceResponse(SearchedSourceResponse):
 
 
 class RecordVersionResponse(Schema):
-    """One version of a row in its list; ``valid_to`` is null while it is current."""
+    """One version of a row in its list; ``valid_to`` is null while it is current.
+
+    ``rewritten`` is true on the first version of an identity that replaced the previous one
+    when the list rewrote an identity field; ``name`` (last name first for a person), the
+    licence and the NPI say what changed.
+    """
 
     valid_from: datetime
     valid_to: datetime | None
@@ -366,6 +375,11 @@ class RecordVersionResponse(Schema):
     action_raw: str | None
     end_date: date | None
     reason: str | None
+    rewritten: bool
+    name: str
+    license_number: str | None
+    license_state: str | None
+    npi: str | None
 
     @classmethod
     def from_version(cls, version: RecordVersion) -> RecordVersionResponse:
@@ -376,10 +390,12 @@ class RecordVersionResponse(Schema):
 class RecordProfileResponse(Schema):
     """Body of ``GET /exclusions/records/{id}``: one record and what the lists hold around it.
 
-    ``versions`` run oldest first. ``same_party`` lists records by NPI, then by licence;
-    ``related`` the records tied through the row's other NPIs; ``same_name`` records that
-    only share the name, for a person to weigh. Dates of birth, street addresses and raw rows
-    are never included.
+    ``versions`` run oldest first, across rewrites of the row's identity by the list.
+    ``same_party`` lists records by NPI, then by licence; ``related`` the records tied through
+    the row's other NPIs; ``same_name`` records that only share the name, for a person to
+    weigh. ``rewritten_by`` is the id of the record that replaced this one when the list
+    rewrote it, null otherwise. Dates of birth, street addresses and raw rows are never
+    included.
     """
 
     record: ProfileRecordResponse
@@ -389,6 +405,7 @@ class RecordProfileResponse(Schema):
     same_party: list[LinkedRecordResponse]
     related: list[LinkedRecordResponse]
     same_name: list[LinkedRecordResponse]
+    rewritten_by: UUID | None
 
     @classmethod
     def from_profile(cls, profile: RecordProfile) -> RecordProfileResponse:
@@ -401,6 +418,7 @@ class RecordProfileResponse(Schema):
             same_party=[LinkedRecordResponse.from_linked(r) for r in profile.same_party],
             related=[LinkedRecordResponse.from_linked(r) for r in profile.related],
             same_name=[LinkedRecordResponse.from_linked(r) for r in profile.same_name],
+            rewritten_by=profile.rewritten_by,
         )
 
 

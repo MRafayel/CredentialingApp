@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
@@ -9,6 +10,7 @@ from credentialing.application.sync_source import (
     DUE_TOLERANCE,
     SHRINK_GUARD_MIN_ROWS,
     SyncSource,
+    source_changed,
 )
 from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import Outcome
@@ -28,15 +30,21 @@ SOURCE = "fake_federal"
 
 
 def _snapshot(
-    outcome: Outcome = Outcome.COMPLETED, *, hours: int = 0, rows: int | None = None
+    outcome: Outcome = Outcome.COMPLETED,
+    *,
+    hours: int = 0,
+    rows: int | None = None,
+    content: str | None = None,
 ) -> SourceSnapshot:
+    """A fetch ``hours`` from NOW; each fetch time has its own bytes unless ``content`` is set."""
+    digest = content or hashlib.sha256(str(hours).encode()).hexdigest()
     return SourceSnapshot(
         id=uuid4(),
         source_id=SOURCE,
         fetched_at=NOW + timedelta(hours=hours),
         outcome=outcome,
         source_url="https://example.test/list",
-        content_hash="ab" * 32 if outcome is Outcome.COMPLETED else None,
+        content_hash=digest if outcome is Outcome.COMPLETED else None,
         row_count=rows,
         note=None if outcome is Outcome.COMPLETED else "synthetic failure",
     )
@@ -132,6 +140,8 @@ class _BrokenRecords(InMemoryRecords):
         snapshot_id: UUID,
         records: Sequence[ExclusionRecord],
         now: datetime,
+        *,
+        source_changed: bool,
     ) -> SnapshotDiff:
         raise ConnectionError("database went away")
 
@@ -210,6 +220,63 @@ async def test_small_lists_and_moderate_drops_are_applied(before: int, after: in
     assert report.snapshot.outcome is Outcome.COMPLETED
     assert report.diff is not None
     assert report.diff.removed == before - after
+
+
+async def test_a_row_missing_from_changed_bytes_is_removed_from_the_list() -> None:
+    first, second = _snapshot(), _snapshot(hours=1)
+    connector = ScriptedConnector(
+        make_capabilities(SOURCE), _loaded(first, "Alpha", "Beta"), _loaded(second, "Alpha")
+    )
+    records = InMemoryRecords()
+    use_case = _use_case(connector, InMemorySnapshots(), records)
+    await use_case.run(SOURCE)
+
+    report = await use_case.run(SOURCE)
+
+    assert report.diff == SnapshotDiff(added=0, removed=1, changed=0, unchanged=1)
+    assert sorted(r.valid_to is None for r in records.latest.values()) == [False, True]
+
+
+async def test_a_forced_reparse_of_the_same_bytes_supersedes_rows_without_removing_them() -> None:
+    same = "cd" * 32
+    first, again = _snapshot(content=same), _snapshot(hours=1, content=same)
+    connector = ScriptedConnector(
+        make_capabilities(SOURCE),
+        _loaded(first, "Alpha", "Beta"),
+        _loaded(again, "Alpha", "Betanew"),
+    )
+    records = InMemoryRecords()
+    use_case = _use_case(connector, InMemorySnapshots(), records)
+    await use_case.run(SOURCE)
+
+    report = await use_case.run(SOURCE, force=True)
+
+    assert report.diff == SnapshotDiff(added=1, removed=0, changed=0, unchanged=1, reparsed=1)
+    names = {r.person_name.last for r in records.latest.values() if r.person_name}
+    assert names == {"Alpha", "Betanew"}
+
+
+@pytest.mark.parametrize(
+    ("applied", "fetched", "changed"),
+    [
+        (None, "ab", True),
+        ("ab", "ab", False),
+        ("ab", "cd", True),
+        ("", "ab", True),
+        ("ab", "", True),
+    ],
+)
+def test_source_changed_unless_both_hashes_are_known_and_equal(
+    applied: str | None, fetched: str, changed: bool
+) -> None:
+    previous = (
+        None
+        if applied is None
+        else _snapshot(content=applied).model_copy(update={"content_hash": applied or None})
+    )
+    snapshot = _snapshot(hours=1).model_copy(update={"content_hash": fetched or None})
+
+    assert source_changed(previous, snapshot) is changed
 
 
 async def test_a_source_never_completed_is_due_now() -> None:

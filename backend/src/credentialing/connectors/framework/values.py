@@ -143,6 +143,25 @@ def parse_us_zip(text: str | None) -> str | None:
     return value
 
 
+def parse_address(
+    *,
+    line1: str | None = None,
+    line2: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    postal_code: str | None = None,
+) -> Address | None:
+    """An address from separate columns, cleaned; ``None`` when every part is empty."""
+    address = Address(
+        line1=clean(line1),
+        line2=clean(line2),
+        city=clean(city),
+        state=parse_state(state),
+        postal_code=parse_us_zip(postal_code),
+    )
+    return address if address != Address() else None
+
+
 def parse_city_state_zip(text: str | None) -> Address | None:
     """Split a "CITY, ST 12345" cell into an address, best effort.
 

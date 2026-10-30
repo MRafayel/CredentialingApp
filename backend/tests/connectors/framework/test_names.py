@@ -1,6 +1,8 @@
 import pytest
 
 from credentialing.connectors.framework.names import (
+    holds_only_credentials,
+    is_alias_line,
     looks_like_business,
     parse_name_field,
     parse_name_lines,
@@ -280,3 +282,33 @@ def test_name_lines_keep_inline_aliases_and_same_kind_lines_as_aliases() -> None
 
 def test_name_lines_without_text_are_unknown() -> None:
     assert parse_name_lines(["", "  "]).entity_kind is EntityKind.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a.k.a. Sample Name", True),
+        ("AKA SAMPLE NAME", True),
+        ("dba: Sample Care", True),
+        ("Akash Sampleton", False),
+        ("Sampleton, Avery", False),
+        (None, False),
+    ],
+)
+def test_is_alias_line(text: str | None, expected: bool) -> None:
+    assert is_alias_line(text) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("MD", True),
+        ("RN, LPN", True),
+        ("M.D.", True),
+        ("CHHA", False),
+        ("RN/LPN", False),
+        ("", False),
+    ],
+)
+def test_holds_only_credentials(text: str, expected: bool) -> None:
+    assert holds_only_credentials(text) is expected

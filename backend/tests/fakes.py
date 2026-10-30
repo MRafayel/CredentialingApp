@@ -23,7 +23,12 @@ from credentialing.domain.models import (
     VerificationResult,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
-from credentialing.domain.policies import candidate_keys, license_key, party_key
+from credentialing.domain.policies import (
+    candidate_keys,
+    license_key,
+    pair_rewritten_rows,
+    party_key,
+)
 from credentialing.domain.types import Npi, SourceId, StateCode
 
 _WORDS = re.compile(r"[^\W_]+")
@@ -81,19 +86,28 @@ class ScriptedConnector:
 
 
 class ScriptedFetcher:
-    """A :class:`~credentialing.connectors.framework.http.Fetcher` returning one outcome.
+    """A :class:`~credentialing.connectors.framework.http.Fetcher` returning prepared outcomes.
 
-    Without an outcome it is for tests that only call ``parse``, and fails if fetched.
+    The outcomes are returned in order and the last one answers every further request (a
+    landing page or API answer first, then the file). Without an outcome it is for tests that
+    only call ``parse``, and fails if fetched. ``requests`` records each URL and change signal.
     """
 
-    def __init__(self, outcome: FetchOutcome | None = None) -> None:
-        self.outcome = outcome
+    def __init__(self, *outcomes: FetchOutcome) -> None:
+        self.outcomes = list(outcomes)
+        self.requests: list[tuple[str, ChangeSignal]] = []
 
     async def fetch(
-        self, url: str, *, previous: SourceSnapshot | None, change_signal: ChangeSignal
+        self,
+        url: str,
+        *,
+        previous: SourceSnapshot | None,
+        change_signal: ChangeSignal,
+        crawl_delay: timedelta = timedelta(0),
     ) -> FetchOutcome:
-        assert self.outcome is not None, "this fetcher has no scripted outcome"
-        return self.outcome
+        assert self.outcomes, "this fetcher has no scripted outcome"
+        self.requests.append((url, change_signal))
+        return self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
 
 
 class InMemorySnapshots:
@@ -115,10 +129,15 @@ class InMemorySnapshots:
 
 
 class InMemoryRecords:
-    """Current rows only, keyed by identity; enough to exercise the use cases."""
+    """Current and latest rows keyed by identity; enough to exercise the use cases.
+
+    ``latest`` holds the newest version of each identity, current or removed from the list
+    (``valid_to`` set), as the database's ``latest`` flag does; reads go through it.
+    """
 
     def __init__(self) -> None:
         self.current: dict[tuple[str, str], ExclusionRecord] = {}
+        self.latest: dict[tuple[str, str], ExclusionRecord] = {}
         self.all: dict[UUID, ExclusionRecord] = {}
 
     async def replace_current(
@@ -127,24 +146,52 @@ class InMemoryRecords:
         snapshot_id: UUID,
         records: Sequence[ExclusionRecord],
         now: datetime,
+        *,
+        source_changed: bool,
     ) -> SnapshotDiff:
         incoming = {record.record_hash: record for record in reversed(records)}
         mine = {h: r for (s, h), r in self.current.items() if s == source_id}
-        added = [r for h, r in incoming.items() if h not in mine]
+        new = [r for h, r in incoming.items() if h not in mine]
+        readded = [r for r in new if (source_id, r.record_hash) in self.latest]
+        fresh = [r for r in new if (source_id, r.record_hash) not in self.latest]
         changed = [
             r for h, r in incoming.items() if h in mine and mine[h].content_hash != r.content_hash
         ]
-        removed = mine.keys() - incoming.keys()
-        for hash_ in removed:
-            del self.current[(source_id, hash_)]
-        for record in added + changed:
+        vanished = mine.keys() - incoming.keys()
+        pairs = (
+            pair_rewritten_rows(
+                {h: (mine[h].npi, mine[h].effective_date) for h in vanished},
+                {r.record_hash: (r.npi, r.effective_date) for r in fresh},
+            )
+            if source_changed
+            else {}
+        )
+        added = [r for r in fresh if r.record_hash not in pairs]
+        rewritten = [
+            r.model_copy(update={"rewrites": mine[pairs[r.record_hash]].id})
+            for r in fresh
+            if r.record_hash in pairs
+        ]
+        removed = vanished - set(pairs.values())
+        for hash_ in vanished | {r.record_hash for r in changed}:
+            closed = self.current.pop((source_id, hash_)).model_copy(update={"valid_to": now})
+            self.all[closed.id] = closed
+            if hash_ not in vanished or (source_changed and hash_ in removed):
+                self.latest[(source_id, hash_)] = closed
+            else:
+                del self.latest[(source_id, hash_)]
+        for record in added + rewritten + readded + changed:
             self.current[(source_id, record.record_hash)] = record
+            self.latest[(source_id, record.record_hash)] = record
             self.all[record.id] = record
         return SnapshotDiff(
             added=len(added),
             changed=len(changed),
-            removed=len(removed),
-            unchanged=len(incoming) - len(added) - len(changed),
+            removed=len(removed) if source_changed else 0,
+            unchanged=len(incoming) - len(new) - len(changed),
+            readded=len(readded),
+            reparsed=0 if source_changed else len(removed),
+            rewritten=len(rewritten),
         )
 
     async def find_candidates(
@@ -162,7 +209,7 @@ class InMemoryRecords:
         licenses = {license_key(number) for number in license_numbers} - {""}
         return [
             record
-            for record in self.current.values()
+            for record in self.latest.values()
             if (npi is not None and npi in (record.npi, *record.related_npis))
             or candidate_keys(record) & keys
             or (record.license is not None and license_key(record.license.number) in licenses)
@@ -215,7 +262,7 @@ class InMemoryRecords:
             return matched and in_state(record)
 
         found = sorted(
-            (r for r in self.current.values() if hit(r)),
+            (r for r in self.latest.values() if hit(r)),
             key=lambda r: (
                 r.npi != term,
                 r.organization_name or (r.person_name.last if r.person_name else ""),
@@ -236,12 +283,15 @@ class InMemoryRecords:
         ]
         return sorted(own, key=lambda r: (r.valid_from, str(r.id)))
 
+    async def rewritten_by(self, record_id: UUID) -> ExclusionRecord | None:
+        return next((r for r in self.all.values() if r.rewrites == record_id), None)
+
     async def same_name(self, record: ExclusionRecord, *, limit: int) -> Sequence[ExclusionRecord]:
         key = party_key(record)
         first = record.person_name.first.casefold() if record.person_name else None
         found = [
             r
-            for r in self.current.values()
+            for r in self.latest.values()
             if key is not None and r.id != record.id and key in candidate_keys(r)
         ]
 
@@ -257,7 +307,7 @@ class InMemoryRecords:
         own = record.license
         found = [
             r
-            for r in self.current.values()
+            for r in self.latest.values()
             if own is not None
             and r.id != record.id
             and r.license is not None
@@ -272,7 +322,7 @@ class InMemoryRecords:
         wanted = set(npis)
         found = [
             r
-            for r in self.current.values()
+            for r in self.latest.values()
             if r.id != exclude_id and wanted & {*(r.related_npis), *([r.npi] if r.npi else [])}
         ]
         return sorted(found, key=lambda r: (r.source_id, str(r.id)))

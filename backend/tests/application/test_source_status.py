@@ -125,7 +125,7 @@ async def test_an_ok_source_reports_its_records_links_and_derived_times() -> Non
     loaded = _snapshot(at=NOW, last_modified=modified)
     records = InMemoryRecords()
     rows = [exclusion(source_id=SOURCE, snapshot_id=loaded.id, last=n) for n in ("Aa", "Bb")]
-    await records.replace_current(SOURCE, loaded.id, rows, NOW)
+    await records.replace_current(SOURCE, loaded.id, rows, NOW, source_changed=True)
 
     (status,) = await _report(loaded, now=NOW + timedelta(hours=3), records=records)
 

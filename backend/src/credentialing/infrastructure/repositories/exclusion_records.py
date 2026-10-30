@@ -1,6 +1,9 @@
 """Exclusion list rows in Postgres, versioned by ``valid_from``/``valid_to``.
 
-Shared reference data: no organization owns them.
+``latest`` marks the newest version of each row identity, whether it is still listed
+(``valid_to`` is null) or was removed from the published list. Reads match against latest
+rows, so a party who left a list keeps matching, with its removal visible. Shared reference
+data: no organization owns them.
 """
 
 import hashlib
@@ -23,7 +26,13 @@ from credentialing.domain.models import (
     SnapshotDiff,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
-from credentialing.domain.policies import candidate_keys, license_key, party_key
+from credentialing.domain.policies import (
+    RewriteKey,
+    candidate_keys,
+    license_key,
+    pair_rewritten_rows,
+    party_key,
+)
 from credentialing.domain.types import Npi, SourceId, StateCode
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.jsonb import mapping_jsonb, model_jsonb
@@ -33,7 +42,7 @@ _SELECT: Final = sql.SQL(
     " first_name, middle_name, suffix, organization_name, aliases, related_parties, npi,"
     " related_npis, state_provider_id,"
     " license_number, license_state, license_kind, date_of_birth, address, action, action_raw,"
-    " effective_date, end_date, reason, raw, valid_from, valid_to from exclusion_records"
+    " effective_date, end_date, reason, raw, valid_from, valid_to, rewrites from exclusion_records"
 )
 
 MAX_SEARCH_RESULTS: Final = 50
@@ -79,6 +88,7 @@ class _ExclusionRow(BaseModel):
     raw: dict[str, str]
     valid_from: datetime
     valid_to: datetime | None
+    rewrites: UUID | None
 
     def to_domain(self) -> ExclusionRecord:
         person_name = (
@@ -121,6 +131,7 @@ class _ExclusionRow(BaseModel):
             content_hash=self.content_hash,
             valid_from=self.valid_from,
             valid_to=self.valid_to,
+            rewrites=self.rewrites,
         )
 
 
@@ -136,12 +147,25 @@ class PostgresExclusionRecordRepository:
         snapshot_id: UUID,
         records: Sequence[ExclusionRecord],
         now: datetime,
+        *,
+        source_changed: bool,
     ) -> SnapshotDiff:
         """Make ``records`` the source's current list in one transaction and report the diff.
 
         Every record must belong to ``source_id`` and ``snapshot_id``. Rows that repeat an
-        identity within ``records`` are stored once (the first wins). Old versions are closed
-        before new ones are inserted, so the one-current-row-per-identity index always holds.
+        identity within ``records`` are stored once (the first wins). A row missing from
+        ``records`` is closed (``valid_to``): when ``source_changed`` it was removed from the
+        published list and stays latest, so it still matches; when the source's bytes are the
+        same as last time, the parser changed and it was superseded by the re-parse
+        (``reparsed``), so it loses ``latest`` too. When ``source_changed``, a missing row that
+        pairs one to one with a new row by NPI and effective date
+        (:func:`~credentialing.domain.policies.pair_rewritten_rows`) was rewritten by the list
+        (``rewritten``): it is closed and loses ``latest``, and the new row's ``rewrites``
+        points to it. A changed row's old version is
+        closed and loses ``latest`` to the new one; a row identity that returns after a removal
+        gets a fresh version (``readded``) and its removed one loses ``latest``. Old versions
+        are updated before new ones are inserted, so the one-current-row and one-latest-row
+        indexes always hold.
         Replacements of one source are serialized by a transaction-scoped advisory lock, so two
         concurrent runs cannot interleave.
 
@@ -162,31 +186,77 @@ class PostgresExclusionRecordRepository:
             await connection.execute(t"select pg_advisory_xact_lock({_lock_key(source_id)})")
             cursor = await connection.execute(
                 t"""
-                select record_hash, content_hash, name_keys from exclusion_records
+                select record_hash, content_hash, name_keys, id, npi, effective_date
+                from exclusion_records
                 where source_id = {source_id} and valid_to is null
                 """
             )
             rows = await cursor.fetchall()
             current: dict[str, str] = {row[0]: row[1] for row in rows}
             stored_keys: dict[str, frozenset[str]] = {row[0]: frozenset(row[2]) for row in rows}
+            current_ids: dict[str, UUID] = {row[0]: row[3] for row in rows}
+            rewrite_keys: dict[str, RewriteKey] = {row[0]: (row[4], row[5]) for row in rows}
 
-            removed = sorted(current.keys() - incoming.keys())
-            added = [record for hash_, record in incoming.items() if hash_ not in current]
+            vanished = sorted(current.keys() - incoming.keys())
+            new = sorted(incoming.keys() - current.keys())
+            cursor = await connection.execute(
+                t"""
+                select record_hash from exclusion_records
+                where source_id = {source_id} and latest and valid_to is not null
+                  and record_hash = any({new}::text[])
+                """
+            )
+            returning = {row[0] for row in await cursor.fetchall()}
+            fresh = [incoming[hash_] for hash_ in new if hash_ not in returning]
+            readded = [incoming[hash_] for hash_ in new if hash_ in returning]
+            pairs = (
+                pair_rewritten_rows(
+                    {hash_: rewrite_keys[hash_] for hash_ in vanished},
+                    {r.record_hash: (r.npi, r.effective_date) for r in fresh},
+                )
+                if source_changed
+                else {}
+            )
+            added = [record for record in fresh if record.record_hash not in pairs]
+            rewritten = [
+                record.model_copy(update={"rewrites": current_ids[pairs[record.record_hash]]})
+                for record in fresh
+                if record.record_hash in pairs
+            ]
+            removed = sorted(set(vanished) - set(pairs.values()))
             changed = [
                 record
                 for hash_, record in incoming.items()
                 if hash_ in current and current[hash_] != record.content_hash
             ]
-            closing = removed + [record.record_hash for record in changed]
-            if closing:
+            if removed:
                 await connection.execute(
                     t"""
-                    update exclusion_records set valid_to = {now}
+                    update exclusion_records
+                    set valid_to = {now}, latest = {source_changed}
                     where source_id = {source_id} and valid_to is null
-                      and record_hash = any({closing}::text[])
+                      and record_hash = any({removed}::text[])
                     """
                 )
-            await _insert(connection, added + changed, now)
+            superseded = sorted({record.record_hash for record in changed} | set(pairs.values()))
+            if superseded:
+                await connection.execute(
+                    t"""
+                    update exclusion_records set valid_to = {now}, latest = false
+                    where source_id = {source_id} and valid_to is null
+                      and record_hash = any({superseded}::text[])
+                    """
+                )
+            if readded:
+                returned = sorted(returning)
+                await connection.execute(
+                    t"""
+                    update exclusion_records set latest = false
+                    where source_id = {source_id} and latest and valid_to is not null
+                      and record_hash = any({returned}::text[])
+                    """
+                )
+            await _insert(connection, [*added, *rewritten, *readded, *changed], now)
             stale = [
                 record
                 for hash_, record in incoming.items()
@@ -198,9 +268,12 @@ class PostgresExclusionRecordRepository:
 
         return SnapshotDiff(
             added=len(added),
-            removed=len(removed),
+            removed=len(removed) if source_changed else 0,
             changed=len(changed),
-            unchanged=len(incoming) - len(added) - len(changed),
+            unchanged=len(incoming) - len(new) - len(changed),
+            readded=len(readded),
+            reparsed=0 if source_changed else len(removed),
+            rewritten=len(rewritten),
         )
 
     async def find_candidates(
@@ -211,7 +284,10 @@ class PostgresExclusionRecordRepository:
         *,
         license_numbers: Sequence[str] = (),
     ) -> Sequence[ExclusionRecord]:
-        """Current rows with this NPI (own or related), normalized name or licence number.
+        """Latest rows with this NPI (own or related), normalized name or licence number.
+
+        Latest rows include those removed from the published list (``valid_to`` set), so a
+        party who left a list still matches and its removal can be reported.
 
         Names are compared after the domain's normalization (organization names without their
         legal designators), against the record's names, alias and related-party words, so
@@ -233,7 +309,7 @@ class PostgresExclusionRecordRepository:
             await cursor.execute(
                 t"""
                 {_SELECT:q}
-                where valid_to is null and (
+                where latest and (
                     npi = {npi}
                     or related_npis && {npis}::text[]
                     or name_keys && {names}::text[]
@@ -254,7 +330,8 @@ class PostgresExclusionRecordRepository:
         source_ids: Sequence[SourceId] = (),
         state: StateCode | None = None,
     ) -> Sequence[ExclusionRecord]:
-        """Current rows matching a free-text lookup, best first, at most 50.
+        """Latest rows (current or removed from the list) matching a free-text lookup, best
+        first, at most 50.
 
         Every run of letters and digits in ``query`` must start a word of the row's names,
         aliases, related parties, NPI, related NPIs, state provider id or licence number
@@ -280,7 +357,7 @@ class PostgresExclusionRecordRepository:
             await cursor.execute(
                 t"""
                 {_SELECT:q}
-                where valid_to is null
+                where latest
                   and (npi = {npi} or search_vector @@ to_tsquery('simple', {tsquery}))
                   and (
                     {state}::text is null
@@ -325,8 +402,18 @@ class PostgresExclusionRecordRepository:
             rows = await cursor.fetchall()
         return [row.to_domain() for row in rows]
 
+    async def rewritten_by(self, record_id: UUID) -> ExclusionRecord | None:
+        """The row that replaced this one when the list rewrote its identity, if any."""
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
+        ):
+            await cursor.execute(t"{_SELECT:q} where rewrites = {record_id} order by id limit 1")
+            row = await cursor.fetchone()
+        return row.to_domain() if row else None
+
     async def same_name(self, record: ExclusionRecord, *, limit: int) -> Sequence[ExclusionRecord]:
-        """At most ``limit`` current rows other than ``record`` sharing its party key.
+        """At most ``limit`` latest rows other than ``record`` sharing its party key.
 
         One bitmap scan of the ``name_keys`` GIN index; rows whose first name equals the
         record's (ignoring case) come first, so the limit is spent on the likeliest namesakes,
@@ -343,7 +430,7 @@ class PostgresExclusionRecordRepository:
             await cursor.execute(
                 t"""
                 {_SELECT:q}
-                where valid_to is null and id <> {record.id}
+                where latest and id <> {record.id}
                   and name_keys @> array[{key}]::text[]
                 order by coalesce(lower(first_name) = {first}, false) desc, source_id, id
                 limit {max(limit, 0)}
@@ -355,7 +442,7 @@ class PostgresExclusionRecordRepository:
     async def same_license(
         self, record: ExclusionRecord, *, limit: int
     ) -> Sequence[ExclusionRecord]:
-        """At most ``limit`` current rows other than ``record`` with its licence and state.
+        """At most ``limit`` latest rows other than ``record`` with its licence and state.
 
         Uses the normalized licence-number index, compared the way matching compares them.
         """
@@ -369,7 +456,7 @@ class PostgresExclusionRecordRepository:
             await cursor.execute(
                 t"""
                 {_SELECT:q}
-                where valid_to is null and id <> {record.id}
+                where latest and id <> {record.id}
                   and upper(regexp_replace(license_number, '\\s+', '', 'g')) = {number}
                   and license_state = {state}
                 order by source_id, id
@@ -382,7 +469,7 @@ class PostgresExclusionRecordRepository:
     async def linked_by_npi(
         self, npis: Sequence[Npi], *, exclude_id: UUID
     ) -> Sequence[ExclusionRecord]:
-        """Current rows other than ``exclude_id`` whose own or related NPIs include ``npis``.
+        """Latest rows other than ``exclude_id`` whose own or related NPIs include ``npis``.
 
         One query over the NPI index and the related-NPI index, ordered by source and id.
         """
@@ -396,7 +483,7 @@ class PostgresExclusionRecordRepository:
             await cursor.execute(
                 t"""
                 {_SELECT:q}
-                where valid_to is null and id <> {exclude_id}
+                where latest and id <> {exclude_id}
                   and (npi = any({wanted}::bpchar[]) or related_npis && {wanted}::text[])
                 order by source_id, id
                 """
@@ -468,7 +555,7 @@ async def _insert(
                     related_parties, name_keys, npi, related_npis,
                     state_provider_id, license_number, license_state, license_kind,
                     date_of_birth, address, action, action_raw, effective_date, end_date,
-                    reason, raw, valid_from, valid_to
+                    reason, raw, valid_from, valid_to, rewrites
                 ) values (
                     {record.id}, {record.source_id}, {record.snapshot_id}, {record.record_hash},
                     {record.content_hash},
@@ -482,7 +569,8 @@ async def _insert(
                     {license.kind if license else None}, {record.date_of_birth},
                     {model_jsonb(record.address) if record.address else None},
                     {record.action.value}, {record.action_raw}, {record.effective_date},
-                    {record.end_date}, {record.reason}, {mapping_jsonb(record.raw)}, {now}, null
+                    {record.end_date}, {record.reason}, {mapping_jsonb(record.raw)}, {now}, null,
+                    {record.rewrites}
                 )
                 """
             )

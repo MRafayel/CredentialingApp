@@ -7,6 +7,7 @@ import {
   matchesLine,
   noMatchesLine,
   placeText,
+  recordLabel,
   searchedCount,
   searchedLine,
   searchedScope,
@@ -66,6 +67,7 @@ const record: LookupRecord = {
   license: { number: '00012345', state: 'NY', kind: null },
   place: null,
   raw_provider_type: 'Pharmacy',
+  status: 'active',
 }
 
 describe('isSearchable', () => {
@@ -73,6 +75,20 @@ describe('isSearchable', () => {
     expect(isSearchable('')).toBe(false)
     expect(isSearchable('  a ')).toBe(false)
     expect(isSearchable('ab')).toBe(true)
+  })
+})
+
+describe('recordLabel', () => {
+  it('shows the action while the record stands, its status otherwise', () => {
+    expect(recordLabel(record)).toEqual({ tone: 'listed', word: 'Termination' })
+    expect(recordLabel({ ...record, status: 'ended' })).toEqual({
+      tone: 'review',
+      word: 'Previously listed',
+    })
+    expect(recordLabel({ ...record, status: 'removed' })).toEqual({
+      tone: 'review',
+      word: 'Removed from published list',
+    })
   })
 })
 
@@ -94,6 +110,7 @@ describe('actionLabel', () => {
   it('keeps reinstatements and unknown actions apart from findings', () => {
     expect(actionLabel('reinstatement')).toEqual({ tone: 'neutral', word: 'Reinstatement' })
     expect(actionLabel('other')).toEqual({ tone: 'review', word: 'Other action' })
+    expect(actionLabel('disqualification')).toEqual({ tone: 'listed', word: 'Disqualification' })
   })
 })
 

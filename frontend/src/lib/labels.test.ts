@@ -105,6 +105,14 @@ describe('resultLabel', () => {
       }),
     ).toEqual({ tone: 'review', word: 'Previously flagged' })
   })
+
+  it('reads a found or related-party record removed from its list in the review tone', () => {
+    for (const finding of ['record_found', 'related_party'] as const) {
+      expect(
+        resultLabel({ outcome: 'completed', finding, details: { record_status: 'removed' } }),
+      ).toEqual({ tone: 'review', word: 'Removed from published list' })
+    }
+  })
 })
 
 describe('outcomeWord', () => {
@@ -127,5 +135,12 @@ describe('recordStatusLabel', () => {
   it('reads a standing record as listed and an ended one as previously listed', () => {
     expect(recordStatusLabel('active')).toEqual({ tone: 'listed', word: 'Listed' })
     expect(recordStatusLabel('ended')).toEqual({ tone: 'review', word: 'Previously listed' })
+  })
+
+  it('reads a record removed from its published list in the review tone', () => {
+    expect(recordStatusLabel('removed')).toEqual({
+      tone: 'review',
+      word: 'Removed from published list',
+    })
   })
 })

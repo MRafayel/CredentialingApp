@@ -1,19 +1,27 @@
+import hashlib
+import json
+import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
-from credentialing.connectors.framework.base import BulkListConnectorBase
+from credentialing.connectors.framework.base import BulkListConnectorBase, Metadata
 from credentialing.connectors.framework.errors import ParseError
-from credentialing.connectors.framework.http import FetchedDocument, FetchFailure, NotModified
+from credentialing.connectors.framework.http import (
+    FetchedDocument,
+    FetchFailure,
+    FetchOutcome,
+    NotModified,
+)
 from credentialing.connectors.framework.rows import (
     MAX_SKIPPED_ROWS,
     ParsedList,
     RowIssues,
     build_records,
 )
-from credentialing.domain.enums import EntityKind, ExclusionAction, Outcome
+from credentialing.domain.enums import ChangeSignal, EntityKind, ExclusionAction, Outcome
 from credentialing.domain.models import (
     ConnectorCapabilities,
     ExclusionRecord,
@@ -196,3 +204,257 @@ def test_build_records_rejects_a_file_with_too_many_bad_rows() -> None:
     rows = [{"NAME": ""}] * (MAX_SKIPPED_ROWS + 1) + [{"NAME": "Testperson"}]
     with pytest.raises(ParseError, match="rows unusable"):
         build_records(rows, build)
+
+
+_LANDING = "https://example.test/providers/sanctions/"
+_API = "https://data.example.test/api/3/action/resource_show?id=r1"
+_PAGE = b'<html><body><a href="/uploads/list-2026-10-01.xlsx">List</a></body></html>'
+_FILE_URL = "https://example.test/uploads/list-2026-10-01.xlsx"
+
+
+def _page(body: bytes = _PAGE, *, url: str = _LANDING) -> FetchedDocument:
+    return FetchedDocument(
+        body=body,
+        content_hash="aa" * 32,
+        etag=None,
+        last_modified=None,
+        content_type="text/html; charset=utf-8",
+        final_url=url,
+        byte_size=len(body),
+        fetched_at=NOW,
+        status=200,
+    )
+
+
+def _completed(url: str, *, etag: str | None = None) -> SourceSnapshot:
+    return SourceSnapshot(
+        id=uuid4(),
+        source_id="test_exclusions",
+        fetched_at=datetime(2026, 10, 1, tzinfo=UTC),
+        outcome=Outcome.COMPLETED,
+        source_url=url,
+        content_hash="ab" * 32,
+        etag=etag,
+        last_modified=datetime(2026, 9, 30, tzinfo=UTC),
+        byte_size=100,
+        row_count=7,
+    )
+
+
+class _LinkConnector(_Connector):
+    landing_url = _LANDING
+
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return CAPABILITIES.model_copy(
+            update={
+                "change_signal": ChangeSignal.LINK_DISCOVERY,
+                "download_url": None,
+                "crawl_delay": timedelta(seconds=3),
+            }
+        )
+
+    def find_link(self, html: str) -> str:
+        found = re.search(r'href="([^"]+\.xlsx)"', html)
+        if found is None:
+            raise ParseError("no workbook link")
+        return found[1]
+
+
+async def test_link_discovery_downloads_the_link_found_on_the_landing_page() -> None:
+    fetcher = ScriptedFetcher(_page(), _document())
+
+    result = await _LinkConnector(fetcher).fetch(None)
+
+    assert fetcher.requests == [
+        (_LANDING, ChangeSignal.CONTENT_HASH),
+        (_FILE_URL, ChangeSignal.CONTENT_HASH),
+    ]
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.source_url == _FILE_URL
+    assert result.snapshot.etag == '"v2"'
+    assert result.records is not None
+
+
+async def test_an_unchanged_link_is_one_request_and_keeps_the_validators() -> None:
+    previous = _completed(_FILE_URL, etag='"v1"')
+    fetcher = ScriptedFetcher(_page())
+
+    result = await _LinkConnector(fetcher).fetch(previous)
+
+    assert len(fetcher.requests) == 1
+    assert result.records is None
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.note == "unchanged (link unchanged)"
+    assert result.snapshot.source_url == _FILE_URL
+    assert (result.snapshot.etag, result.snapshot.row_count) == ('"v1"', 7)
+
+
+async def test_a_new_link_is_downloaded_without_the_old_files_validators() -> None:
+    previous = _completed("https://example.test/uploads/list-2026-09-01.xlsx", etag='"v1"')
+    fetcher = ScriptedFetcher(_page(), _document())
+
+    result = await _LinkConnector(fetcher).fetch(previous)
+
+    assert fetcher.requests[1] == (_FILE_URL, ChangeSignal.CONTENT_HASH)
+    assert result.records is not None
+
+
+async def test_the_same_link_after_a_failed_fetch_is_downloaded_again() -> None:
+    previous = _completed(_FILE_URL).model_copy(update={"outcome": Outcome.FAILED})
+    fetcher = ScriptedFetcher(_page(), _document())
+
+    result = await _LinkConnector(fetcher).fetch(previous)
+
+    assert fetcher.requests[1] == (_FILE_URL, ChangeSignal.CONDITIONAL_GET)
+    assert result.records is not None
+
+
+async def test_a_landing_page_without_the_link_is_failed_not_empty() -> None:
+    result = await _LinkConnector(ScriptedFetcher(_page(b"<html>moved</html>"))).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.note == "no download link on the landing page: no workbook link"
+    assert result.snapshot.source_url == _LANDING
+    assert result.records is None
+
+
+@pytest.mark.parametrize("outcome", [Outcome.BLOCKED, Outcome.SOURCE_UNAVAILABLE])
+async def test_a_landing_page_failure_keeps_its_outcome(outcome: Outcome) -> None:
+    failure = FetchFailure(outcome=outcome, status=None, note="synthetic", fetched_at=NOW)
+
+    result = await _LinkConnector(ScriptedFetcher(failure)).fetch(_completed(_FILE_URL))
+
+    assert result.snapshot.outcome is outcome
+    assert result.records is None
+
+
+async def test_a_failed_download_of_the_found_link_keeps_its_outcome() -> None:
+    failure = FetchFailure(outcome=Outcome.FAILED, status=404, note="HTTP 404", fetched_at=NOW)
+
+    result = await _LinkConnector(ScriptedFetcher(_page(), failure)).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.source_url == _FILE_URL
+
+
+async def test_the_crawl_delay_reaches_the_fetcher() -> None:
+    delays: list[timedelta] = []
+
+    class _Recording(ScriptedFetcher):
+        async def fetch(
+            self,
+            url: str,
+            *,
+            previous: SourceSnapshot | None,
+            change_signal: ChangeSignal,
+            crawl_delay: timedelta = timedelta(0),
+        ) -> FetchOutcome:
+            delays.append(crawl_delay)
+            return await super().fetch(url, previous=previous, change_signal=change_signal)
+
+    await _LinkConnector(_Recording(_page(), _document())).fetch(None)
+
+    assert delays == [timedelta(seconds=3), timedelta(seconds=3)]
+
+
+_BODY = b"rows"
+_MD5 = hashlib.md5(_BODY, usedforsecurity=False).hexdigest()
+
+
+class _ApiConnector(_Connector):
+    metadata_url = _API
+
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return CAPABILITIES.model_copy(
+            update={"change_signal": ChangeSignal.API_METADATA, "download_url": None}
+        )
+
+    def read_metadata(self, body: bytes) -> Metadata:
+        answer = json.loads(body)
+        return Metadata(
+            url=answer["url"],
+            hash=answer["hash"],
+            last_modified=datetime.fromisoformat(answer["last_modified"]).replace(tzinfo=UTC),
+        )
+
+
+def _answer(md5: str = _MD5, url: str = "https://example.test/download/list.csv") -> bytes:
+    return json.dumps(
+        {"url": url, "hash": md5.upper(), "last_modified": "2026-10-12T17:41:37"}
+    ).encode()
+
+
+def _api_page(body: bytes) -> FetchedDocument:
+    return _page(body, url=_API)
+
+
+async def test_api_metadata_downloads_the_described_file_and_keeps_its_hash() -> None:
+    fetcher = ScriptedFetcher(_api_page(_answer()), _document(_BODY))
+
+    result = await _ApiConnector(fetcher).fetch(None)
+
+    assert fetcher.requests[1] == (
+        "https://example.test/download/list.csv",
+        ChangeSignal.CONTENT_HASH,
+    )
+    snapshot = result.snapshot
+    assert snapshot.outcome is Outcome.COMPLETED
+    assert snapshot.source_url == "https://example.test/download/list.csv"
+    assert snapshot.etag == _MD5
+    assert snapshot.last_modified == datetime(2026, 10, 12, 17, 41, 37, tzinfo=UTC)
+    assert result.records is not None
+
+
+async def test_an_unchanged_api_hash_is_one_request() -> None:
+    previous = _completed("https://example.test/download/list.csv", etag=_MD5)
+    fetcher = ScriptedFetcher(_api_page(_answer()))
+
+    result = await _ApiConnector(fetcher).fetch(previous)
+
+    assert len(fetcher.requests) == 1
+    assert result.records is None
+    assert result.snapshot.note == "unchanged (metadata unchanged)"
+    assert result.snapshot.etag == _MD5
+    assert result.snapshot.source_url == previous.source_url
+
+
+async def test_a_new_api_hash_downloads_again() -> None:
+    previous = _completed("https://example.test/download/list.csv", etag="0" * 32)
+    fetcher = ScriptedFetcher(_api_page(_answer()), _document(_BODY))
+
+    result = await _ApiConnector(fetcher).fetch(previous)
+
+    assert len(fetcher.requests) == 2
+    assert result.records is not None
+    assert result.snapshot.etag == _MD5
+
+
+async def test_a_body_that_does_not_match_the_api_hash_is_failed() -> None:
+    fetcher = ScriptedFetcher(_api_page(_answer("f" * 32)), _document(_BODY))
+
+    result = await _ApiConnector(fetcher).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.note is not None
+    assert result.snapshot.note.startswith("hash mismatch")
+    assert result.snapshot.etag is None
+    assert result.records is None
+
+
+async def test_an_unreadable_api_answer_is_failed() -> None:
+    result = await _ApiConnector(ScriptedFetcher(_api_page(b"<html>down</html>"))).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.note == "metadata unreadable: JSONDecodeError"
+    assert result.snapshot.source_url == _API
+
+
+async def test_a_parse_failure_after_api_metadata_drops_the_kept_hash() -> None:
+    fetcher = ScriptedFetcher(_api_page(_answer()), _document(_BODY))
+
+    result = await _ApiConnector(fetcher, fail=ParseError("unexpected header")).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.etag is None

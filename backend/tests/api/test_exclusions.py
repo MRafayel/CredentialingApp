@@ -72,10 +72,14 @@ async def client() -> AsyncIterator[httpx2.AsyncClient]:
         date_of_birth=date(1970, 5, 17),
         raw={"PROVIDER_TYPE": "Pharmacist"},
     )
-    await records.replace_current(SOURCE, snapshot.id, [listed, owner], NOW)
+    removed = exclusion(source_id=SOURCE, snapshot_id=snapshot.id, last="Sampleremoved")
+    await records.replace_current(
+        SOURCE, snapshot.id, [listed, owner, removed], NOW - timedelta(days=7), source_changed=True
+    )
+    await records.replace_current(SOURCE, snapshot.id, [listed, owner], NOW, source_changed=True)
     container = replace(
         _container(),
-        lookup_exclusions=LookupExclusions(records, snapshots, registry),
+        lookup_exclusions=LookupExclusions(records, snapshots, registry, FixedClock(NOW)),
         record_profile=RecordProfileQuery(
             records, snapshots, registry, DEFAULT_FRESHNESS, FixedClock(NOW)
         ),
@@ -99,6 +103,7 @@ async def test_search_returns_records_with_their_lists(client: httpx2.AsyncClien
     assert record["license"] == {"number": "00012345", "state": "NY", "kind": None}
     assert record["place"] == {"city": "Sampleville", "state": "NY"}
     assert record["raw_provider_type"] == "Pharmacy"
+    assert record["status"] == "active"
     assert "date_of_birth" not in record
     assert "address" not in record
     assert "1 Sample Way" not in response.text
@@ -111,6 +116,18 @@ async def test_search_returns_records_with_their_lists(client: httpx2.AsyncClien
             "fetched_at": (NOW - timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
         }
     ]
+
+
+async def test_search_finds_a_record_removed_from_its_list_with_that_status(
+    client: httpx2.AsyncClient,
+) -> None:
+    body = (
+        await client.get("/exclusions/search", params={"q": "sampleremoved"}, headers=HEADERS)
+    ).json()
+
+    (record,) = body["records"]
+    assert record["person_name"]["last"] == "Sampleremoved"
+    assert record["status"] == "removed"
 
 
 async def test_search_narrowed_to_a_state(client: httpx2.AsyncClient) -> None:
@@ -182,6 +199,15 @@ async def test_a_record_profile(client: httpx2.AsyncClient) -> None:
     assert body["source"]["source_url"] == f"https://example.test/{SOURCE}"
     assert body["source"]["freshness"] == "cached"
     assert [v["action"] for v in body["versions"]] == ["termination"]
+    (version,) = body["versions"]
+    assert version["rewritten"] is False
+    assert version["name"] == "7 STAR SAMPLEVILLE PHARMACY AND DELI INC"
+    assert (version["npi"], version["license_number"], version["license_state"]) == (
+        NPI,
+        "00012345",
+        "NY",
+    )
+    assert body["rewritten_by"] is None
     (owner,) = body["related"]
     assert owner["link"] == "listed_as"
     assert owner["via_npi"] == OWNER_NPI
@@ -189,6 +215,49 @@ async def test_a_record_profile(client: httpx2.AsyncClient) -> None:
     assert body["same_party"] == body["same_name"] == []
     for hidden in ('"date_of_birth"', '"address"', '"raw"', "1 Sample Way", "1970-05-17"):
         assert hidden not in response.text
+
+
+async def test_a_record_profile_across_a_rewrite_by_the_list() -> None:
+    registry = ConnectorRegistry()
+    registry.register(ScriptedConnector(capabilities(SOURCE, frozenset({"NY"}))))
+    snapshots, records = InMemorySnapshots(), InMemoryRecords()
+    npi = make_npi("100000003")
+    before = exclusion(
+        source_id=SOURCE,
+        last="Samplespeling",
+        npi=npi,
+        date_of_birth=date(1970, 5, 17),
+        valid_from=NOW - timedelta(days=7),
+    )
+    after = exclusion(
+        source_id=SOURCE, last="Samplespelling", npi=npi, date_of_birth=date(1970, 5, 17)
+    )
+    for record in (before, after):
+        await records.replace_current(
+            SOURCE, record.snapshot_id, [record], record.valid_from, source_changed=True
+        )
+    container = replace(
+        _container(),
+        record_profile=RecordProfileQuery(
+            records, snapshots, registry, DEFAULT_FRESHNESS, FixedClock(NOW)
+        ),
+    )
+
+    async for client in _client(container):
+        old = await client.get(f"/exclusions/records/{before.id}", headers=HEADERS)
+        new = await client.get(f"/exclusions/records/{after.id}", headers=HEADERS)
+
+    assert old.status_code == new.status_code == 200
+    assert old.json()["rewritten_by"] == str(after.id)
+    assert old.json()["record"]["status"] == "active"
+    assert new.json()["rewritten_by"] is None
+    for response in (old, new):
+        versions = response.json()["versions"]
+        assert [(v["rewritten"], v["name"], v["npi"]) for v in versions] == [
+            (False, "Samplespeling, Avery", npi),
+            (True, "Samplespelling, Avery", npi),
+        ]
+        assert "1970-05-17" not in response.text
 
 
 async def test_an_unknown_record_profile_is_404(client: httpx2.AsyncClient) -> None:

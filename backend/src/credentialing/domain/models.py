@@ -233,6 +233,10 @@ class ExclusionRecord(DomainModel):
     ``related_parties`` name other parties on the same row (an owner on a business's row, a
     business on a person's row), and ``related_npis`` are the other valid NPIs the row
     publishes besides ``npi``. The row does not say which NPI belongs to which name.
+
+    ``rewrites`` is the id of the row this version replaced when the list rewrote one of its
+    identity fields (same NPI and effective date, one to one within a sync). It is storage
+    bookkeeping set by the repository, never hashed.
     """
 
     id: UUID
@@ -259,6 +263,7 @@ class ExclusionRecord(DomainModel):
     content_hash: str
     valid_from: AwareDatetime
     valid_to: AwareDatetime | None = None
+    rewrites: UUID | None = None
 
     @model_validator(mode="after")
     def _related_npis_are_other_npis(self) -> Self:
@@ -368,12 +373,22 @@ class SourceSnapshot(DomainModel):
 
 
 class SnapshotDiff(DomainModel):
-    """How a new snapshot changed a source's current records."""
+    """How a new snapshot changed a source's current records.
+
+    ``readded`` counts rows that came back after a removal; ``added`` counts only rows never
+    seen in the list before. ``reparsed`` counts rows that disappeared while the source's
+    bytes were unchanged: a parser change superseded them, the list did not remove them.
+    ``rewritten`` counts rows whose identity the list rewrote (a vanished row paired one to one
+    with a new row by NPI and effective date); they are in neither ``added`` nor ``removed``.
+    """
 
     added: int = Field(ge=0)
     removed: int = Field(ge=0)
     changed: int = Field(ge=0)
     unchanged: int = Field(ge=0)
+    readded: int = Field(default=0, ge=0)
+    reparsed: int = Field(default=0, ge=0)
+    rewritten: int = Field(default=0, ge=0)
 
 
 class VerificationResult(DomainModel):
@@ -444,6 +459,8 @@ class ConnectorCapabilities(DomainModel):
     provider_type_fields: tuple[str, ...] = ()
     """Raw columns naming the provider's type, most specific first; a lookup shows the first
     one that is filled in, as the source wrote it."""
+    crawl_delay: timedelta = timedelta(0)
+    """Pause before every request to the source, as its robots.txt ``Crawl-delay`` asks."""
 
 
 class FetchResult(DomainModel):

@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -64,7 +64,7 @@ async def test_full_record_round_trips(database: ConnectionSource) -> None:
         }
     )
 
-    await repository.replace_current(SOURCE, snapshot_id, [record], NOW)
+    await repository.replace_current(SOURCE, snapshot_id, [record], NOW, source_changed=True)
 
     assert await repository.get_many([record.id]) == [record]
 
@@ -77,12 +77,16 @@ async def test_replace_current_keeps_unchanged_closes_removed_and_adds_new(
     kept = exclusion(snapshot_id=first_snapshot, last="Testperson")
     dropped = exclusion(snapshot_id=first_snapshot, last="Samplename")
 
-    first = await repository.replace_current(SOURCE, first_snapshot, [kept, dropped], NOW)
+    first = await repository.replace_current(
+        SOURCE, first_snapshot, [kept, dropped], NOW, source_changed=True
+    )
 
     second_snapshot = await _snapshot(database)
     kept_again = exclusion(snapshot_id=second_snapshot, last="TESTPERSON", raw=kept.raw)
     new = exclusion(snapshot_id=second_snapshot, last="Newname")
-    second = await repository.replace_current(SOURCE, second_snapshot, [kept_again, new], LATER)
+    second = await repository.replace_current(
+        SOURCE, second_snapshot, [kept_again, new], LATER, source_changed=True
+    )
 
     assert first == SnapshotDiff(added=2, removed=0, changed=0, unchanged=0)
     assert second == SnapshotDiff(added=1, removed=1, changed=0, unchanged=1)
@@ -103,7 +107,9 @@ async def test_replace_current_stores_a_repeated_row_once(database: ConnectionSo
     row = exclusion(snapshot_id=snapshot_id)
     repeat = exclusion(snapshot_id=snapshot_id)
 
-    diff = await repository.replace_current(SOURCE, snapshot_id, [row, repeat], NOW)
+    diff = await repository.replace_current(
+        SOURCE, snapshot_id, [row, repeat], NOW, source_changed=True
+    )
 
     assert diff == SnapshotDiff(added=1, removed=0, changed=0, unchanged=0)
     assert await repository.get_many([row.id, repeat.id]) == [row]
@@ -114,9 +120,13 @@ async def test_replace_current_with_an_empty_list_closes_every_row(
 ) -> None:
     repository = PostgresExclusionRecordRepository(database)
     snapshot_id = await _snapshot(database)
-    await repository.replace_current(SOURCE, snapshot_id, [exclusion(snapshot_id=snapshot_id)], NOW)
+    await repository.replace_current(
+        SOURCE, snapshot_id, [exclusion(snapshot_id=snapshot_id)], NOW, source_changed=True
+    )
 
-    diff = await repository.replace_current(SOURCE, await _snapshot(database), [], LATER)
+    diff = await repository.replace_current(
+        SOURCE, await _snapshot(database), [], LATER, source_changed=True
+    )
 
     assert diff == SnapshotDiff(added=0, removed=1, changed=0, unchanged=0)
 
@@ -127,11 +137,13 @@ async def test_replace_current_versions_a_row_whose_content_changed(
     repository = PostgresExclusionRecordRepository(database)
     first_snapshot = await _snapshot(database)
     listed = exclusion(snapshot_id=first_snapshot)
-    await repository.replace_current(SOURCE, first_snapshot, [listed], NOW)
+    await repository.replace_current(SOURCE, first_snapshot, [listed], NOW, source_changed=True)
 
     second_snapshot = await _snapshot(database)
     reinstated = exclusion(snapshot_id=second_snapshot, end_date=date(2026, 1, 10), raw=listed.raw)
-    diff = await repository.replace_current(SOURCE, second_snapshot, [reinstated], LATER)
+    diff = await repository.replace_current(
+        SOURCE, second_snapshot, [reinstated], LATER, source_changed=True
+    )
 
     assert diff == SnapshotDiff(added=0, removed=0, changed=1, unchanged=0)
     versions = {
@@ -153,7 +165,7 @@ async def test_replace_current_rejects_records_of_another_source(
     foreign = exclusion(source_id="test_other_list", snapshot_id=snapshot_id)
 
     with pytest.raises(ValueError, match="does not belong"):
-        await repository.replace_current(SOURCE, snapshot_id, [foreign], NOW)
+        await repository.replace_current(SOURCE, snapshot_id, [foreign], NOW, source_changed=True)
 
 
 async def test_find_candidates_by_npi_or_normalized_name(database: ConnectionSource) -> None:
@@ -170,7 +182,7 @@ async def test_find_candidates_by_npi_or_normalized_name(database: ConnectionSou
     )
     unrelated = exclusion(snapshot_id=snapshot_id, last="Unrelated")
     records: list[ExclusionRecord] = [by_npi, by_last_name, by_alias, by_organization, unrelated]
-    await repository.replace_current(SOURCE, snapshot_id, records, NOW)
+    await repository.replace_current(SOURCE, snapshot_id, records, NOW, source_changed=True)
 
     found_by_npi = await repository.find_candidates(NPI, None, None)
     found_by_name = await repository.find_candidates(None, "OTESTPERSON", None)
@@ -197,7 +209,7 @@ async def test_find_candidates_by_organization_name_without_legal_suffix(
         last=None,
         organization_name="7 STAR QZXSAMPLEVILLE PHARMACY AND DELI INC",
     )
-    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW)
+    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW, source_changed=True)
 
     found = await repository.find_candidates(
         None, None, "The 7 Star Qzxsampleville Pharmacy and Deli, LLC"
@@ -214,7 +226,7 @@ async def test_find_candidates_by_licence_number(database: ConnectionSource) -> 
         last="Qzxothername",
         license=License(number="qzx 0012345", state="NY"),
     )
-    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW)
+    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW, source_changed=True)
 
     found = await repository.find_candidates(None, None, None, license_numbers=["QZX0012345", "  "])
 
@@ -231,14 +243,16 @@ async def test_replace_current_refreshes_outdated_name_keys(database: Connection
         last=None,
         organization_name="Qzxtestco LLC",
     )
-    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW)
+    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW, source_changed=True)
     async with database.connection() as connection:
         old_keys = ["qzxtestco llc"]
         await connection.execute(
             t"update exclusion_records set name_keys = {old_keys} where id = {listed.id}"
         )
 
-    diff = await repository.replace_current(SOURCE, snapshot_id, [listed], LATER)
+    diff = await repository.replace_current(
+        SOURCE, snapshot_id, [listed], LATER, source_changed=True
+    )
 
     assert diff == SnapshotDiff(added=0, removed=0, changed=0, unchanged=1)
     async with database.connection() as connection:
@@ -273,8 +287,12 @@ async def test_search_by_npi_words_prefixes_and_identifiers(database: Connection
         aliases=("Avery Qzxmarriedname",),
     ).model_copy(update={"state_provider_id": "QZXID77"})
     closed = exclusion(snapshot_id=snapshot_id, last="Qzxgoneperson")
-    await repository.replace_current(SOURCE, snapshot_id, [pharmacy, person, closed], NOW)
-    await repository.replace_current(SOURCE, snapshot_id, [pharmacy, person], LATER)
+    await repository.replace_current(
+        SOURCE, snapshot_id, [pharmacy, person, closed], NOW, source_changed=True
+    )
+    await repository.replace_current(
+        SOURCE, snapshot_id, [pharmacy, person], LATER, source_changed=True
+    )
 
     assert await _search_ids(repository, NPI) == [pharmacy.id]
     assert await _search_ids(repository, NPI[:6]) == [pharmacy.id]
@@ -284,7 +302,7 @@ async def test_search_by_npi_words_prefixes_and_identifiers(database: Connection
     assert await _search_ids(repository, "qzx-testperson, avery") == [person.id]
     assert await _search_ids(repository, "qzxmarried") == [person.id]
     assert await _search_ids(repository, "QZXID77") == [person.id]
-    assert await _search_ids(repository, "qzxgoneperson") == []
+    assert await _search_ids(repository, "qzxgoneperson") == [closed.id]
     assert await _search_ids(repository, "qzxsampleville nobody") == []
     assert await repository.search("  ':*&|!  ", limit=10) == []
 
@@ -296,7 +314,9 @@ async def test_search_puts_an_exact_npi_first(database: ConnectionSource) -> Non
         update={"state_provider_id": NPI}
     )
     by_npi = exclusion(snapshot_id=snapshot_id, last="Zzqzxname", npi=NPI)
-    await repository.replace_current(SOURCE, snapshot_id, [by_state_id, by_npi], NOW)
+    await repository.replace_current(
+        SOURCE, snapshot_id, [by_state_id, by_npi], NOW, source_changed=True
+    )
 
     assert await _search_ids(repository, NPI) == [by_npi.id, by_state_id.id]
 
@@ -317,7 +337,9 @@ async def test_search_ranks_whole_words_in_names_first(database: ConnectionSourc
         last=None,
         organization_name="1 Qzxstop Pharmacy",
     )
-    await repository.replace_current(SOURCE, snapshot_id, [prefix_only, whole_word], NOW)
+    await repository.replace_current(
+        SOURCE, snapshot_id, [prefix_only, whole_word], NOW, source_changed=True
+    )
 
     assert await _search_ids(repository, "1 qzxstop") == [whole_word.id, prefix_only.id]
 
@@ -338,7 +360,9 @@ async def test_search_narrowed_to_a_state(database: ConnectionSource) -> None:
     elsewhere = exclusion(snapshot_id=snapshot_id, last="Qzxstate", first="Elsewhere").model_copy(
         update={"address": Address(city="Sampleville", state="NY")}
     )
-    await repository.replace_current(SOURCE, snapshot_id, [plain, licensed, living, elsewhere], NOW)
+    await repository.replace_current(
+        SOURCE, snapshot_id, [plain, licensed, living, elsewhere], NOW, source_changed=True
+    )
 
     async def ids(source_ids: Sequence[str], state: str | None) -> set[UUID]:
         found = await repository.search("qzxstate", limit=50, source_ids=source_ids, state=state)
@@ -355,19 +379,219 @@ async def test_search_limit_is_capped(database: ConnectionSource) -> None:
     repository = PostgresExclusionRecordRepository(database)
     snapshot_id = await _snapshot(database)
     rows = [exclusion(snapshot_id=snapshot_id, last="Qzxmany", first=f"A{i}") for i in range(55)]
-    await repository.replace_current(SOURCE, snapshot_id, rows, NOW)
+    await repository.replace_current(SOURCE, snapshot_id, rows, NOW, source_changed=True)
 
     assert len(await _search_ids(repository, "qzxmany")) == 50
     assert len(await repository.search("qzxmany", limit=3)) == 3
 
 
-async def test_find_candidates_ignores_rows_no_longer_listed(database: ConnectionSource) -> None:
+async def _latest(database: ConnectionSource, *ids: UUID) -> dict[UUID, bool]:
+    """The ``latest`` flag of these rows, by id."""
+    async with database.connection() as connection:
+        cursor = await connection.execute(
+            t"select id, latest from exclusion_records where id = any({list(ids)}::uuid[])"
+        )
+        return {row[0]: row[1] for row in await cursor.fetchall()}
+
+
+async def test_a_row_removed_from_the_list_stays_latest_and_keeps_matching(
+    database: ConnectionSource,
+) -> None:
     repository = PostgresExclusionRecordRepository(database)
     snapshot_id = await _snapshot(database)
-    await repository.replace_current(SOURCE, snapshot_id, [exclusion(snapshot_id=snapshot_id)], NOW)
-    await repository.replace_current(SOURCE, await _snapshot(database), [], LATER)
+    listed = exclusion(snapshot_id=snapshot_id, last="Qzxremoved", npi=NPI)
+    await repository.replace_current(SOURCE, snapshot_id, [listed], NOW, source_changed=True)
 
-    assert _ours(await repository.find_candidates(None, "Testperson", None)) == set()
+    diff = await repository.replace_current(
+        SOURCE, await _snapshot(database), [], LATER, source_changed=True
+    )
+
+    assert diff == SnapshotDiff(added=0, removed=1, changed=0, unchanged=0)
+    assert await _latest(database, listed.id) == {listed.id: True}
+    found = [
+        r
+        for r in await repository.find_candidates(NPI, "Qzxremoved", None)
+        if r.source_id == SOURCE
+    ]
+    assert [(r.id, r.valid_to) for r in found] == [(listed.id, LATER)]
+    assert await _search_ids(repository, "qzxremoved") == [listed.id]
+    assert await repository.count_current(SOURCE) == 0
+
+
+async def test_a_row_missing_from_a_reparse_of_the_same_bytes_is_superseded_not_removed(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    old_parse = exclusion(snapshot_id=snapshot_id, last="Qzxreparsed", first="Avery")
+    await repository.replace_current(SOURCE, snapshot_id, [old_parse], NOW, source_changed=True)
+
+    second_snapshot = await _snapshot(database)
+    new_parse = exclusion(snapshot_id=second_snapshot, last="Qzxreparsed", first="Avery J")
+    diff = await repository.replace_current(
+        SOURCE, second_snapshot, [new_parse], LATER, source_changed=False
+    )
+
+    assert diff == SnapshotDiff(added=1, removed=0, changed=0, unchanged=0, reparsed=1)
+    assert await _latest(database, old_parse.id, new_parse.id) == {
+        old_parse.id: False,
+        new_parse.id: True,
+    }
+    stored = await repository.get(old_parse.id)
+    assert stored is not None
+    assert stored.valid_to == LATER
+    assert _ours(await repository.find_candidates(None, "Qzxreparsed", None)) == {new_parse.id}
+    assert await _search_ids(repository, "qzxreparsed") == [new_parse.id]
+
+
+async def test_a_changed_row_hands_latest_to_its_new_version(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    first_snapshot = await _snapshot(database)
+    listed = exclusion(snapshot_id=first_snapshot, last="Qzxchanged")
+    await repository.replace_current(SOURCE, first_snapshot, [listed], NOW, source_changed=True)
+
+    second_snapshot = await _snapshot(database)
+    ended = exclusion(
+        snapshot_id=second_snapshot, last="Qzxchanged", end_date=date(2026, 1, 10), raw=listed.raw
+    )
+    await repository.replace_current(SOURCE, second_snapshot, [ended], LATER, source_changed=True)
+
+    assert await _latest(database, listed.id, ended.id) == {listed.id: False, ended.id: True}
+    assert _ours(await repository.find_candidates(None, "Qzxchanged", None)) == {ended.id}
+
+
+async def test_a_row_back_after_a_removal_gets_a_new_current_version(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    first_snapshot = await _snapshot(database)
+    listed = exclusion(snapshot_id=first_snapshot, last="Qzxreturning")
+    bystander = exclusion(snapshot_id=first_snapshot, last="Qzxbystander")
+    await repository.replace_current(
+        SOURCE, first_snapshot, [listed, bystander], NOW, source_changed=True
+    )
+    await repository.replace_current(
+        SOURCE, await _snapshot(database), [], LATER, source_changed=True
+    )
+
+    third_snapshot = await _snapshot(database)
+    back = exclusion(snapshot_id=third_snapshot, last="Qzxreturning", raw=listed.raw)
+    newcomer = exclusion(snapshot_id=third_snapshot, last="Qzxnewcomer")
+    returned_at = LATER + timedelta(days=7)
+    diff = await repository.replace_current(
+        SOURCE, third_snapshot, [back, newcomer], returned_at, source_changed=True
+    )
+
+    assert diff == SnapshotDiff(added=1, removed=0, changed=0, unchanged=0, readded=1)
+    assert await _latest(database, listed.id, back.id) == {listed.id: False, back.id: True}
+    assert _ours(await repository.find_candidates(None, "Qzxreturning", None)) == {back.id}
+    versions = await repository.versions(SOURCE, listed.record_hash)
+    assert [(v.id, v.valid_from, v.valid_to) for v in versions] == [
+        (listed.id, NOW, LATER),
+        (back.id, returned_at, None),
+    ]
+    assert _ours(await repository.find_candidates(None, "Qzxbystander", None)) == {bystander.id}
+
+
+async def _sync(
+    repository: PostgresExclusionRecordRepository,
+    database: ConnectionSource,
+    records: Sequence[ExclusionRecord],
+    now: datetime,
+    *,
+    source_changed: bool = True,
+) -> tuple[SnapshotDiff, list[ExclusionRecord]]:
+    """Replace the test source's list with ``records`` under a new snapshot, as of ``now``."""
+    snapshot_id = await _snapshot(database)
+    own = [r.model_copy(update={"snapshot_id": snapshot_id}) for r in records]
+    diff = await repository.replace_current(
+        SOURCE, snapshot_id, own, now, source_changed=source_changed
+    )
+    return diff, own
+
+
+async def test_a_row_the_list_rewrote_one_to_one_is_rewritten_not_removed(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    licence = License(number="QZX001", state="NY")
+    bystander = exclusion(last="Qzxbystander", npi=make_npi("100000005"))
+    _, (old, _) = await _sync(
+        repository,
+        database,
+        [exclusion(last="Qzxspeling", npi=NPI, license=licence), bystander],
+        NOW,
+    )
+
+    diff, (new, _) = await _sync(
+        repository,
+        database,
+        [exclusion(last="Qzxspelling", npi=NPI, license=licence), bystander],
+        LATER,
+    )
+
+    assert diff == SnapshotDiff(added=0, removed=0, changed=0, unchanged=1, rewritten=1)
+    assert await _latest(database, old.id, new.id) == {old.id: False, new.id: True}
+    stored_old, stored_new = await repository.get(old.id), await repository.get(new.id)
+    assert stored_old is not None
+    assert stored_old.valid_to == LATER
+    assert stored_new is not None
+    assert (stored_new.rewrites, stored_new.valid_from, stored_new.valid_to) == (
+        old.id,
+        LATER,
+        None,
+    )
+    assert await repository.rewritten_by(old.id) == stored_new
+    assert await repository.rewritten_by(new.id) is None
+    assert _ours(await repository.find_candidates(NPI, None, None)) == {new.id}
+
+
+async def test_an_ambiguous_rewrite_stays_removed_and_added(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    _, (old, _) = await _sync(
+        repository,
+        database,
+        [exclusion(last="Qzxfirst", npi=NPI), exclusion(last="Qzxsecond", npi=NPI)],
+        NOW,
+    )
+
+    diff, (new,) = await _sync(repository, database, [exclusion(last="Qzxthird", npi=NPI)], LATER)
+
+    assert diff == SnapshotDiff(added=1, removed=2, changed=0, unchanged=0)
+    assert await _latest(database, old.id, new.id) == {old.id: True, new.id: True}
+    stored = await repository.get(new.id)
+    assert stored is not None
+    assert stored.rewrites is None
+
+
+async def test_a_vanished_row_without_an_npi_stays_removed(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    _, (old,) = await _sync(repository, database, [exclusion(last="Qzxnonpi")], NOW)
+
+    diff, (new,) = await _sync(repository, database, [exclusion(last="Qzxnonpy")], LATER)
+
+    assert diff == SnapshotDiff(added=1, removed=1, changed=0, unchanged=0)
+    assert await _latest(database, old.id, new.id) == {old.id: True, new.id: True}
+    assert await repository.rewritten_by(old.id) is None
+
+
+async def test_a_reparse_of_the_same_bytes_never_pairs_rewrites(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    _, (old,) = await _sync(repository, database, [exclusion(last="Qzxparse", npi=NPI)], NOW)
+
+    diff, (new,) = await _sync(
+        repository,
+        database,
+        [exclusion(last="Qzxparsed", npi=NPI)],
+        LATER,
+        source_changed=False,
+    )
+
+    assert diff == SnapshotDiff(added=1, removed=0, changed=0, unchanged=0, reparsed=1)
+    assert await _latest(database, old.id, new.id) == {old.id: False, new.id: True}
+    assert await repository.rewritten_by(old.id) is None
 
 
 async def test_get_many_with_no_ids(database: ConnectionSource) -> None:
@@ -381,12 +605,12 @@ async def test_count_current_counts_only_this_sources_open_rows(
     assert await repository.count_current(SOURCE) == 0
     first_snapshot = await _snapshot(database)
     rows = [exclusion(snapshot_id=first_snapshot, last=name) for name in ("Aaname", "Bbname")]
-    await repository.replace_current(SOURCE, first_snapshot, rows, NOW)
+    await repository.replace_current(SOURCE, first_snapshot, rows, NOW, source_changed=True)
     assert await repository.count_current(SOURCE) == 2
 
     second_snapshot = await _snapshot(database)
     kept = exclusion(snapshot_id=second_snapshot, last="Aaname", raw=rows[0].raw)
-    await repository.replace_current(SOURCE, second_snapshot, [kept], LATER)
+    await repository.replace_current(SOURCE, second_snapshot, [kept], LATER, source_changed=True)
 
     assert await repository.count_current(SOURCE) == 1
     assert await repository.count_current("test_other_list") == 0
@@ -410,7 +634,9 @@ async def _business_and_owner(
         related_npis=(RELATED_NPI,),
     )
     owner = exclusion(snapshot_id=snapshot_id, last="Qzxowner", first="Jordan", npi=RELATED_NPI)
-    await repository.replace_current(SOURCE, snapshot_id, [business, owner], NOW)
+    await repository.replace_current(
+        SOURCE, snapshot_id, [business, owner], NOW, source_changed=True
+    )
     return business, owner
 
 
@@ -441,7 +667,9 @@ async def test_search_finds_related_npis_and_parties_after_the_own_npi(
 async def test_get_a_record_current_or_not(database: ConnectionSource) -> None:
     repository = PostgresExclusionRecordRepository(database)
     business, owner = await _business_and_owner(repository, database)
-    await repository.replace_current(SOURCE, business.snapshot_id, [business], LATER)
+    await repository.replace_current(
+        SOURCE, business.snapshot_id, [business], LATER, source_changed=True
+    )
 
     assert await repository.get(business.id) == business
     closed = await repository.get(owner.id)
@@ -455,11 +683,15 @@ async def test_versions_of_one_identity_oldest_first(database: ConnectionSource)
     first_snapshot = await _snapshot(database)
     listed = exclusion(snapshot_id=first_snapshot, last="Qzxversioned")
     other = exclusion(snapshot_id=first_snapshot, last="Qzxbystander")
-    await repository.replace_current(SOURCE, first_snapshot, [listed, other], NOW)
+    await repository.replace_current(
+        SOURCE, first_snapshot, [listed, other], NOW, source_changed=True
+    )
     second_snapshot = await _snapshot(database)
     ended = exclusion(snapshot_id=second_snapshot, last="Qzxversioned", end_date=date(2026, 1, 10))
     still = other.model_copy(update={"snapshot_id": second_snapshot})
-    await repository.replace_current(SOURCE, second_snapshot, [ended, still], LATER)
+    await repository.replace_current(
+        SOURCE, second_snapshot, [ended, still], LATER, source_changed=True
+    )
 
     versions = await repository.versions(SOURCE, listed.record_hash)
 
@@ -469,7 +701,7 @@ async def test_versions_of_one_identity_oldest_first(database: ConnectionSource)
     ]
 
 
-async def test_linked_by_npi_matches_own_and_related_npis_of_current_rows(
+async def test_linked_by_npi_matches_own_and_related_npis_of_latest_rows(
     database: ConnectionSource,
 ) -> None:
     repository = PostgresExclusionRecordRepository(database)
@@ -481,8 +713,11 @@ async def test_linked_by_npi_matches_own_and_related_npis_of_current_rows(
     assert _ours(linked) == {owner.id}
     assert _ours(naming) == {business.id}
     assert await repository.linked_by_npi([], exclude_id=business.id) == []
-    await repository.replace_current(SOURCE, business.snapshot_id, [business], LATER)
-    assert _ours(await repository.linked_by_npi([RELATED_NPI], exclude_id=business.id)) == set()
+    await repository.replace_current(
+        SOURCE, business.snapshot_id, [business], LATER, source_changed=True
+    )
+    removed = await repository.linked_by_npi([RELATED_NPI], exclude_id=business.id)
+    assert [(r.id, r.valid_to) for r in removed if r.source_id == SOURCE] == [(owner.id, LATER)]
 
 
 async def test_same_name_is_bounded_and_puts_the_same_first_name_first(
@@ -507,7 +742,7 @@ async def test_same_name_is_bounded_and_puts_the_same_first_name_first(
         snapshot_id=snapshot_id, last="Qzxother", first="Casey", aliases=("Avery Qzxcommon",)
     )
     await repository.replace_current(
-        SOURCE, snapshot_id, [subject, *others, namesake, via_alias], NOW
+        SOURCE, snapshot_id, [subject, *others, namesake, via_alias], NOW, source_changed=True
     )
 
     found = await repository.same_name(subject, limit=3)
@@ -532,7 +767,9 @@ async def test_same_license_compares_number_and_state(database: ConnectionSource
     other_state = exclusion(
         snapshot_id=snapshot_id, last="Qzxthird", license=License(number="QZX0098765", state="NJ")
     )
-    await repository.replace_current(SOURCE, snapshot_id, [subject, same, other_state], NOW)
+    await repository.replace_current(
+        SOURCE, snapshot_id, [subject, same, other_state], NOW, source_changed=True
+    )
 
     assert _ours(await repository.same_license(subject, limit=10)) == {same.id}
     assert await repository.same_license(subject, limit=0) == []

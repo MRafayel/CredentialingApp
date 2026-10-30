@@ -8,10 +8,11 @@ The heuristics here are deterministic and documented so a wrong split can be exp
 1. Aliases: parenthesized parts are taken out first. One that holds only credentials
    ("SMITH, MARY (LPN)") counts as written without the parentheses; any other is an alias,
    without a leading alias marker ("ACME LLC (DBA: ACME CARE)") and split at commas when it
-   lists single words ("(DECOTEAU, MARTINEZ)"). Placed right after the last name of a
-   "LAST, FIRST" cell it is another last name, so the alias is a full name: "ANDERSON (AKA
-   FRUGE), REBECCA" gives the alias "FRUGE, REBECCA" (North Dakota); elsewhere it stays as
-   written ("PATRICIA RICHARDS (MOSDEN)", a maiden name in North Carolina, gives "MOSDEN").
+   lists single words ("(MOCKNAME, TESTNAME)"). Placed right after the last name of a
+   "LAST, FIRST" cell it is another last name, so the alias is a full name: "SAMPLEPERSON
+   (AKA MAIDENMOCK), AVERY" gives the alias "MAIDENMOCK, AVERY" (North Dakota); elsewhere it
+   stays as written ("AVERY SAMPLEPERSON (MAIDENMOCK)", a maiden name in North Carolina,
+   gives "MAIDENMOCK").
    Then the text is cut at every alias marker (AKA, A/K/A, DBA, D/B/A, FKA, F/K/A, T/A, with
    or without periods). The first part is the primary name; the others become aliases.
    A text that starts with a marker ("DBA SMITH CLINIC") is a business named by its first
@@ -189,6 +190,18 @@ def parse_name_lines(
         aliases=tuple(aliases),
         related_parties=tuple(related),
     )
+
+
+def is_alias_line(text: str | None) -> bool:
+    """Whether a line starts with an alias marker ("a.k.a. Sample Name", "DBA: Sample Care")."""
+    return bool(_LEADING_ALIAS_MARKER.match(text or ""))
+
+
+def holds_only_credentials(text: str | None) -> bool:
+    """Whether the text is only credentials or suffixes ("MD", "RN, LPN"), as rule 1 reads a
+    parenthesized part that is not an alias."""
+    tokens = (text or "").replace(",", " ").split()
+    return bool(tokens) and all(_is_suffix(token) for token in tokens)
 
 
 def split_single_name_field(text: str | None) -> tuple[PersonName | None, tuple[str, ...]]:
