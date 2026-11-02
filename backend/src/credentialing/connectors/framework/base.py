@@ -10,6 +10,10 @@ A subclass declares its ``capabilities`` and implements ``parse``, plus where it
   :meth:`~BulkListConnectorBase.read_metadata`, which reads the file's URL and MD5 hash.
 
 Nothing else is source-specific. Either way an unchanged source costs one request per poll.
+
+A connector whose capabilities set ``browser_fallback`` and that was given a ``browser``
+fetcher repeats a request answered ``BLOCKED`` in that browser (``framework/browser.py``);
+the snapshot note then starts with "browser fallback; ".
 """
 
 import asyncio
@@ -19,7 +23,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import ClassVar, Final, TypeGuard
 from urllib.parse import urljoin, urlsplit
@@ -44,6 +48,7 @@ from credentialing.domain.models import (
 
 logger = logging.getLogger(__name__)
 
+_BROWSER_NOTE: Final = "browser fallback"
 _HREF: Final = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
 
 
@@ -85,6 +90,8 @@ class Located:
     url: str
     md5: str | None = None
     last_modified: datetime | None = None
+    fetched_in_browser: bool = False
+    """The landing page or API answer that located the file came from the browser fallback."""
 
 
 type Location = Located | NotModified | FetchFailure
@@ -109,8 +116,14 @@ class BulkListConnectorBase(ABC):
     metadata_url: ClassVar[str | None] = None
     """``API_METADATA``: the API request describing the current file."""
 
-    def __init__(self, fetcher: Fetcher) -> None:
+    def __init__(self, fetcher: Fetcher, *, browser: Fetcher | None = None) -> None:
         self._fetcher = fetcher
+        self._browser = browser
+
+    @property
+    def uses_browser(self) -> bool:
+        """Whether a request the site refuses to scripts is repeated in the headed browser."""
+        return self._browser is not None and self.capabilities.browser_fallback
 
     @property
     @abstractmethod
@@ -157,7 +170,7 @@ class BulkListConnectorBase(ABC):
             return _failure(page, "the download link is not a web address")
         if _completed(previous) and previous.source_url == found:
             return _not_modified(page, "link unchanged")
-        return Located(url=found)
+        return Located(url=found, fetched_in_browser=page.fetched_in_browser)
 
     async def metadata(self, previous: SourceSnapshot | None) -> Location:
         """``API_METADATA``: ask the API for the file's URL and hash.
@@ -181,9 +194,13 @@ class BulkListConnectorBase(ABC):
                 last_modified=described.last_modified,
                 fetched_at=answer.fetched_at,
                 status=answer.status,
+                fetched_in_browser=answer.fetched_in_browser,
             )
         return Located(
-            url=urljoin(url, described.url), md5=md5, last_modified=described.last_modified
+            url=urljoin(url, described.url),
+            md5=md5,
+            last_modified=described.last_modified,
+            fetched_in_browser=answer.fetched_in_browser,
         )
 
     async def fetch(self, previous: SourceSnapshot | None) -> FetchResult:
@@ -214,6 +231,8 @@ class BulkListConnectorBase(ABC):
         records: tuple[ExclusionRecord, ...] | None = None
         if isinstance(result, FetchedDocument):
             snapshot, records = await asyncio.to_thread(self._parse, result.body, snapshot)
+        if _in_browser(location) or _in_browser(result):
+            snapshot = snapshot.model_copy(update={"note": _browser_note(snapshot.note)})
         logger.info(
             "source fetch source_id=%s outcome=%s status=%s bytes=%s rows=%s note=%r "
             "duration_ms=%d",
@@ -230,12 +249,31 @@ class BulkListConnectorBase(ABC):
     async def _get(
         self, url: str, *, previous: SourceSnapshot | None, change_signal: ChangeSignal
     ) -> FetchOutcome:
-        return await self._fetcher.fetch(
-            url,
-            previous=previous,
-            change_signal=change_signal,
-            crawl_delay=self.capabilities.crawl_delay,
+        """Every request of the connector: over HTTP, repeated in the browser when refused."""
+        crawl_delay = self.capabilities.crawl_delay
+        result = await self._fetcher.fetch(
+            url, previous=previous, change_signal=change_signal, crawl_delay=crawl_delay
         )
+        if not (
+            self._browser is not None
+            and self.capabilities.browser_fallback
+            and isinstance(result, FetchFailure)
+            and result.outcome is Outcome.BLOCKED
+        ):
+            return result
+        answer = await self._browser.fetch(
+            url, previous=previous, change_signal=change_signal, crawl_delay=crawl_delay
+        )
+        logger.info(
+            "browser fallback source_id=%s url=%s http=%s browser=%s",
+            self.capabilities.source_id,
+            url,
+            result.outcome.value,
+            answer.outcome.value if isinstance(answer, FetchFailure) else "ok",
+        )
+        if isinstance(answer, FetchFailure):
+            return replace(answer, note=f"{result.note}; browser fallback: {answer.note}")
+        return answer
 
     async def _download(self, location: Located, previous: SourceSnapshot | None) -> FetchOutcome:
         """Download the located file; conditional only when it is the previous fetch's URL."""
@@ -302,6 +340,8 @@ def _failure(document: FetchedDocument, note: str, error: Exception | None = Non
     if error is not None:
         reason = str(error) if isinstance(error, ParseError) else type(error).__name__
         note = f"{note}: {reason}"
+    if document.fetched_in_browser:
+        note = _browser_note(note)
     return FetchFailure(
         outcome=Outcome.FAILED,
         status=document.status,
@@ -317,7 +357,22 @@ def _not_modified(document: FetchedDocument, reason: str) -> NotModified:
         last_modified=None,
         fetched_at=document.fetched_at,
         status=document.status,
+        fetched_in_browser=document.fetched_in_browser,
     )
+
+
+def _in_browser(outcome: Location | FetchOutcome) -> bool:
+    """Whether the browser fallback answered (a failure's note already says so)."""
+    return isinstance(outcome, Located | FetchedDocument | NotModified) and (
+        outcome.fetched_in_browser
+    )
+
+
+def _browser_note(note: str | None) -> str:
+    """The note of a fetch the browser fallback took part in, saying so once."""
+    if not note:
+        return _BROWSER_NOTE
+    return note if note.startswith(_BROWSER_NOTE) else f"{_BROWSER_NOTE}; {note}"
 
 
 def _unchanged(
@@ -339,6 +394,7 @@ def _unchanged(
         last_modified=None,
         fetched_at=result.fetched_at,
         status=result.status,
+        fetched_in_browser=result.fetched_in_browser,
     )
 
 

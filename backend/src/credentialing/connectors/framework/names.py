@@ -47,6 +47,11 @@ The heuristics here are deterministic and documented so a wrong split can be exp
    on a business's row, the business on a person's row) it is a related party, kept as
    written. Aliases are other names of the same party; related parties are other parties.
 
+7. Helpers for sources with separate name columns: :func:`split_suffix` takes a generational
+   suffix off a last-name cell ("SAMPLEPERSON JR", "SAMPLEPERSON, Jr."), and
+   :func:`split_aliases` cuts a cell at its alias markers ("Avery a.k.a Jay" gives "Avery"
+   and the alias "Jay"), so the connector can complete an alias with the other name column.
+
 Known limit: a two-word surname without a particle ("GARCIA LOPEZ MARIA") is read as last
 name "GARCIA", first name "LOPEZ" (first name first: "MARIA GARCIA LOPEZ" has last name
 "LOPEZ" and middle name "GARCIA"); the original cell always stays in the record's raw row.
@@ -190,6 +195,41 @@ def parse_name_lines(
         aliases=tuple(aliases),
         related_parties=tuple(related),
     )
+
+
+GENERATIONAL_SUFFIXES: Final = frozenset({"jr", "sr", "ii", "iii", "iv"})
+"""Suffixes that :func:`split_suffix` takes off a last name even without a comma."""
+
+
+def split_suffix(last_name: str) -> tuple[str, str | None]:
+    """A last-name cell without its trailing suffix, and the suffix (rule 7).
+
+    A generational suffix is taken off with or without a comma ("SAMPLEPERSON JR",
+    "SAMPLEPERSON, Jr.", "SAMPLEPERSON II"); a credential only after a comma
+    ("SAMPLEPERSON, MD"), because a last word such as "Do" can be a surname. At least one
+    word stays the last name.
+    """
+    head, comma, tail = last_name.partition(",")
+    words = tail.replace(",", " ").split()
+    if comma and head.strip() and words and all(_is_suffix(word) for word in words):
+        return head.strip(), " ".join(words)
+    tokens = last_name.split()
+    suffixes: list[str] = []
+    while len(tokens) > 1 and _bare(tokens[-1]).lower() in GENERATIONAL_SUFFIXES:
+        suffixes.insert(0, tokens.pop())
+    if not suffixes:
+        return last_name.strip(), None
+    return _trim(" ".join(tokens)), " ".join(suffixes)
+
+
+def split_aliases(text: str | None) -> tuple[str, tuple[str, ...]]:
+    """The text before the first alias marker and the non-empty parts after each (rule 7).
+
+    "Avery a.k.a Jay" gives ``("Avery", ("Jay",))``; "aka - Avery Sampleperson" gives
+    ``("", ("Avery Sampleperson",))``; a text without a marker comes back whole.
+    """
+    first, *others = _ALIAS_MARKER.split(collapse(text) or "")
+    return _trim(first), tuple(part for part in (_trim(other) for other in others) if part)
 
 
 def is_alias_line(text: str | None) -> bool:

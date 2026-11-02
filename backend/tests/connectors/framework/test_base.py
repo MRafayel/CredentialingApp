@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -66,8 +67,14 @@ def _record(snapshot: SourceSnapshot, last: str) -> ExclusionRecord:
 class _Connector(BulkListConnectorBase):
     download_url = "https://example.test/list.csv"
 
-    def __init__(self, fetcher: ScriptedFetcher, *, fail: Exception | None = None) -> None:
-        super().__init__(fetcher)
+    def __init__(
+        self,
+        fetcher: ScriptedFetcher,
+        *,
+        fail: Exception | None = None,
+        browser: ScriptedFetcher | None = None,
+    ) -> None:
+        super().__init__(fetcher, browser=browser)
         self._fail = fail
 
     @property
@@ -458,3 +465,143 @@ async def test_a_parse_failure_after_api_metadata_drops_the_kept_hash() -> None:
 
     assert result.snapshot.outcome is Outcome.FAILED
     assert result.snapshot.etag is None
+
+
+_BLOCKED = FetchFailure(
+    outcome=Outcome.BLOCKED, status=403, note="challenge page (HTTP 403)", fetched_at=NOW
+)
+
+
+def _in_browser(document: FetchedDocument) -> FetchedDocument:
+    return replace(document, fetched_in_browser=True)
+
+
+class _BrowserConnector(_Connector):
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return CAPABILITIES.model_copy(update={"browser_fallback": True})
+
+
+class _BrowserLinkConnector(_LinkConnector):
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return super().capabilities.model_copy(update={"browser_fallback": True})
+
+
+async def test_a_blocked_request_is_repeated_in_the_browser_and_the_note_says_so() -> None:
+    http = ScriptedFetcher(_BLOCKED)
+    browser = ScriptedFetcher(_in_browser(_document()))
+
+    result = await _BrowserConnector(http, browser=browser).fetch(None)
+
+    assert browser.requests == [("https://example.test/list.csv", ChangeSignal.CONTENT_HASH)]
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.note == "browser fallback; 2 rows, 1 records, 1 skipped"
+    assert result.records is not None
+    assert len(result.records) == 1
+
+
+async def test_a_request_blocked_in_the_browser_too_stays_blocked() -> None:
+    browser_blocked = FetchFailure(
+        outcome=Outcome.BLOCKED,
+        status=403,
+        note="challenge page not cleared (HTTP 403)",
+        fetched_at=NOW,
+    )
+    browser = ScriptedFetcher(browser_blocked)
+
+    result = await _BrowserConnector(ScriptedFetcher(_BLOCKED), browser=browser).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.BLOCKED
+    assert result.snapshot.note == (
+        "challenge page (HTTP 403); browser fallback: challenge page not cleared (HTTP 403)"
+    )
+    assert result.records is None
+
+
+async def test_a_browser_that_fails_to_start_is_failed_not_clear() -> None:
+    unavailable = FetchFailure(
+        outcome=Outcome.FAILED, status=None, note="browser unavailable: Error", fetched_at=NOW
+    )
+
+    result = await _BrowserConnector(
+        ScriptedFetcher(_BLOCKED), browser=ScriptedFetcher(unavailable)
+    ).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.records is None
+
+
+async def test_a_connector_without_the_fallback_never_calls_the_browser() -> None:
+    browser = ScriptedFetcher(_in_browser(_document()))
+    connector = _Connector(ScriptedFetcher(_BLOCKED), browser=browser)
+
+    result = await connector.fetch(None)
+
+    assert result.snapshot.outcome is Outcome.BLOCKED
+    assert browser.requests == []
+    assert connector.uses_browser is False
+
+
+@pytest.mark.parametrize(
+    "outcome", [Outcome.SOURCE_UNAVAILABLE, Outcome.FAILED], ids=["unavailable", "failed"]
+)
+async def test_only_a_blocked_request_goes_to_the_browser(outcome: Outcome) -> None:
+    failure = FetchFailure(outcome=outcome, status=None, note="synthetic", fetched_at=NOW)
+    browser = ScriptedFetcher(_in_browser(_document()))
+
+    result = await _BrowserConnector(ScriptedFetcher(failure), browser=browser).fetch(None)
+
+    assert result.snapshot.outcome is outcome
+    assert browser.requests == []
+
+
+async def test_an_answered_request_never_calls_the_browser() -> None:
+    browser = ScriptedFetcher(_in_browser(_document()))
+    connector = _BrowserConnector(ScriptedFetcher(_document()), browser=browser)
+
+    result = await connector.fetch(None)
+
+    assert result.snapshot.note == "2 rows, 1 records, 1 skipped"
+    assert browser.requests == []
+    assert connector.uses_browser is True
+
+
+async def test_a_landing_page_read_in_the_browser_leads_to_a_plain_download() -> None:
+    http = ScriptedFetcher(_BLOCKED, _document())
+    browser = ScriptedFetcher(_in_browser(_page()))
+
+    result = await _BrowserLinkConnector(http, browser=browser).fetch(None)
+
+    assert http.requests == [
+        (_LANDING, ChangeSignal.CONTENT_HASH),
+        (_FILE_URL, ChangeSignal.CONTENT_HASH),
+    ]
+    assert browser.requests == [(_LANDING, ChangeSignal.CONTENT_HASH)]
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.source_url == _FILE_URL
+    assert result.snapshot.note == "browser fallback; 2 rows, 1 records, 1 skipped"
+    assert result.records is not None
+
+
+async def test_an_unchanged_link_read_in_the_browser_says_so() -> None:
+    browser = ScriptedFetcher(_in_browser(_page()))
+
+    result = await _BrowserLinkConnector(ScriptedFetcher(_BLOCKED), browser=browser).fetch(
+        _completed(_FILE_URL, etag='"v1"')
+    )
+
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.note == "browser fallback; unchanged (link unchanged)"
+    assert result.records is None
+
+
+async def test_a_browser_page_without_the_link_is_failed_and_says_where_it_came_from() -> None:
+    browser = ScriptedFetcher(_in_browser(_page(b"<html>moved</html>")))
+
+    result = await _BrowserLinkConnector(ScriptedFetcher(_BLOCKED), browser=browser).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.note == (
+        "browser fallback; no download link on the landing page: no workbook link"
+    )

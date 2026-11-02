@@ -73,6 +73,8 @@ class FetchedDocument:
     byte_size: int
     fetched_at: datetime
     status: int
+    fetched_in_browser: bool = False
+    """The headed-browser fallback, not the HTTP client, read this body."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,8 @@ class NotModified:
     last_modified: datetime | None
     fetched_at: datetime
     status: int
+    fetched_in_browser: bool = False
+    """The headed-browser fallback, not the HTTP client, gave this answer."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -461,6 +461,9 @@ class ConnectorCapabilities(DomainModel):
     one that is filled in, as the source wrote it."""
     crawl_delay: timedelta = timedelta(0)
     """Pause before every request to the source, as its robots.txt ``Crawl-delay`` asks."""
+    browser_fallback: bool = False
+    """A request the site refuses to scripts (``BLOCKED``) is repeated in a headed real browser;
+    the fetch is otherwise identical, and the snapshot note says the browser was used."""
 
 
 class FetchResult(DomainModel):

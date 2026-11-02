@@ -140,6 +140,19 @@ def test_related_npis_union_leaves_out_the_records_own_npi() -> None:
     assert merged.related_npis == (make_npi("100000008"),)
 
 
+def test_a_merged_record_ends_only_when_every_row_ends_and_then_at_the_latest() -> None:
+    npi = make_npi("100000007")
+    ended = exclusion(npi=npi, end_date=date(2025, 1, 2), raw=_row("Physician"))
+    ongoing = exclusion(npi=npi, raw=_row("Physician"))
+    later = exclusion(npi=npi, end_date=date(2027, 5, 6), raw=_row("Physician"))
+
+    [still_listed] = merge_duplicates([ended, ongoing], joined=JOINED)
+    [both_dated] = merge_duplicates([later, ended], joined=JOINED)
+
+    assert still_listed.end_date is None
+    assert both_dated.end_date == date(2027, 5, 6)
+
+
 def test_the_note_counts_merged_rows() -> None:
     parsed = ParsedList(records=(exclusion(),), rows=3, merged=2, unreadable={"DATE": 1})
 

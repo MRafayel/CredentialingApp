@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -43,3 +45,22 @@ def test_colour_is_allowed_without_no_color(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("NO_COLOR", raising=False)
 
     assert Settings(_env_file=None).no_color is False
+
+
+def test_the_browser_fallback_is_on_with_chrome_and_a_profile_under_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("FALLBACK_ENABLED", "CHANNEL", "PROFILE_DIR"):
+        monkeypatch.delenv(f"CREDENTIALING_BROWSER_{name}", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.browser_fallback_enabled is True
+    assert settings.browser_channel == "chrome"
+    assert settings.browser_profile_dir == Path("data/browser-profile")
+
+
+def test_the_browser_fallback_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CREDENTIALING_BROWSER_FALLBACK_ENABLED", "false")
+
+    assert Settings(_env_file=None).browser_fallback_enabled is False

@@ -14,7 +14,10 @@ from credentialing.connectors.framework.http import FetchedDocument, FetchFailur
 from credentialing.domain.enums import ChangeSignal, Outcome
 from credentialing.domain.models import ConnectorCapabilities
 from credentialing.domain.ports import BulkListConnector
-from tests.connectors.fixtures import builders, fixture_bytes, mn_builders
+from tests.connectors.fixtures import builders, fixture_bytes, mn_builders, nv_builders
+from tests.connectors.fixtures.de_builders import de_dmap
+from tests.connectors.fixtures.wv_builders import wv_bms
+from tests.connectors.fixtures.wy_builders import wy_wdh
 from tests.fakes import ScriptedFetcher
 from tests.synthetic import NOW
 
@@ -38,6 +41,10 @@ CONNECTOR_FIXTURES: Final[dict[str, Callable[[], bytes]]] = {
     "ca_dhcs": partial(fixture_bytes, "ca_dhcs.csv"),
     "mn_dhs_individuals": mn_builders.mn_dhs_individuals,
     "mn_dhs_organizations": mn_builders.mn_dhs_organizations,
+    "de_dmap": de_dmap,
+    "nv_omig": nv_builders.nv_omig,
+    "wv_bms": wv_bms,
+    "wy_wdh": wy_wdh,
 }
 """Each source's synthetic document: a recorded file, or a workbook built at test time."""
 
@@ -45,6 +52,9 @@ LOCATOR_FIXTURES: Final[dict[str, Callable[[bytes], bytes]]] = {
     "mo_mmac": lambda _body: fixture_bytes("mo_mmac_landing.html"),
     "ga_dch_oig": lambda _body: fixture_bytes("ga_dch_oig_landing.html"),
     "ca_dhcs": builders.ca_dhcs_resource_show,
+    "nv_omig": lambda _body: fixture_bytes("nv_omig_landing.html"),
+    "wv_bms": lambda _body: fixture_bytes("wv_bms_landing.html"),
+    "wy_wdh": lambda _body: fixture_bytes("wy_wdh_landing.html"),
 }
 """For a source whose file URL changes, the landing page or API answer that locates the
 document (given the document, so an API answer can carry its hash)."""

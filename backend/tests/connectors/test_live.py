@@ -16,7 +16,10 @@ import pytest
 from credentialing.bootstrap import create_http_client
 from credentialing.connectors.ca_dhcs.connector import COLUMNS as CA_COLUMNS
 from credentialing.connectors.ca_dhcs.connector import CaDhcsConnector
+from credentialing.connectors.de_dmap.connector import COLUMNS as DE_COLUMNS
+from credentialing.connectors.de_dmap.connector import DeDmapConnector
 from credentialing.connectors.framework.html_table import read_html_table
+from credentialing.connectors.framework.pdf_table import read_pdf_table
 from credentialing.connectors.framework.spreadsheet import read_sheet
 from credentialing.connectors.ga_dch.connector import COLUMNS as GA_COLUMNS
 from credentialing.connectors.ga_dch.connector import GaDchConnector
@@ -44,6 +47,8 @@ from credentialing.connectors.nd_medicaid.connector import NdMedicaidConnector
 from credentialing.connectors.nj_treasury.connector import ACTIONS as NJ_ACTIONS
 from credentialing.connectors.nj_treasury.connector import COLUMNS as NJ_COLUMNS
 from credentialing.connectors.nj_treasury.connector import NjTreasuryConnector
+from credentialing.connectors.nv_omig.connector import COLUMNS as NV_COLUMNS
+from credentialing.connectors.nv_omig.connector import NvOmigConnector
 from credentialing.connectors.ny_omig.connector import COLUMNS as NY_COLUMNS
 from credentialing.connectors.ny_omig.connector import NyOmigConnector
 from credentialing.connectors.oig_leie.connector import COLUMNS as OIG_COLUMNS
@@ -54,6 +59,10 @@ from credentialing.connectors.vt_medicaid.connector import COLUMNS as VT_COLUMNS
 from credentialing.connectors.vt_medicaid.connector import VtMedicaidConnector
 from credentialing.connectors.wa_hca.connector import COLUMNS as WA_COLUMNS
 from credentialing.connectors.wa_hca.connector import WaHcaConnector
+from credentialing.connectors.wv_bms.connector import COLUMNS as WV_COLUMNS
+from credentialing.connectors.wv_bms.connector import WvBmsConnector
+from credentialing.connectors.wy_wdh.connector import COLUMNS as WY_COLUMNS
+from credentialing.connectors.wy_wdh.connector import WyWdhConnector
 from credentialing.infrastructure.config import get_settings
 from tests.fakes import ScriptedFetcher
 
@@ -211,3 +220,64 @@ async def test_mn_workbook_header(
     assert response.status_code == 200
     rows = read_sheet(response.content, expected_columns=columns)
     assert set(next(rows)) == set(columns)
+
+
+async def test_nv_linked_pdf_header() -> None:
+    # robots.txt disallows the site; the owner accepted fetching it politely (2026-10-31),
+    # so each request waits the connector's own 10-second delay, as the fetcher does.
+    connector = NvOmigConnector(ScriptedFetcher())
+    assert connector.landing_url is not None
+    delay = connector.capabilities.crawl_delay.total_seconds()
+    async with create_http_client(get_settings()) as client:
+        await asyncio.sleep(delay)
+        page = await client.get(connector.landing_url)
+        assert page.status_code == 200
+        link = str(page.url.join(connector.find_link(page.text)))
+        await asyncio.sleep(delay)
+        response = await client.get(link)
+    assert response.status_code == 200
+    assert response.headers.get("etag") or response.headers.get("last-modified")
+    # The header is found (or ParseError is raised) before the first data row is read.
+    rows = read_pdf_table(response.content, expected_columns=NV_COLUMNS)
+    first = next(rows)
+    assert isinstance(first, dict)
+    assert set(first) == set(NV_COLUMNS)
+
+
+async def test_de_pdf_header() -> None:
+    # The stable link redirects to the file on the same host; its ETag never changes.
+    async with create_http_client(get_settings()) as client:
+        response = await client.get(DeDmapConnector.download_url)
+    assert response.status_code == 200
+    assert response.url.host == httpx2.URL(DeDmapConnector.download_url).host
+    assert response.content.startswith(b"%PDF")
+    rows = read_pdf_table(response.content, expected_columns=DE_COLUMNS)
+    first = next(rows)
+    assert isinstance(first, dict)
+    assert set(first) == set(DE_COLUMNS)
+
+
+@pytest.mark.parametrize(
+    ("connector", "columns"),
+    [(WvBmsConnector, WV_COLUMNS), (WyWdhConnector, WY_COLUMNS)],
+)
+async def test_wv_wy_linked_pdf_header(
+    connector: type[WvBmsConnector | WyWdhConnector], columns: Sequence[str]
+) -> None:
+    # West Virginia's file has no validators; Wyoming asks a 10-second crawl delay, waited
+    # before each request as the fetcher does.
+    located = connector(ScriptedFetcher())
+    assert connector.landing_url is not None
+    delay = located.capabilities.crawl_delay.total_seconds()
+    async with create_http_client(get_settings()) as client:
+        await asyncio.sleep(delay)
+        page = await client.get(connector.landing_url)
+        assert page.status_code == 200
+        link = str(page.url.join(located.find_link(page.text)))
+        await asyncio.sleep(delay)
+        response = await client.get(link)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+    first = next(read_pdf_table(response.content, expected_columns=columns))
+    assert isinstance(first, dict)
+    assert set(first) == set(columns)

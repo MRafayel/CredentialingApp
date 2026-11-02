@@ -24,6 +24,8 @@ from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
 from credentialing.application.verification_history import VerificationHistory
 from credentialing.connectors.ca_dhcs import CaDhcsConnector
+from credentialing.connectors.de_dmap import DeDmapConnector
+from credentialing.connectors.framework.browser import ChromeFetcher
 from credentialing.connectors.framework.http import Fetcher, HttpFetcher
 from credentialing.connectors.ga_dch import GaDchConnector
 from credentialing.connectors.ia_medicaid import IaMedicaidConnector
@@ -36,12 +38,15 @@ from credentialing.connectors.mt_dphhs import MtDphhsConnector
 from credentialing.connectors.nc_medicaid import NcMedicaidConnector
 from credentialing.connectors.nd_medicaid import NdMedicaidConnector
 from credentialing.connectors.nj_treasury import NjTreasuryConnector
+from credentialing.connectors.nv_omig import NvOmigConnector
 from credentialing.connectors.ny_omig import NyOmigConnector
 from credentialing.connectors.oig_leie import OigLeieConnector
 from credentialing.connectors.pa_medicheck import PaMedicheckConnector
 from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.connectors.vt_medicaid import VtMedicaidConnector
 from credentialing.connectors.wa_hca import WaHcaConnector
+from credentialing.connectors.wv_bms import WvBmsConnector
+from credentialing.connectors.wy_wdh import WyWdhConnector
 from credentialing.domain.policies import DEFAULT_FRESHNESS
 from credentialing.domain.ports import Clock
 from credentialing.infrastructure.clock import SystemClock
@@ -99,8 +104,20 @@ def create_http_client(settings: Settings) -> httpx2.AsyncClient:
     )
 
 
-def build_registry(fetcher: Fetcher) -> ConnectorRegistry:
-    """Register every connector. A new source is one more line here, nothing else."""
+def create_browser_fetcher(settings: Settings, clock: Clock) -> Fetcher | None:
+    """The headed-Chrome fallback for refused requests, or ``None`` when it is turned off."""
+    if not settings.browser_fallback_enabled:
+        return None
+    return ChromeFetcher(
+        clock, profile_dir=settings.browser_profile_dir, channel=settings.browser_channel
+    )
+
+
+def build_registry(fetcher: Fetcher, browser: Fetcher | None = None) -> ConnectorRegistry:
+    """Register every connector. A new source is one more line here, nothing else.
+
+    ``browser`` goes only to connectors whose source needs the browser fallback.
+    """
     registry = ConnectorRegistry()
     registry.register(OigLeieConnector(fetcher))
     registry.register(NyOmigConnector(fetcher))
@@ -119,6 +136,10 @@ def build_registry(fetcher: Fetcher) -> ConnectorRegistry:
     registry.register(CaDhcsConnector(fetcher))
     registry.register(MnDhsIndividualsConnector(fetcher))
     registry.register(MnDhsOrganizationsConnector(fetcher))
+    registry.register(DeDmapConnector(fetcher))
+    registry.register(NvOmigConnector(fetcher))
+    registry.register(WvBmsConnector(fetcher))
+    registry.register(WyWdhConnector(fetcher, browser=browser))
     return registry
 
 
@@ -175,7 +196,10 @@ async def runtime(settings: Settings) -> AsyncIterator[Services]:
     await pool.open()
     try:
         async with create_http_client(settings) as client:
-            yield build_services(pool, build_registry(HttpFetcher(client, clock)), clock)
+            registry = build_registry(
+                HttpFetcher(client, clock), browser=create_browser_fetcher(settings, clock)
+            )
+            yield build_services(pool, registry, clock)
     finally:
         await pool.close()
 

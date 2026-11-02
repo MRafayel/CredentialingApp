@@ -6,7 +6,9 @@ from credentialing.connectors.framework.names import (
     looks_like_business,
     parse_name_field,
     parse_name_lines,
+    split_aliases,
     split_single_name_field,
+    split_suffix,
 )
 from credentialing.domain.enums import EntityKind
 from credentialing.domain.models import PersonName
@@ -312,3 +314,36 @@ def test_is_alias_line(text: str | None, expected: bool) -> None:
 )
 def test_holds_only_credentials(text: str, expected: bool) -> None:
     assert holds_only_credentials(text) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Sampleperson", ("Sampleperson", None)),
+        ("Sampleperson Jr.", ("Sampleperson", "Jr.")),
+        ("Sampleperson, Jr", ("Sampleperson", "Jr")),
+        ("SAMPLEPERSON JR", ("SAMPLEPERSON", "JR")),
+        ("Sampleperson II", ("Sampleperson", "II")),
+        ("Sampleperson, MD", ("Sampleperson", "MD")),
+        ("Van Do", ("Van Do", None)),
+        ("Jr", ("Jr", None)),
+        ("Mockwell-Sampleton", ("Mockwell-Sampleton", None)),
+    ],
+)
+def test_split_suffix(text: str, expected: tuple[str, str | None]) -> None:
+    assert split_suffix(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Avery a.k.a Jay", ("Avery", ("Jay",))),
+        ("aka - Avery Sampleperson", ("", ("Avery Sampleperson",))),
+        ("aka-Mockwell, Avery J", ("", ("Mockwell, Avery J",))),
+        ("a.k.a. Avery\nMockwell", ("", ("Avery Mockwell",))),
+        ("Sample Clinic, PLLC", ("Sample Clinic, PLLC", ())),
+        (None, ("", ())),
+    ],
+)
+def test_split_aliases(text: str | None, expected: tuple[str, tuple[str, ...]]) -> None:
+    assert split_aliases(text) == expected

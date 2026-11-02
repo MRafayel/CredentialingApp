@@ -1,6 +1,7 @@
 """Centralized configuration. The only module that reads environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Final, Literal
 
 from pydantic import BeforeValidator, Field, SecretStr, StringConstraints
@@ -46,6 +47,15 @@ class Settings(BaseSettings):
     """User-Agent sent to every source: a fixed standard browser string (owner decision,
     2026-10-26). A User-Agent alone does not pass fingerprint-based firewalls."""
     http_timeout_seconds: float = Field(default=60.0, gt=0)
+    browser_fallback_enabled: bool = True
+    """Repeat a request a site refuses to scripts in headed Chrome, for connectors that opt in.
+    A Chrome window appears during such a sync."""
+    browser_channel: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = (
+        "chrome"
+    )
+    """Playwright browser channel: ``chrome`` runs the installed Google Chrome."""
+    browser_profile_dir: Path = Path("data/browser-profile")
+    """The fallback browser's persistent profile (cookies), under the gitignored ``data/``."""
     no_color: Annotated[bool, BeforeValidator(_set_and_not_empty)] = Field(
         default=False, validation_alias="NO_COLOR"
     )

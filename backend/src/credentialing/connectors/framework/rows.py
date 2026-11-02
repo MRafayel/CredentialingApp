@@ -120,6 +120,8 @@ def merge_duplicates(
     Identity is the record hash, so rows that differ in any identifying field are never merged;
     the ``joined`` raw columns keep every distinct value, in order, joined with ``separator``.
     Placeholders ("N/A") and spelling that differs only in whitespace are not repeated.
+    The merged record has no end date when any of its records has none, otherwise the latest,
+    because a row still in force means the party is still listed.
     """
     groups: dict[str, list[ExclusionRecord]] = {}
     for record in records:
@@ -158,7 +160,7 @@ def _merge(
         action=first.action,
         action_raw=_first(record.action_raw for record in group),
         effective_date=first.effective_date,
-        end_date=_first(record.end_date for record in group),
+        end_date=_latest_end(record.end_date for record in group),
         reason=_first(record.reason for record in group),
         raw=raw,
         valid_from=first.valid_from,
@@ -176,6 +178,12 @@ def _distinct(values: Iterable[str | None]) -> tuple[str, ...]:
 
 def _union(values: Iterable[tuple[str, ...]]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for items in values for item in items))
+
+
+def _latest_end(end_dates: Iterable[date | None]) -> date | None:
+    """No end date when any record has none (still in force), otherwise the latest."""
+    dates = list(end_dates)
+    return None if None in dates else max(end for end in dates if end is not None)
 
 
 def _first[T](values: Iterable[T | None]) -> T | None:
