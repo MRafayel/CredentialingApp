@@ -12,8 +12,13 @@ A subclass declares its ``capabilities`` and implements ``parse``, plus where it
 Nothing else is source-specific. Either way an unchanged source costs one request per poll.
 
 A connector whose capabilities set ``browser_fallback`` and that was given a ``browser``
-fetcher repeats a request answered ``BLOCKED`` in that browser (``framework/browser.py``);
-the snapshot note then starts with "browser fallback; ".
+fetcher repeats a request answered ``BLOCKED``, or HTTP 404 (a block some firewalls disguise as
+a missing page), in that browser (``framework/browser.py``); the browser's answer decides, and
+the snapshot note then starts with "browser fallback; ". With ``browser_warm_up`` the browser
+opens ``capabilities.source_url`` first, in the same session.
+
+A source whose ``Last-Modified`` is a serving timestamp (``last_modified_is_meaningful`` false)
+keeps none on its snapshots.
 """
 
 import asyncio
@@ -226,6 +231,8 @@ class BulkListConnectorBase(ABC):
             unchanged = isinstance(result, NotModified) and previous is not None
             url = previous.source_url if unchanged and previous else fallback_url
         snapshot = snapshot_from(result, source_id=source_id, url=url, previous=previous)
+        if not capabilities.last_modified_is_meaningful and snapshot.last_modified is not None:
+            snapshot = snapshot.model_copy(update={"last_modified": None})
         if isinstance(location, Located) and snapshot.outcome is Outcome.COMPLETED:
             snapshot = _stamp(snapshot, location, resolved=url != fallback_url)
         records: tuple[ExclusionRecord, ...] | None = None
@@ -249,7 +256,13 @@ class BulkListConnectorBase(ABC):
     async def _get(
         self, url: str, *, previous: SourceSnapshot | None, change_signal: ChangeSignal
     ) -> FetchOutcome:
-        """Every request of the connector: over HTTP, repeated in the browser when refused."""
+        """Every request of the connector: over HTTP, repeated in the browser when refused.
+
+        Refused means ``BLOCKED`` or HTTP 404: some firewalls (Ohio's CloudFront) answer a
+        script with a static 404 page. The browser's answer decides, so a real 404 stays
+        ``FAILED`` with both notes. With ``browser_warm_up`` the browser opens the landing page
+        (``source_url``) before ``url``; plain HTTP never gets an entry page.
+        """
         crawl_delay = self.capabilities.crawl_delay
         result = await self._fetcher.fetch(
             url, previous=previous, change_signal=change_signal, crawl_delay=crawl_delay
@@ -258,11 +271,16 @@ class BulkListConnectorBase(ABC):
             self._browser is not None
             and self.capabilities.browser_fallback
             and isinstance(result, FetchFailure)
-            and result.outcome is Outcome.BLOCKED
+            and (result.outcome is Outcome.BLOCKED or result.status == 404)
         ):
             return result
+        capabilities = self.capabilities
         answer = await self._browser.fetch(
-            url, previous=previous, change_signal=change_signal, crawl_delay=crawl_delay
+            url,
+            previous=previous,
+            change_signal=change_signal,
+            crawl_delay=crawl_delay,
+            entry_url=capabilities.source_url if capabilities.browser_warm_up else None,
         )
         logger.info(
             "browser fallback source_id=%s url=%s http=%s browser=%s",

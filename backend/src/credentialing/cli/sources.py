@@ -19,6 +19,7 @@ WIDTH: Final = 100
 _GAP: Final = "  "
 _MIN_NAME: Final = 12
 _EMPTY: Final = "\N{EN DASH}"
+_NOT_STATED: Final = "not stated"
 
 _GREEN: Final = "\033[32m"
 _YELLOW: Final = "\033[33m"
@@ -131,10 +132,17 @@ def _row(status: SourceStatus, now: datetime) -> list[_Cell]:
         (ago(status.latest.fetched_at, now) if status.latest else _EMPTY, None),
         (label, health_colour),
         (f"{status.current_records:,}" if loaded else _EMPTY, None),
-        (status.data_as_of.date().isoformat() if status.data_as_of else _EMPTY, None),
+        (_list_date(status, loaded=loaded), None),
         (status.freshness.value if status.freshness else _EMPTY, _YELLOW if stale else None),
         (until(status.next_due, now) if status.next_due else _EMPTY, _YELLOW if overdue else None),
     ]
+
+
+def _list_date(status: SourceStatus, *, loaded: bool) -> str:
+    """The agency's own list date; "not stated" for a loaded list whose source gives none."""
+    if status.data_as_of is not None:
+        return status.data_as_of.date().isoformat()
+    return _NOT_STATED if loaded else _EMPTY
 
 
 def _summary(statuses: Sequence[SourceStatus]) -> str:

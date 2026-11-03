@@ -34,6 +34,7 @@ from credentialing.domain.models import (
     PersonName,
     Provider,
     ProviderVerdict,
+    SourceSnapshot,
     VerificationResult,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
@@ -63,6 +64,25 @@ class FreshnessPolicy(DomainModel):
         if age <= self.max_age:
             return Freshness.CACHED
         return Freshness.STALE
+
+
+def poll_anchor(
+    latest: SourceSnapshot | None, completed: SourceSnapshot | None
+) -> SourceSnapshot | None:
+    """The fetch a source's next poll interval counts from; ``None`` when it is due now.
+
+    Normally the latest completed fetch. A ``BLOCKED`` fetch newer than it (or with none
+    completed) counts instead, so a source whose firewall refuses us is asked again one poll
+    interval later, not on every scheduled run. ``FAILED`` and ``SOURCE_UNAVAILABLE`` do not
+    count: the source stays due until a fetch completes.
+    """
+    if (
+        latest is not None
+        and latest.outcome is Outcome.BLOCKED
+        and (completed is None or latest.fetched_at > completed.fetched_at)
+    ):
+        return latest
+    return completed
 
 
 type PolicyKey = tuple[CredentialType, SourceId | None]

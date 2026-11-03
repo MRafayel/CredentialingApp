@@ -279,9 +279,42 @@ def test_source_changed_unless_both_hashes_are_known_and_equal(
     assert source_changed(previous, snapshot) is changed
 
 
-async def test_a_source_never_completed_is_due_now() -> None:
+@pytest.mark.parametrize("outcome", [Outcome.FAILED, Outcome.SOURCE_UNAVAILABLE])
+async def test_a_source_never_completed_is_due_now(outcome: Outcome) -> None:
     snapshots = InMemorySnapshots()
-    await snapshots.add(_snapshot(Outcome.BLOCKED))
+    await snapshots.add(_snapshot(outcome))
+    use_case = _use_case(ScriptedConnector(make_capabilities(SOURCE)), snapshots, InMemoryRecords())
+
+    assert await use_case.next_due(SOURCE) is None
+
+
+async def test_a_source_blocked_before_any_list_waits_one_interval() -> None:
+    snapshots = InMemorySnapshots()
+    await snapshots.add(_snapshot(Outcome.BLOCKED, hours=-2))
+    capabilities = make_capabilities(SOURCE)
+    use_case = _use_case(ScriptedConnector(capabilities), snapshots, InMemoryRecords())
+
+    due = await use_case.next_due(SOURCE)
+
+    assert due == NOW - timedelta(hours=2) + capabilities.poll_interval - DUE_TOLERANCE
+
+
+async def test_a_block_after_a_completed_fetch_counts_from_the_block() -> None:
+    snapshots = InMemorySnapshots()
+    await snapshots.add(_snapshot(hours=-200))
+    await snapshots.add(_snapshot(Outcome.BLOCKED, hours=-1))
+    capabilities = make_capabilities(SOURCE)
+    use_case = _use_case(ScriptedConnector(capabilities), snapshots, InMemoryRecords())
+
+    due = await use_case.next_due(SOURCE)
+
+    assert due == NOW - timedelta(hours=1) + capabilities.poll_interval - DUE_TOLERANCE
+
+
+async def test_a_failure_after_a_block_makes_the_source_due_again() -> None:
+    snapshots = InMemorySnapshots()
+    await snapshots.add(_snapshot(Outcome.BLOCKED, hours=-3))
+    await snapshots.add(_snapshot(Outcome.FAILED, hours=-1))
     use_case = _use_case(ScriptedConnector(make_capabilities(SOURCE)), snapshots, InMemoryRecords())
 
     assert await use_case.next_due(SOURCE) is None

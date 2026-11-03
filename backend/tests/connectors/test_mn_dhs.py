@@ -1,9 +1,11 @@
+import hashlib
+from collections.abc import Callable
 from datetime import date
 from uuid import uuid4
 
 import pytest
 
-from credentialing.connectors.framework.http import FetchFailure
+from credentialing.connectors.framework.http import FetchedDocument, FetchFailure
 from credentialing.connectors.framework.rows import ParsedList
 from credentialing.connectors.mn_dhs_individuals import MnDhsIndividualsConnector
 from credentialing.connectors.mn_dhs_individuals.connector import COLUMNS as IND_COLUMNS
@@ -116,18 +118,20 @@ def test_polite_weekly_hash_polling(
     assert capabilities.jurisdictions == frozenset({"MN"})
 
 
+_REDIRECTED = FetchFailure(
+    outcome=Outcome.BLOCKED,
+    status=200,
+    note="redirected to validate.perfdrive.com",
+    fetched_at=NOW,
+)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("connector", [MnDhsIndividualsConnector, MnDhsOrganizationsConnector])
-async def test_a_bot_manager_redirect_stays_blocked(
+async def test_a_bot_manager_redirect_stays_blocked_without_a_browser(
     connector: type[MnDhsIndividualsConnector | MnDhsOrganizationsConnector],
 ) -> None:
-    redirected = FetchFailure(
-        outcome=Outcome.BLOCKED,
-        status=200,
-        note="redirected to validate.perfdrive.com",
-        fetched_at=NOW,
-    )
-    fetcher = ScriptedFetcher(redirected)
+    fetcher = ScriptedFetcher(_REDIRECTED)
 
     result = await connector(fetcher).fetch(None)
 
@@ -135,3 +139,63 @@ async def test_a_bot_manager_redirect_stays_blocked(
     assert result.records is None
     assert "perfdrive" in (result.snapshot.note or "")
     assert fetcher.requests == [(connector.download_url, ChangeSignal.CONTENT_HASH)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("connector", "workbook"),
+    [
+        (MnDhsIndividualsConnector, mn_builders.mn_dhs_individuals),
+        (MnDhsOrganizationsConnector, mn_builders.mn_dhs_organizations),
+    ],
+)
+async def test_a_bot_manager_redirect_is_read_as_a_download_in_the_browser(
+    connector: type[MnDhsIndividualsConnector | MnDhsOrganizationsConnector],
+    workbook: Callable[[], bytes],
+) -> None:
+    body = workbook()
+    downloaded = FetchedDocument(
+        body=body,
+        content_hash=hashlib.sha256(body).hexdigest(),
+        etag=None,
+        last_modified=None,
+        content_type=None,
+        final_url=connector.download_url,
+        byte_size=len(body),
+        fetched_at=NOW,
+        status=200,
+        fetched_in_browser=True,
+    )
+    browser = ScriptedFetcher(downloaded)
+
+    result = await connector(ScriptedFetcher(_REDIRECTED), browser=browser).fetch(None)
+
+    assert connector(ScriptedFetcher()).capabilities.browser_fallback is True
+    assert browser.requests == [(connector.download_url, ChangeSignal.CONTENT_HASH)]
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert (result.snapshot.note or "").startswith("browser fallback; ")
+    assert result.records
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("connector", [MnDhsIndividualsConnector, MnDhsOrganizationsConnector])
+async def test_a_captcha_in_the_browser_stays_blocked(
+    connector: type[MnDhsIndividualsConnector | MnDhsOrganizationsConnector],
+) -> None:
+    captcha = FetchFailure(
+        outcome=Outcome.BLOCKED,
+        status=200,
+        note="challenge page not cleared (HTTP 200)",
+        fetched_at=NOW,
+    )
+
+    result = await connector(ScriptedFetcher(_REDIRECTED), browser=ScriptedFetcher(captcha)).fetch(
+        None
+    )
+
+    assert result.snapshot.outcome is Outcome.BLOCKED
+    assert result.snapshot.note == (
+        "redirected to validate.perfdrive.com; browser fallback: "
+        "challenge page not cleared (HTTP 200)"
+    )
+    assert result.records is None

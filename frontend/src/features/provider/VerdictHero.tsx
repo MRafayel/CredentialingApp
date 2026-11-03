@@ -29,6 +29,8 @@ export function VerdictHero({
   const label = verdictLabel(verdict)
   const tone = TONES[label.tone]
   const checked = verdict.verdict !== 'not_checked'
+  // A list was read when any check completed; a list date missing then is one no source states.
+  const listRead = verdict.results.some((result) => result.outcome === 'completed')
   const reduced = useReducedMotion() ?? false
   const { scrollY } = useScroll()
   const drift = useTransform(scrollY, [0, 480], [0, WASH_DRIFT], { clamp: true })
@@ -102,7 +104,13 @@ export function VerdictHero({
             <span className="tabular-nums">{checked ? verdict.sources_checked : expected}</span>
           </HeroFigure>
           <HeroFigure term="List last updated">
-            {verdict.oldest_list_updated_at ? <DateOf at={verdict.oldest_list_updated_at} /> : '—'}
+            {verdict.oldest_list_updated_at ? (
+              <DateOf at={verdict.oldest_list_updated_at} />
+            ) : listRead ? (
+              'Not stated'
+            ) : (
+              '—'
+            )}
           </HeroFigure>
           <HeroFigure term="Last checked">
             {verdict.last_checked_at ? <Ago at={verdict.last_checked_at} /> : 'Never'}

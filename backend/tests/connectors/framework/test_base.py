@@ -356,6 +356,7 @@ async def test_the_crawl_delay_reaches_the_fetcher() -> None:
             previous: SourceSnapshot | None,
             change_signal: ChangeSignal,
             crawl_delay: timedelta = timedelta(0),
+            entry_url: str | None = None,
         ) -> FetchOutcome:
             delays.append(crawl_delay)
             return await super().fetch(url, previous=previous, change_signal=change_signal)
@@ -605,3 +606,103 @@ async def test_a_browser_page_without_the_link_is_failed_and_says_where_it_came_
     assert result.snapshot.note == (
         "browser fallback; no download link on the landing page: no workbook link"
     )
+
+
+_NOT_FOUND = FetchFailure(
+    outcome=Outcome.FAILED, status=404, note="unexpected HTTP 404", fetched_at=NOW
+)
+
+
+async def test_a_404_over_http_is_repeated_in_the_browser_which_decides() -> None:
+    browser = ScriptedFetcher(_in_browser(_document()))
+
+    result = await _BrowserConnector(ScriptedFetcher(_NOT_FOUND), browser=browser).fetch(None)
+
+    assert browser.requests == [("https://example.test/list.csv", ChangeSignal.CONTENT_HASH)]
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.note == "browser fallback; 2 rows, 1 records, 1 skipped"
+    assert result.records is not None
+
+
+async def test_a_404_in_the_browser_too_is_failed_with_both_notes() -> None:
+    browser_missing = FetchFailure(
+        outcome=Outcome.FAILED,
+        status=404,
+        note="unexpected HTTP 404 in the browser",
+        fetched_at=NOW,
+    )
+    browser = ScriptedFetcher(browser_missing)
+
+    result = await _BrowserConnector(ScriptedFetcher(_NOT_FOUND), browser=browser).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.note == (
+        "unexpected HTTP 404; browser fallback: unexpected HTTP 404 in the browser"
+    )
+    assert result.records is None
+
+
+async def test_a_404_without_the_fallback_never_calls_the_browser() -> None:
+    browser = ScriptedFetcher(_in_browser(_document()))
+
+    result = await _Connector(ScriptedFetcher(_NOT_FOUND), browser=browser).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.note == "unexpected HTTP 404"
+    assert browser.requests == []
+
+
+class _WarmUpConnector(_Connector):
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return CAPABILITIES.model_copy(update={"browser_fallback": True, "browser_warm_up": True})
+
+
+async def test_the_browser_opens_the_landing_page_first_only_with_the_warm_up() -> None:
+    http = ScriptedFetcher(_BLOCKED)
+    warmed = ScriptedFetcher(_in_browser(_document()))
+    plain = ScriptedFetcher(_in_browser(_document()))
+
+    await _WarmUpConnector(http, browser=warmed).fetch(None)
+    await _BrowserConnector(ScriptedFetcher(_BLOCKED), browser=plain).fetch(None)
+
+    assert warmed.entry_urls == [CAPABILITIES.source_url]
+    assert plain.entry_urls == [None]
+    assert http.entry_urls == [None]
+
+
+class _ServingTimestampConnector(_Connector):
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return CAPABILITIES.model_copy(update={"last_modified_is_meaningful": False})
+
+
+async def test_a_serving_timestamp_last_modified_is_not_kept_on_the_snapshot() -> None:
+    result = await _ServingTimestampConnector(ScriptedFetcher(_document())).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.last_modified is None
+    assert result.snapshot.etag == '"v2"'
+    assert result.records is not None
+
+
+async def test_a_serving_timestamp_is_not_carried_over_from_an_unchanged_fetch() -> None:
+    previous = _completed("https://example.test/list.csv", etag='"v1"')
+    unchanged = NotModified(
+        reason="content hash unchanged",
+        etag=None,
+        last_modified=datetime(2026, 11, 2, 9, 23, tzinfo=UTC),
+        fetched_at=NOW,
+        status=200,
+    )
+
+    result = await _ServingTimestampConnector(ScriptedFetcher(unchanged)).fetch(previous)
+
+    assert result.snapshot.note == "unchanged (content hash unchanged)"
+    assert result.snapshot.last_modified is None
+
+
+async def test_a_meaningful_last_modified_is_kept() -> None:
+    result = await _Connector(ScriptedFetcher(_document())).fetch(None)
+
+    assert result.snapshot.last_modified == datetime(2026, 10, 9, tzinfo=UTC)

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from credentialing.application.errors import UnknownSourceError
 from credentialing.domain.enums import Outcome
 from credentialing.domain.models import ExclusionRecord, SnapshotDiff, SourceSnapshot
+from credentialing.domain.policies import poll_anchor
 from credentialing.domain.ports import (
     BulkListConnector,
     Clock,
@@ -124,8 +125,10 @@ class SyncSource:
         """When ``source_id`` is next due: its latest completed fetch plus its poll interval,
         less :data:`DUE_TOLERANCE`. ``None`` when it never completed, so it is due now.
 
-        Only a completed fetch (new or unchanged) counts: after a failure the source stays due
-        on every run until a fetch completes.
+        A completed fetch (new or unchanged) counts, and so does a later ``BLOCKED`` one
+        (``domain.policies.poll_anchor``): a refusing firewall is asked again one interval
+        later, politely. After ``FAILED`` or ``SOURCE_UNAVAILABLE`` the source stays due on
+        every run until a fetch completes.
 
         Raises:
             UnknownSourceError: No bulk-list connector is registered as ``source_id``.
@@ -133,10 +136,13 @@ class SyncSource:
         connector = self._connectors.get(source_id)
         if not isinstance(connector, BulkListConnector):
             raise UnknownSourceError(source_id)
-        completed = await self._snapshots.latest_completed(source_id)
-        if completed is None:
+        anchor = poll_anchor(
+            await self._snapshots.latest(source_id),
+            await self._snapshots.latest_completed(source_id),
+        )
+        if anchor is None:
             return None
-        return completed.fetched_at + connector.capabilities.poll_interval - DUE_TOLERANCE
+        return anchor.fetched_at + connector.capabilities.poll_interval - DUE_TOLERANCE
 
     async def _guard_shrink(
         self,

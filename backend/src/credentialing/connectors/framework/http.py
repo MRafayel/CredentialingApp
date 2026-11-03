@@ -113,10 +113,13 @@ class Fetcher(Protocol):
         previous: SourceSnapshot | None,
         change_signal: ChangeSignal,
         crawl_delay: timedelta = timedelta(0),
+        entry_url: str | None = None,
     ) -> FetchOutcome:
         """Download ``url`` unless ``previous`` shows it unchanged, or report the failure.
 
-        ``crawl_delay`` is waited before every request sent.
+        ``crawl_delay`` is waited before every request sent. ``entry_url`` is a page to open
+        first in the same session (the browser fallback's warm-up,
+        ``ConnectorCapabilities.browser_warm_up``); a fetcher without sessions ignores it.
         """
         ...
 
@@ -156,6 +159,7 @@ class HttpFetcher:
         previous: SourceSnapshot | None,
         change_signal: ChangeSignal,
         crawl_delay: timedelta = timedelta(0),
+        entry_url: str | None = None,
     ) -> FetchOutcome:
         """Fetch ``url`` with the change detection ``change_signal`` names.
 
@@ -167,7 +171,8 @@ class HttpFetcher:
 
         After any GET, a body hashing equal to ``previous`` is reported as unchanged too, for
         servers that ignore conditional requests. ``crawl_delay`` is waited before every
-        request (HEAD, GET and the retry).
+        request (HEAD, GET and the retry). ``entry_url`` is accepted for the protocol and
+        ignored: plain HTTP keeps no session to warm up, and the base never passes it here.
         """
         started = time.perf_counter()
         fetched_at = self._clock.now()

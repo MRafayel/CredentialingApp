@@ -45,7 +45,17 @@ export function ResultCard({ result, sourceName }: { result: Verification; sourc
           <span className="flex flex-wrap items-center gap-x-1.5 text-ink-muted">
             <Freshness label={freshnessLabel(result.freshness)} />
             <span aria-hidden="true">·</span>
-            <span>List updated {updated ? <DateOf at={updated} /> : 'not published'}</span>
+            {updated ? (
+              <span>
+                List updated <DateOf at={updated} />
+              </span>
+            ) : (
+              <span>
+                {result.outcome === 'completed'
+                  ? 'List date not stated'
+                  : 'List updated not published'}
+              </span>
+            )}
           </span>
           <span className="text-ink-muted sm:ml-auto">
             Checked <Ago at={result.provenance.verified_at} />

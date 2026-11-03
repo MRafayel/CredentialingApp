@@ -36,6 +36,8 @@ const STEP_ICONS: Record<RecordStepKind, IconName> = {
 }
 
 const MUTED = <span className="text-ink-muted">Not published</span>
+/** A loaded list whose source gives no date of its own: never the fetch time in its place. */
+const NOT_STATED = <span className="text-ink-muted">Not stated</span>
 
 /**
  * One exclusion record and what the stored lists hold around it: its status first, then its
@@ -182,7 +184,13 @@ function StatusHero({ profile, onCheck }: { profile: RecordProfile; onCheck: () 
           {record.end_date ? <CalendarDate value={record.end_date} /> : 'None'}
         </HeroFigure>
         <HeroFigure term="List last updated">
-          {source.list_last_updated ? <DateOf at={source.list_last_updated} /> : '—'}
+          {source.list_last_updated ? (
+            <DateOf at={source.list_last_updated} />
+          ) : source.fetched_at ? (
+            'Not stated'
+          ) : (
+            '—'
+          )}
         </HeroFigure>
       </dl>
       <p className="mt-5 flex flex-wrap items-center gap-x-1.5 text-small text-ink-muted">
@@ -458,7 +466,13 @@ function RecordFacts({ profile }: { profile: RecordProfile }) {
           </span>
         </Fact>
         <Fact term="List last updated">
-          {source.list_last_updated ? <DateOf at={source.list_last_updated} /> : MUTED}
+          {source.list_last_updated ? (
+            <DateOf at={source.list_last_updated} />
+          ) : source.fetched_at ? (
+            NOT_STATED
+          ) : (
+            MUTED
+          )}
         </Fact>
         <Fact term="Fetched">
           {source.fetched_at ? (

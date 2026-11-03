@@ -91,7 +91,8 @@ async def test_register_check_and_read_history(
     assert verdict["review_in"] == [SOURCE]
     assert verdict["listed_in"] == verdict["flagged_in"] == verdict["unchecked"] == []
     assert verdict["sources_checked"] == 1
-    assert verdict["oldest_list_updated_at"] == NOW.isoformat().replace("+00:00", "Z")
+    # The list states no date of its own, so none is shown (never the fetch time).
+    assert verdict["oldest_list_updated_at"] is None
     (result,) = verdict["results"]
     assert verdict["last_checked_at"] == result["created_at"]
     assert result["source_id"] == SOURCE

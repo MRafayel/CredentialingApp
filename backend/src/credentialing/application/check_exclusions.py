@@ -250,15 +250,15 @@ def _provenance(
     *,
     raw_record_ref: str | None = None,
 ) -> Provenance:
+    """The result's provenance; ``source_updated_at`` is the agency's own list date from the
+    completed snapshot, or None when the source states none (never the fetch time)."""
     completed = snapshot is not None and snapshot.outcome is Outcome.COMPLETED
     return Provenance(
         source_id=capabilities.source_id,
         source_url=capabilities.source_url,
         method=capabilities.method,
         verified_at=now,
-        source_updated_at=(snapshot.last_modified or snapshot.fetched_at)
-        if snapshot is not None and completed
-        else None,
+        source_updated_at=snapshot.last_modified if snapshot is not None and completed else None,
         snapshot_id=snapshot.id if snapshot is not None else None,
         raw_record_ref=raw_record_ref,
     )

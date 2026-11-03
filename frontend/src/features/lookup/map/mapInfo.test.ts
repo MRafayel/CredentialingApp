@@ -8,14 +8,38 @@ import {
   stateName,
   totalExcluded,
 } from './mapInfo.ts'
+import type { SourceStatus } from '../../../lib/api.ts'
 
-const FETCHED = '2026-10-09T12:00:00Z'
+/** A completed fetch whose source states no list date of its own (as Kansas's does not). */
+const FETCHED: SourceStatus['latest_completed'] = {
+  id: '00000000-0000-4000-8000-000000000001',
+  source_id: 'fake',
+  fetched_at: '2026-10-09T12:00:00Z',
+  outcome: 'completed',
+  source_url: 'https://example.test/list.csv',
+  content_hash: null,
+  etag: null,
+  last_modified: null,
+  byte_size: null,
+  row_count: null,
+  note: null,
+}
 
 const SOURCES = [
-  { source_id: 'federal', jurisdictions: ['US'], current_records: 84000, data_as_of: FETCHED },
-  { source_id: 'ny', jurisdictions: ['NY'], current_records: 9145, data_as_of: FETCHED },
-  { source_id: 'pa', jurisdictions: ['PA'], current_records: 0, data_as_of: null },
-  { source_id: 'regional', jurisdictions: ['NY', 'NJ'], current_records: 12, data_as_of: FETCHED },
+  {
+    source_id: 'federal',
+    jurisdictions: ['US'],
+    current_records: 84000,
+    latest_completed: FETCHED,
+  },
+  { source_id: 'ny', jurisdictions: ['NY'], current_records: 9145, latest_completed: FETCHED },
+  { source_id: 'pa', jurisdictions: ['PA'], current_records: 0, latest_completed: null },
+  {
+    source_id: 'regional',
+    jurisdictions: ['NY', 'NJ'],
+    current_records: 12,
+    latest_completed: FETCHED,
+  },
 ]
 
 describe('stateLists', () => {
@@ -57,6 +81,13 @@ describe('hasFetched', () => {
     expect(hasFetched(SOURCES, 'NY')).toBe(true)
   })
 
+  it('is true for a loaded list that states no list date of its own', () => {
+    expect(FETCHED?.last_modified).toBeNull()
+    expect(
+      hasFetched([{ jurisdictions: ['KS'], current_records: 40, latest_completed: FETCHED }], 'KS'),
+    ).toBe(true)
+  })
+
   it('is false for a list never fetched and for a state without a list', () => {
     expect(hasFetched(SOURCES, 'PA')).toBe(false)
     expect(hasFetched(SOURCES, 'TX')).toBe(false)
@@ -65,18 +96,18 @@ describe('hasFetched', () => {
 
 describe('heat', () => {
   const HEAT = [
-    { jurisdictions: ['US'], current_records: 84000, data_as_of: FETCHED },
-    { jurisdictions: ['NY'], current_records: 9999, data_as_of: FETCHED },
-    { jurisdictions: ['WA'], current_records: 99, data_as_of: FETCHED },
-    { jurisdictions: ['VT'], current_records: 9, data_as_of: FETCHED },
-    { jurisdictions: ['PA'], current_records: 0, data_as_of: null },
+    { jurisdictions: ['US'], current_records: 84000, latest_completed: FETCHED },
+    { jurisdictions: ['NY'], current_records: 9999, latest_completed: FETCHED },
+    { jurisdictions: ['WA'], current_records: 99, latest_completed: FETCHED },
+    { jurisdictions: ['VT'], current_records: 9, latest_completed: FETCHED },
+    { jurisdictions: ['PA'], current_records: 0, latest_completed: null },
   ]
 
   it('spans the covered states with data, leaving out the federal list and unfetched lists', () => {
     expect(heatScale(HEAT)).toEqual({ min: 9, max: 9999 })
-    expect(heatScale([{ jurisdictions: ['US'], current_records: 5, data_as_of: FETCHED }])).toBe(
-      null,
-    )
+    expect(
+      heatScale([{ jurisdictions: ['US'], current_records: 5, latest_completed: FETCHED }]),
+    ).toBe(null)
   })
 
   it('places each state on a log scale from the fewest to the most excluded', () => {

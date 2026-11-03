@@ -14,7 +14,13 @@ Source facts (survey of 2026-10-16 and 2026-10-19, re-checked 2026-10-30):
   connector declares the 5 s ``crawl_delay`` and the owner wants this source polled slowly.
 - A Radware bot manager guards the site. On 2026-10-16 and again on 2026-10-30 every file
   request got ``302`` to ``validate.perfdrive.com`` (an HTML page); on 2026-10-19 it got
-  ``200``. The fetcher reports such a redirect as ``BLOCKED``, never as an empty list.
+  ``200``. The fetcher reports such a redirect as ``BLOCKED``, never as an empty list, and
+  ``browser_fallback`` (2026-11-02) then opens the same URL in headed Chrome: the first file
+  request there gets Radware's interstitial on the DHS URL itself ("Radware Page", "Verifying
+  your browser before proceeding..."), which clears by itself in about 2 s and turns into the
+  download, which is read. Nothing is clicked: Radware's hCaptcha page ("Radware Captcha
+  Page") stays ``BLOCKED``. The crawl delay is waited before the HTTP request and again
+  before the browser run.
 - Columns: ``Provider type Description | Last name | First name | Middle name | Effective date
   of exclusion | Address line1 | Address line2 | City | State | Zip code | Exclusion status``.
   Dates typed as text, M/D/YYYY. 1,041 rows are Direct Support Workers; an address on 57.
@@ -91,6 +97,7 @@ CAPABILITIES: Final = ConnectorCapabilities(
     download_url=DOWNLOAD_URL,
     provider_type_fields=("Provider type Description",),
     crawl_delay=timedelta(seconds=5),
+    browser_fallback=True,
 )
 
 

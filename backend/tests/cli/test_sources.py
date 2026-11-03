@@ -19,6 +19,8 @@ from credentialing.domain.models import SourceSnapshot
 from tests.synthetic import NOW
 
 _ANSI = re.compile(r"\033\[[0-9;]*m")
+LIST_UPDATED = NOW - timedelta(days=12)
+"""The agency's own list date in the fixtures, distinct from every fetch time."""
 
 
 def _snapshot(
@@ -69,7 +71,7 @@ def _status(
         health=health,
         freshness=Freshness.CACHED if completed else None,
         freshness_max_age=timedelta(days=7),
-        data_as_of=completed.fetched_at if completed else None,
+        data_as_of=LIST_UPDATED if completed else None,
         next_due=completed.fetched_at + poll if completed else None,
         problem=note if health is SourceHealth.FAILING else None,
     )
@@ -115,10 +117,23 @@ def test_rows_show_result_symbols_relative_times_and_counts() -> None:
     assert "3 h ago" in ok
     assert "84,021" in ok
     assert "in 6 d" in ok
-    assert (NOW - timedelta(hours=3)).date().isoformat() in ok
+    assert LIST_UPDATED.date().isoformat() in ok
     assert "! overdue" in overdue
     assert "overdue 1 d" in overdue
     assert "\N{EN DASH} never" in never
+
+
+def test_a_loaded_list_without_a_stated_date_says_not_stated() -> None:
+    unstated = STATUSES[0].model_copy(update={"data_as_of": None})
+
+    lines = _table((unstated, STATUSES[3])).splitlines()
+    row = next(line for line in lines if line.startswith("Fake fake_ok"))
+    never = next(line for line in lines if line.startswith("Fake fake_never"))
+
+    assert "3 h ago" in row
+    assert "not stated" in row
+    assert (NOW - timedelta(hours=3)).date().isoformat() not in row
+    assert "not stated" not in never
 
 
 def test_a_failing_row_is_followed_by_its_outcome_and_note() -> None:

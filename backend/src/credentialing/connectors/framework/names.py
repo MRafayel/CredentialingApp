@@ -26,10 +26,11 @@ The heuristics here are deterministic and documented so a wrong split can be exp
    name is added as an alias, so it stays searchable. Without a credential ("ACME MEDICAL PC",
    "SAMPLEPERSON AVERY PLLC") the cell stays an organization.
 3. Business or person: the primary name is an organization when it contains a business word
-   (INC, LLC, CORP, PC, PLLC, LTD, CO, PHARMACY, HOSPITAL, CENTER, CLINIC, SERVICES, GROUP,
-   ASSOCIATES, CARE, AND, COUNTY, ...) or an ampersand, or when the caller passes an
-   organization hint (from a provider-type column) and the name carries no personal
-   credential.
+   (:data:`BUSINESS_WORDS`: legal forms such as INC, LLC, PC; kinds of provider such as
+   PHARMACY, HOSPITAL, CENTER, CLINIC; specialties such as MEDICINE, DIAGNOSTICS, RADIOLOGY;
+   and words such as SERVICES, GROUP, CARE, LIVING, AND, COUNTY) or an ampersand, or when the
+   caller passes an organization hint (from a provider-type column) and the name carries no
+   personal credential.
 4. Person: with a comma, the part before it is the last name ("SMITH, JOHN M"); without one,
    the first word is the last name, joined with any leading surname particles ("DE LA CRUZ
    MARIA" has last name "DE LA CRUZ"). Trailing credentials and generational suffixes (MD, RN,
@@ -52,9 +53,20 @@ The heuristics here are deterministic and documented so a wrong split can be exp
    :func:`split_aliases` cuts a cell at its alias markers ("Avery a.k.a Jay" gives "Avery"
    and the alias "Jay"), so the connector can complete an alias with the other name column.
 
-Known limit: a two-word surname without a particle ("GARCIA LOPEZ MARIA") is read as last
+Known limits: a two-word surname without a particle ("GARCIA LOPEZ MARIA") is read as last
 name "GARCIA", first name "LOPEZ" (first name first: "MARIA GARCIA LOPEZ" has last name
-"LOPEZ" and middle name "GARCIA"); the original cell always stays in the record's raw row.
+"LOPEZ" and middle name "GARCIA"), and an organization whose name has no business word
+("SAMPLE PEAK PHYSICAL THERAPEUTICS") is read as a person; the original cell always stays in
+the record's raw row.
+
+Changing :data:`BUSINESS_WORDS` changes the kind of the names it reaches, and the kind and
+the name parts are part of a record's identity (``record_hash``). So the next sync that
+parses a list again (a new edition, or ``make sync SOURCE=<id> FORCE=1`` on the same bytes)
+closes the affected rows and creates them anew under the new kind; the earlier versions stay
+in the history (append-only), and a re-parse of the same bytes marks them superseded, never
+removed from the list. Words are added only after re-parsing saved lists and checking the stored
+names for people who carry the word as a name (2026-11-03: every row whose kind changed was
+an organization read as a person).
 """
 
 import re
@@ -89,22 +101,40 @@ practitioners, denturists, midwives, pharmacists, ...)."""
 
 BUSINESS_WORDS: Final = frozenset(
     {
-        "INC", "INCORPORATED", "LLC", "LLP", "LP", "PLLC", "PC", "PSC", "LTD", "LIMITED", "CO",
-        "CORP", "CORPORATION", "COMPANY", "PHARMACY", "PHARMACIES", "DRUG", "DRUGS",
-        "HOSPITAL", "CENTER", "CENTRE", "CLINIC", "CLINICS", "SERVICE", "SERVICES", "GROUP",
-        "ASSOCIATES", "ASSOC", "MEDICAL", "HEALTH", "HEALTHCARE", "LABORATORY",
-        "LABORATORIES", "LAB", "LABS", "SUPPLY", "SUPPLIES", "AMBULANCE", "AMBULETTE",
-        "TRANSPORTATION", "TRANSPORT", "AGENCY", "NURSING", "REHABILITATION", "DENTAL",
-        "OPTICAL", "SURGICAL", "EQUIPMENT", "ENTERPRISES", "SOLUTIONS", "SYSTEMS",
-        "MANAGEMENT", "FOUNDATION", "INSTITUTE", "PRACTICE", "PARTNERS", "CHIROPRACTIC",
-        "THERAPY", "COUNSELING", "PHARMACEUTICAL", "PHARMACEUTICALS", "CARE", "HOME",
-        "HOMECARE", "HOSPICE", "ASSOCIATION", "PHYSICIANS", "THE", "OF", "AND", "COUNTY",
-        "HOMES", "BROS", "BROTHERS",
+        # legal forms
+        "ASSOC", "ASSOCIATES", "ASSOCIATION", "ASSOCIATIONS", "BROS", "BROTHERS", "CO",
+        "COMPANIES", "COMPANY", "CORP", "CORPORATION", "ENTERPRISES", "HOLDINGS",
+        "INC", "INCORPORATED", "INDUSTRIES", "LIMITED", "LLC", "LLP", "LP", "LTD",
+        "PARTNERS", "PARTNERSHIP", "PC", "PLLC", "PSC", "VENTURES",
+        # kinds of provider, place and supply
+        "ACADEMY", "AGENCIES", "AGENCY", "ALLIANCE", "AMBULANCE", "AMBULANCES", "AMBULETTE",
+        "AMBULETTES", "CARE", "CENTER", "CENTRE", "CENTRES", "CLINIC", "CLINICS",
+        "COMMUNITY", "CONSULTANTS", "CONSULTING", "COUNTIES", "COUNTY", "DEPARTMENT",
+        "DISTRICT", "DRUG", "DRUGS", "EQUIPMENT", "FOUNDATION", "FOUNDATIONS", "GROUP",
+        "GROUPS", "HEALTH", "HEALTHCARE", "HOME", "HOMECARE", "HOMES", "HOSPICE", "HOSPICES",
+        "HOSPITAL", "HOSPITALS", "INSTITUTE", "INSTITUTES", "LAB", "LABORATORIES",
+        "LABORATORY", "LABS", "LIVING", "MANAGEMENT", "NETWORK", "NETWORKS", "NURSING",
+        "OPTICAL", "PHARMACEUTICAL", "PHARMACEUTICALS", "PHARMACIES", "PHARMACISTS",
+        "PHARMACY", "PHYSICIANS", "PRACTICE", "PRACTICES", "PRODUCTS", "RECOVERY", "REHAB",
+        "REHABILITATION", "SCHOOL", "SERVICE", "SERVICES", "SOLUTIONS", "SPECIALISTS",
+        "SUPPLIES", "SUPPLY", "SURGICAL", "SYSTEMS", "TRANSPORT", "TRANSPORTATION",
+        "TRANSPORTS", "UNIVERSITY", "WELLNESS",
+        # specialties
+        "ANESTHESIA", "ANESTHESIOLOGY", "BEHAVIORAL", "CARDIOLOGY", "CHIROPRACTIC",
+        "COUNSELING", "DENTAL", "DENTISTRY", "DERMATOLOGY", "DIAGNOSTIC", "DIAGNOSTICS",
+        "IMAGING", "MEDICAL", "MEDICINE", "NEUROLOGY", "ONCOLOGY", "OPTOMETRY", "ORTHOPEDICS",
+        "PEDIATRICS", "PODIATRY", "PSYCHIATRY", "PSYCHOLOGY", "RADIOLOGY", "SURGERY",
+        "THERAPIES", "THERAPY", "UROLOGY",
+        # other words no person's name has
+        "AND", "GLOBAL", "INTERNATIONAL", "NATIONAL", "OF", "REGIONAL", "THE",
     }
 )  # fmt: skip
 """Words that mark a name as an organization's. "PA" is left out: it is also a credential.
 "AND" counts like "&": no person's name in the lists has it, but practices such as
-"... OBSTETRICS AND GYNECOLOGY" have no other business word."""
+"... OBSTETRICS AND GYNECOLOGY" have no other business word. Left out because people in the
+lists carry them as surnames (checked 2026-11-03 against the stored names): HOUSE, CENTERS
+and COLLEGE; and AMERICAN, which begins some family names. MEDICINE begins some Native
+American family names too; no person in the lists had one on 2026-11-03, so it stays in."""
 
 CORPORATE_DESIGNATORS: Final = frozenset(
     {"PC", "PSC", "PLLC", "LLC", "LLP", "LP", "INC", "CORP", "LTD"}

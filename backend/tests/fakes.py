@@ -90,12 +90,14 @@ class ScriptedFetcher:
 
     The outcomes are returned in order and the last one answers every further request (a
     landing page or API answer first, then the file). Without an outcome it is for tests that
-    only call ``parse``, and fails if fetched. ``requests`` records each URL and change signal.
+    only call ``parse``, and fails if fetched. ``requests`` records each URL and change signal,
+    ``entry_urls`` each request's warm-up page (``None`` when there was none).
     """
 
     def __init__(self, *outcomes: FetchOutcome) -> None:
         self.outcomes = list(outcomes)
         self.requests: list[tuple[str, ChangeSignal]] = []
+        self.entry_urls: list[str | None] = []
 
     async def fetch(
         self,
@@ -104,9 +106,11 @@ class ScriptedFetcher:
         previous: SourceSnapshot | None,
         change_signal: ChangeSignal,
         crawl_delay: timedelta = timedelta(0),
+        entry_url: str | None = None,
     ) -> FetchOutcome:
         assert self.outcomes, "this fetcher has no scripted outcome"
         self.requests.append((url, change_signal))
+        self.entry_urls.append(entry_url)
         return self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
 
 

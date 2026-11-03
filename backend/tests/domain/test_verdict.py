@@ -137,6 +137,21 @@ def test_the_figures_come_from_completed_results_and_the_latest_check() -> None:
     assert [r.source_id for r in verdict.results] == ["list_a", "list_b", "list_c", "list_d"]
 
 
+def test_checked_lists_without_a_stated_date_have_no_oldest_list_date() -> None:
+    verdict = derive_verdict(
+        [
+            _result("list_a", at=NOW, list_updated=None),
+            _result("list_b", at=NOW - timedelta(hours=1), list_updated=None),
+        ]
+    )
+
+    assert verdict.verdict is Verdict.NO_RECORDS
+    assert verdict.sources_checked == 2
+    # Not the check time: a fetch says when we looked, not when the agency updated a list.
+    assert verdict.oldest_list_updated_at is None
+    assert verdict.last_checked_at == NOW
+
+
 def test_a_source_given_twice_counts_only_its_newest_result() -> None:
     old = _result("list_a", Finding.RECORD_FOUND, at=NOW - timedelta(days=1))
     new = _result("list_a", at=NOW)

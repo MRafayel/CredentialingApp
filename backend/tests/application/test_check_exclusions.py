@@ -78,6 +78,7 @@ class _World:
         *records: ExclusionRecord,
         age: timedelta = timedelta(hours=3),
         outcome: Outcome = Outcome.COMPLETED,
+        list_updated: datetime | None = LIST_UPDATED,
     ) -> SourceSnapshot:
         snapshot = SourceSnapshot(
             id=uuid4(),
@@ -85,7 +86,7 @@ class _World:
             fetched_at=NOW - age,
             outcome=outcome,
             source_url="https://example.test/list",
-            last_modified=LIST_UPDATED if outcome is Outcome.COMPLETED else None,
+            last_modified=list_updated if outcome is Outcome.COMPLETED else None,
         )
         await self.snapshots.add(snapshot)
         if outcome is Outcome.COMPLETED:
@@ -151,6 +152,21 @@ async def test_the_run_returns_the_verdict_of_its_own_results() -> None:
     assert verdict.oldest_list_updated_at == LIST_UPDATED
     assert [r.source_id for r in verdict.results] == [FEDERAL, STATE]
     assert list(verdict.results) == world.verifications.stored[-2:]
+
+
+async def test_a_list_whose_source_states_no_date_has_no_list_date() -> None:
+    world = _World(_ny_provider())
+    federal = await world.load(FEDERAL, list_updated=None)
+    await world.load(STATE, list_updated=None)
+
+    verdict = await world.verdict()
+
+    result = next(r for r in verdict.results if r.source_id == FEDERAL)
+    assert result.outcome is Outcome.COMPLETED
+    # The fetch time is when we looked, not when the agency updated the list.
+    assert federal.fetched_at is not None
+    assert result.provenance.source_updated_at is None
+    assert verdict.oldest_list_updated_at is None
 
 
 async def test_without_a_covering_list_the_provider_is_not_checked() -> None:

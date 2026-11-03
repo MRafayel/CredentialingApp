@@ -10,6 +10,9 @@ Source facts (survey of 2026-10-16 and 2026-10-19, re-checked 2026-10-30):
   robots.txt ``Crawl-delay: 5``, declared as ``crawl_delay``; a Radware bot manager that
   redirected every request to ``validate.perfdrive.com`` on 2026-10-16 and 2026-10-30 (let
   through on 2026-10-19), which the fetcher reports as ``BLOCKED``, never as an empty list.
+  As for the individuals file, ``browser_fallback`` (2026-11-02) then reads the file as a
+  download in headed Chrome once Radware's interstitial clears by itself; its hCaptcha page
+  is never clicked and stays ``BLOCKED``.
 - Columns: ``Provider type description | Practice name | Effective date of exclusion (the survey
   wrote "Effective date"; corrected from the real file on 2026-10-30) | Address line1 |
   Address line2 | City | State | Zip code | Exclusion status``; the status in upper case, an
@@ -78,6 +81,7 @@ CAPABILITIES: Final = ConnectorCapabilities(
     download_url=DOWNLOAD_URL,
     provider_type_fields=("Provider type description",),
     crawl_delay=timedelta(seconds=5),
+    browser_fallback=True,
 )
 
 

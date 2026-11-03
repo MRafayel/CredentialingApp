@@ -9,6 +9,7 @@ import asyncio
 import csv
 import io
 from collections.abc import Sequence
+from typing import Final
 
 import httpx2
 import pytest
@@ -16,8 +17,12 @@ import pytest
 from credentialing.bootstrap import create_http_client
 from credentialing.connectors.ca_dhcs.connector import COLUMNS as CA_COLUMNS
 from credentialing.connectors.ca_dhcs.connector import CaDhcsConnector
+from credentialing.connectors.co_hcpf.connector import COLUMNS as CO_COLUMNS
+from credentialing.connectors.co_hcpf.connector import CoHcpfConnector
 from credentialing.connectors.de_dmap.connector import COLUMNS as DE_COLUMNS
 from credentialing.connectors.de_dmap.connector import DeDmapConnector
+from credentialing.connectors.framework.base import BulkListConnectorBase
+from credentialing.connectors.framework.browser import is_challenge
 from credentialing.connectors.framework.html_table import read_html_table
 from credentialing.connectors.framework.pdf_table import read_pdf_table
 from credentialing.connectors.framework.spreadsheet import read_sheet
@@ -27,8 +32,17 @@ from credentialing.connectors.ia_medicaid.connector import COLUMNS as IA_COLUMNS
 from credentialing.connectors.ia_medicaid.connector import IaMedicaidConnector
 from credentialing.connectors.in_fssa.connector import COLUMNS as IN_COLUMNS
 from credentialing.connectors.in_fssa.connector import InFssaConnector
+from credentialing.connectors.ks_kmap.connector import COLUMNS as KS_COLUMNS
+from credentialing.connectors.ks_kmap.connector import KsKmapConnector
+from credentialing.connectors.ma_masshealth.connector import COLUMNS as MA_COLUMNS
+from credentialing.connectors.ma_masshealth.connector import (
+    REINSTATED_COLUMNS as MA_REINSTATED_COLUMNS,
+)
+from credentialing.connectors.ma_masshealth.connector import MaMassHealthConnector
 from credentialing.connectors.md_medicaid.connector import COLUMNS as MD_COLUMNS
 from credentialing.connectors.md_medicaid.connector import MdMedicaidConnector
+from credentialing.connectors.mi_mdhhs.connector import COLUMNS as MI_COLUMNS
+from credentialing.connectors.mi_mdhhs.connector import MiMdhhsConnector
 from credentialing.connectors.mn_dhs_individuals.connector import COLUMNS as MN_IND_COLUMNS
 from credentialing.connectors.mn_dhs_individuals.connector import MnDhsIndividualsConnector
 from credentialing.connectors.mn_dhs_organizations.connector import COLUMNS as MN_ORG_COLUMNS
@@ -44,6 +58,8 @@ from credentialing.connectors.nc_medicaid.connector import COLUMNS as NC_COLUMNS
 from credentialing.connectors.nc_medicaid.connector import NcMedicaidConnector
 from credentialing.connectors.nd_medicaid.connector import COLUMNS as ND_COLUMNS
 from credentialing.connectors.nd_medicaid.connector import NdMedicaidConnector
+from credentialing.connectors.nh_dhhs.connector import COLUMNS as NH_COLUMNS
+from credentialing.connectors.nh_dhhs.connector import NhDhhsConnector
 from credentialing.connectors.nj_treasury.connector import ACTIONS as NJ_ACTIONS
 from credentialing.connectors.nj_treasury.connector import COLUMNS as NJ_COLUMNS
 from credentialing.connectors.nj_treasury.connector import NjTreasuryConnector
@@ -51,6 +67,11 @@ from credentialing.connectors.nv_omig.connector import COLUMNS as NV_COLUMNS
 from credentialing.connectors.nv_omig.connector import NvOmigConnector
 from credentialing.connectors.ny_omig.connector import COLUMNS as NY_COLUMNS
 from credentialing.connectors.ny_omig.connector import NyOmigConnector
+from credentialing.connectors.oh_medicaid.connector import INDIVIDUAL_COLUMNS as OH_IND_COLUMNS
+from credentialing.connectors.oh_medicaid.connector import (
+    ORGANIZATION_COLUMNS as OH_ORG_COLUMNS,
+)
+from credentialing.connectors.oh_medicaid.connector import OhMedicaidConnector
 from credentialing.connectors.oig_leie.connector import COLUMNS as OIG_COLUMNS
 from credentialing.connectors.oig_leie.connector import OigLeieConnector
 from credentialing.connectors.pa_medicheck.connector import COLUMNS as PA_COLUMNS
@@ -281,3 +302,106 @@ async def test_wv_wy_linked_pdf_header(
     first = next(read_pdf_table(response.content, expected_columns=columns))
     assert isinstance(first, dict)
     assert set(first) == set(columns)
+
+
+# --- Browser-fallback states (2026-11-02): firewalls that have refused scripts before -------
+# Each test makes at most two requests and waits the connector's crawl delay (10 s) before
+# each, as the fetcher does. A refusal is a skip, not a failure: the connector then repeats
+# the request in the headed browser, which these smoke tests do not use.
+
+_REFUSED: Final = frozenset({401, 403, 404, 429})
+"""Statuses these firewalls answer a script with (Ohio's CloudFront: a static 404 page)."""
+
+
+def _skip_if_refused(response: httpx2.Response, what: str) -> None:
+    """Skip when the firewall refused the script: a refusal status or a challenge page."""
+    status = response.status_code
+    if status in _REFUSED or response.headers.get("cf-mitigated") == "challenge":
+        pytest.skip(f"blocked: {what} answered HTTP {status} to a script")
+    if "html" in response.headers.get("content-type", "").lower() and is_challenge(
+        status=status, url=str(response.url), html=response.text
+    ):
+        pytest.skip(f"blocked: {what} is a challenge page")
+
+
+async def _stable_file(connector: BulkListConnectorBase) -> httpx2.Response:
+    """One GET of the connector's stable file, after its crawl delay."""
+    await asyncio.sleep(connector.capabilities.crawl_delay.total_seconds())
+    async with create_http_client(get_settings()) as client:
+        response = await client.get(connector.download_url)
+    _skip_if_refused(response, "the file")
+    assert response.status_code == 200
+    return response
+
+
+async def _linked_file(connector: BulkListConnectorBase) -> httpx2.Response:
+    """The landing page, then the file it links: two GETs, the crawl delay before each."""
+    assert connector.landing_url is not None
+    delay = connector.capabilities.crawl_delay.total_seconds()
+    async with create_http_client(get_settings()) as client:
+        await asyncio.sleep(delay)
+        page = await client.get(connector.landing_url)
+        _skip_if_refused(page, "the landing page")
+        assert page.status_code == 200
+        link = str(page.url.join(connector.find_link(page.text)))
+        await asyncio.sleep(delay)
+        response = await client.get(link)
+    _skip_if_refused(response, "the file")
+    assert response.status_code == 200
+    return response
+
+
+async def test_ks_workbook_header() -> None:
+    # Cloudflare answered the file 200 and then 403 on 2026-11-02. No validator is asserted:
+    # the file has no ETag and its Last-Modified is the request time.
+    response = await _stable_file(KsKmapConnector(ScriptedFetcher()))
+    rows = read_sheet(response.content, sheet="Terminations", expected_columns=KS_COLUMNS)
+    assert set(next(rows)) == set(KS_COLUMNS)
+
+
+async def test_co_linked_workbook_header() -> None:
+    # CloudFront's WAF refused scripts 2026-10-16..22 and let them through on 2026-11-02.
+    response = await _linked_file(CoHcpfConnector(ScriptedFetcher()))
+    assert response.headers.get("last-modified")
+    rows = read_sheet(response.content, expected_columns=CO_COLUMNS)
+    assert set(next(rows)) == set(CO_COLUMNS)
+
+
+async def test_ma_linked_workbook_headers() -> None:
+    # Akamai refused scripts in the survey and let them through on 2026-11-02.
+    connector = MaMassHealthConnector(ScriptedFetcher())
+    assert connector.landing_url is not None
+    response = await _linked_file(connector)
+    assert response.url.host == httpx2.URL(connector.landing_url).host
+    assert response.headers.get("etag") or response.headers.get("last-modified")
+    listed = read_sheet(response.content, sheet=0, expected_columns=MA_COLUMNS)
+    assert set(next(listed)) == set(MA_COLUMNS)
+    # read_sheet raises ParseError on a wrong header; the reinstated sheet may be empty.
+    reinstated = list(read_sheet(response.content, sheet=1, expected_columns=MA_REINSTATED_COLUMNS))
+    assert all(set(row) == set(MA_REINSTATED_COLUMNS) for row in reinstated)
+
+
+async def test_mi_linked_workbook_header() -> None:
+    # Akamai refused scripts in October 2026 and let them through on 2026-11-02.
+    response = await _linked_file(MiMdhhsConnector(ScriptedFetcher()))
+    assert response.headers.get("etag") or response.headers.get("last-modified")
+    rows = read_sheet(response.content, expected_columns=MI_COLUMNS)
+    assert set(next(rows)) == set(MI_COLUMNS)
+
+
+async def test_nh_workbook_header_and_last_modified() -> None:
+    # Akamai answered scripts 403 in October 2026 and 200 on 2026-11-02.
+    response = await _stable_file(NhDhhsConnector(ScriptedFetcher()))
+    assert response.headers.get("last-modified")
+    rows = read_sheet(response.content, expected_columns=NH_COLUMNS)
+    assert set(next(rows)) == set(NH_COLUMNS)
+
+
+async def test_oh_linked_workbook_headers() -> None:
+    # CloudFront answered scripts a static 404 page in October 2026 (a disguised block).
+    response = await _linked_file(OhMedicaidConnector(ScriptedFetcher()))
+    assert response.headers.get("etag") or response.headers.get("last-modified")
+    # Each header is found (or ParseError is raised) before the first data row is read.
+    for sheet, columns in (("Individuals", OH_IND_COLUMNS), ("Organizations", OH_ORG_COLUMNS)):
+        rows = read_sheet(response.content, sheet=sheet, expected_columns=columns)
+        assert set(next(rows)) == set(columns)

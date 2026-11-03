@@ -3,7 +3,7 @@ import type { SourceStatus } from '../../../lib/api.ts'
 import { STATES } from './states.ts'
 
 type Covering = Pick<SourceStatus, 'jurisdictions'>
-type Counted = Pick<SourceStatus, 'jurisdictions' | 'current_records' | 'data_as_of'>
+type Counted = Pick<SourceStatus, 'jurisdictions' | 'current_records' | 'latest_completed'>
 
 /** The federal jurisdiction: a list that covers every state. */
 const FEDERAL = 'US'
@@ -32,9 +32,12 @@ export function totalExcluded(sources: readonly Counted[], code: string): number
   return lists.reduce((sum, source) => sum + source.current_records, 0)
 }
 
-/** Whether any of the state's lists has been fetched; until then its count means nothing. */
+/**
+ * Whether any of the state's lists has been loaded; until then its count means nothing. A
+ * loaded list need not state its own date, so this asks for a completed fetch, not a list date.
+ */
 export function hasFetched(sources: readonly Counted[], code: string): boolean {
-  return stateLists(sources, code).some((source) => source.data_as_of !== null)
+  return stateLists(sources, code).some((source) => source.latest_completed !== null)
 }
 
 /** The smallest and largest totals among the covered states with data. */

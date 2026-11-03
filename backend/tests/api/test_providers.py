@@ -56,6 +56,7 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
             fetched_at=NOW - timedelta(hours=2),
             outcome=Outcome.COMPLETED,
             source_url="https://example.test/fake_federal/list.csv",
+            last_modified=NOW - timedelta(days=9),
         )
     )
     return AppContainer(
@@ -257,7 +258,9 @@ async def test_sources_report_every_registered_source(client: httpx2.AsyncClient
     assert loaded["jurisdictions"] == ["US"]
     assert loaded["poll_interval"] == "P7D"
     assert loaded["latest_completed"]["outcome"] == "completed"
-    assert loaded["data_as_of"] == (NOW - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    fetched, stated = NOW - timedelta(hours=2), NOW - timedelta(days=9)
+    assert loaded["latest_completed"]["fetched_at"] == fetched.isoformat().replace("+00:00", "Z")
+    assert loaded["data_as_of"] == stated.isoformat().replace("+00:00", "Z")
     assert never["health"] == "never_fetched"
     assert (never["latest"], never["freshness"], never["next_due"]) == (None, None, None)
 

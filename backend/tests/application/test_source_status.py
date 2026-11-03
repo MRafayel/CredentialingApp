@@ -97,6 +97,26 @@ async def test_a_failed_latest_fetch_is_failing_with_its_note() -> None:
     assert status.next_due == NOW + POLL
 
 
+async def test_a_blocked_fetch_puts_the_next_poll_one_interval_later() -> None:
+    blocked = _snapshot(Outcome.BLOCKED, at=NOW, note="challenge page (HTTP 403)")
+
+    (status,) = await _report(blocked, now=NOW + timedelta(hours=1))
+
+    assert status.health is SourceHealth.NEVER_FETCHED
+    assert status.next_due == NOW + POLL
+    assert status.problem == "challenge page (HTTP 403)"
+
+
+async def test_a_block_after_a_completed_fetch_is_failing_and_waits_from_the_block() -> None:
+    loaded = _snapshot(at=NOW)
+    blocked = _snapshot(Outcome.BLOCKED, at=NOW + POLL, note="HTTP 403")
+
+    (status,) = await _report(loaded, blocked, now=NOW + POLL + timedelta(hours=1))
+
+    assert status.health is SourceHealth.FAILING
+    assert status.next_due == NOW + 2 * POLL
+
+
 async def test_failing_wins_over_overdue() -> None:
     loaded = _snapshot(at=NOW)
     failed = _snapshot(Outcome.FAILED, at=NOW + POLL, note="parse error")
@@ -140,10 +160,12 @@ async def test_an_ok_source_reports_its_records_links_and_derived_times() -> Non
     assert status.credential_type is CredentialType.EXCLUSION
 
 
-async def test_data_age_falls_back_to_the_fetch_time_without_last_modified() -> None:
+async def test_the_list_date_is_not_stated_when_the_source_gives_none() -> None:
     (status,) = await _report(_snapshot(at=NOW), now=NOW + timedelta(hours=1))
 
-    assert status.data_as_of == NOW
+    assert status.data_as_of is None
+    assert status.latest_completed is not None
+    assert status.latest_completed.fetched_at == NOW
 
 
 async def test_freshness_comes_from_the_central_policy_for_this_source() -> None:

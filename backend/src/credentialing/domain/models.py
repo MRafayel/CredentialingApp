@@ -98,6 +98,8 @@ class Provenance(DomainModel):
     method: VerificationMethod
     verified_at: AwareDatetime
     source_updated_at: AwareDatetime | None = None
+    """When the agency last updated the list, as the source states it; None when it states
+    none. Never the fetch time."""
     snapshot_id: UUID | None = None
     raw_record_ref: str | None = None
 
@@ -438,6 +440,8 @@ class ProviderVerdict(DomainModel):
     review_in: tuple[SourceId, ...] = ()
     unchecked: tuple[SourceId, ...] = ()
     oldest_list_updated_at: AwareDatetime | None = None
+    """The oldest agency-stated list date among the sources checked; None when no checked
+    source states one."""
     last_checked_at: AwareDatetime | None = None
     results: tuple[VerificationResult, ...] = ()
 
@@ -464,6 +468,16 @@ class ConnectorCapabilities(DomainModel):
     browser_fallback: bool = False
     """A request the site refuses to scripts (``BLOCKED``) is repeated in a headed real browser;
     the fetch is otherwise identical, and the snapshot note says the browser was used."""
+    browser_warm_up: bool = False
+    """In the browser fallback, open ``source_url`` (the landing page) first in the same
+    session, then the requested URL; for firewalls that refuse a direct file request but
+    accept it after the page that links it. The browser stays on the landing page until it
+    has loaded and the firewall's clearance cookie is set (bounded), dwells a few seconds
+    more, and opens the URL with the landing page as its Referer; nothing is clicked."""
+    last_modified_is_meaningful: bool = True
+    """Whether the source's ``Last-Modified`` header dates its content. When ``False`` the
+    header is a serving timestamp (the request time) and is not kept on the snapshot, so it
+    is never shown as the source's update time nor sent back as ``If-Modified-Since``."""
 
 
 class FetchResult(DomainModel):

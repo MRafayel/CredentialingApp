@@ -18,7 +18,7 @@ from credentialing.domain.enums import (
     Outcome,
 )
 from credentialing.domain.models import SourceSnapshot
-from credentialing.domain.policies import FreshnessPolicyTable
+from credentialing.domain.policies import FreshnessPolicyTable, poll_anchor
 from credentialing.domain.ports import (
     BulkListConnector,
     Clock,
@@ -63,9 +63,12 @@ class SourceStatus(BaseModel):
     freshness_max_age: timedelta
     """The freshness window applied to this source, from the central policy table."""
     data_as_of: AwareDatetime | None
-    """The source's own last-modified time, or when the applied list was last fetched."""
+    """When the agency last updated the applied list, only as the source itself states it
+    (its ``Last-Modified`` header or API metadata); None when it states none. Never the fetch
+    time, which is ``latest_completed.fetched_at``."""
     next_due: AwareDatetime | None
-    """When the next poll is due: the last completed fetch plus the poll interval."""
+    """When the next poll is due: the last completed fetch, or a later ``BLOCKED`` one, plus
+    the poll interval; None while only failed or no fetches exist (due now)."""
     problem: str | None
     """The latest fetch's note when that fetch did not complete (also before any list loaded)."""
 
@@ -100,7 +103,8 @@ class SourceStatusReport:
         completed = await self._snapshots.latest_completed(source_id)
         policy = self._freshness.policy_for(capabilities.credential_type, source_id)
         failed = latest is not None and latest.outcome is not Outcome.COMPLETED
-        next_due = completed.fetched_at + capabilities.poll_interval if completed else None
+        anchor = poll_anchor(latest, completed)
+        next_due = anchor.fetched_at + capabilities.poll_interval if anchor else None
 
         if completed is None:
             health = SourceHealth.NEVER_FETCHED
@@ -131,7 +135,7 @@ class SourceStatusReport:
                 else None
             ),
             freshness_max_age=policy.max_age,
-            data_as_of=(completed.last_modified or completed.fetched_at) if completed else None,
+            data_as_of=completed.last_modified if completed else None,
             next_due=next_due,
             problem=latest.note if failed and latest else None,
         )

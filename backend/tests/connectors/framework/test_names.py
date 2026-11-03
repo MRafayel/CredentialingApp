@@ -225,6 +225,42 @@ def test_and_county_and_homes_are_business_words(text: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "SAMPLE PEAK PHYSICAL MEDICINE",
+        "MOCKLAB DIAGNOSTICS",
+        "Sample Heart Living",
+        "Mockville Pediatrics",
+        "SAMPLE BOULEVARD RADIOLOGY",
+        "Mock Ones Recovery",
+        "SAMPLE HOSPITALS",
+    ],
+)
+def test_specialty_and_other_added_words_make_an_organization(text: str) -> None:
+    parsed = parse_name_field(text, first_name_first=True)
+
+    assert (parsed.entity_kind, parsed.organization) == (EntityKind.ORGANIZATION, text)
+
+
+@pytest.mark.parametrize(
+    ("text", "last"),
+    [
+        ("House, Avery", "House"),
+        ("Avery L Centers MD", "Centers"),
+        ("COLLEGE, JAMIE", "COLLEGE"),
+        ("SAMPLE PEAK PHYSICAL THERAPEUTICS", "THERAPEUTICS"),
+    ],
+)
+def test_surnames_and_names_without_a_business_word_stay_people(text: str, last: str) -> None:
+    # HOUSE, CENTERS and COLLEGE are surnames in the lists; the last cell is the known limit.
+    parsed = parse_name_field(text, first_name_first=True)
+
+    assert parsed.entity_kind is EntityKind.INDIVIDUAL
+    assert parsed.person is not None
+    assert parsed.person.last == last
+
+
+@pytest.mark.parametrize(
     ("text", "suffix"),
     [
         ("Testperson, Avery M ARNP", "ARNP"),

@@ -24,22 +24,28 @@ from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
 from credentialing.application.verification_history import VerificationHistory
 from credentialing.connectors.ca_dhcs import CaDhcsConnector
+from credentialing.connectors.co_hcpf import CoHcpfConnector
 from credentialing.connectors.de_dmap import DeDmapConnector
 from credentialing.connectors.framework.browser import ChromeFetcher
 from credentialing.connectors.framework.http import Fetcher, HttpFetcher
 from credentialing.connectors.ga_dch import GaDchConnector
 from credentialing.connectors.ia_medicaid import IaMedicaidConnector
 from credentialing.connectors.in_fssa import InFssaConnector
+from credentialing.connectors.ks_kmap import KsKmapConnector
+from credentialing.connectors.ma_masshealth import MaMassHealthConnector
 from credentialing.connectors.md_medicaid import MdMedicaidConnector
+from credentialing.connectors.mi_mdhhs import MiMdhhsConnector
 from credentialing.connectors.mn_dhs_individuals import MnDhsIndividualsConnector
 from credentialing.connectors.mn_dhs_organizations import MnDhsOrganizationsConnector
 from credentialing.connectors.mo_mmac import MoMmacConnector
 from credentialing.connectors.mt_dphhs import MtDphhsConnector
 from credentialing.connectors.nc_medicaid import NcMedicaidConnector
 from credentialing.connectors.nd_medicaid import NdMedicaidConnector
+from credentialing.connectors.nh_dhhs import NhDhhsConnector
 from credentialing.connectors.nj_treasury import NjTreasuryConnector
 from credentialing.connectors.nv_omig import NvOmigConnector
 from credentialing.connectors.ny_omig import NyOmigConnector
+from credentialing.connectors.oh_medicaid import OhMedicaidConnector
 from credentialing.connectors.oig_leie import OigLeieConnector
 from credentialing.connectors.pa_medicheck import PaMedicheckConnector
 from credentialing.connectors.registry import ConnectorRegistry
@@ -134,12 +140,18 @@ def build_registry(fetcher: Fetcher, browser: Fetcher | None = None) -> Connecto
     registry.register(MoMmacConnector(fetcher))
     registry.register(GaDchConnector(fetcher))
     registry.register(CaDhcsConnector(fetcher))
-    registry.register(MnDhsIndividualsConnector(fetcher))
-    registry.register(MnDhsOrganizationsConnector(fetcher))
+    registry.register(MnDhsIndividualsConnector(fetcher, browser=browser))
+    registry.register(MnDhsOrganizationsConnector(fetcher, browser=browser))
     registry.register(DeDmapConnector(fetcher))
     registry.register(NvOmigConnector(fetcher))
     registry.register(WvBmsConnector(fetcher))
     registry.register(WyWdhConnector(fetcher, browser=browser))
+    registry.register(CoHcpfConnector(fetcher, browser=browser))
+    registry.register(KsKmapConnector(fetcher, browser=browser))
+    registry.register(MaMassHealthConnector(fetcher, browser=browser))
+    registry.register(MiMdhhsConnector(fetcher, browser=browser))
+    registry.register(NhDhhsConnector(fetcher, browser=browser))
+    registry.register(OhMedicaidConnector(fetcher, browser=browser))
     return registry
 
 

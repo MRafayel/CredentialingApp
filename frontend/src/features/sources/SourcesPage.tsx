@@ -15,6 +15,8 @@ import { useSources } from '../../lib/queries.ts'
 import { healthLabel, sourcesSummary } from '../../lib/sources.ts'
 
 const NONE = <span className="text-ink-muted">—</span>
+/** A loaded list whose source gives no date of its own: never the fetch time in its place. */
+const NOT_STATED = <span className="text-ink-muted">Not stated</span>
 
 /** The columns of `make sources`, in the same order. */
 const COLUMNS = [
@@ -156,7 +158,7 @@ function SourceTableRows({ source }: { source: SourceStatus }) {
           {loaded ? new Intl.NumberFormat().format(source.current_records) : NONE}
         </td>
         <td className={`${cell} whitespace-nowrap tabular-nums`}>
-          {source.data_as_of ? <DateOf at={source.data_as_of} /> : NONE}
+          {source.data_as_of ? <DateOf at={source.data_as_of} /> : loaded ? NOT_STATED : NONE}
         </td>
         <td className={`${cell} text-ink-muted`}>
           {source.freshness ? <Freshness label={freshnessLabel(source.freshness)} /> : NONE}
@@ -202,7 +204,7 @@ function SourceRow({ source }: { source: SourceStatus }) {
           {source.freshness ? <Freshness label={freshnessLabel(source.freshness)} /> : '—'}
         </Fact>
         <Fact term="List last updated">
-          {source.data_as_of ? <DateOf at={source.data_as_of} /> : '—'}
+          {source.data_as_of ? <DateOf at={source.data_as_of} /> : loaded ? 'Not stated' : '—'}
         </Fact>
         <Fact term="Next due">
           <NextDue source={source} />

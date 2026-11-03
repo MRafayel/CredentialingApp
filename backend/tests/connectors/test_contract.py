@@ -14,8 +14,19 @@ from credentialing.connectors.framework.http import FetchedDocument, FetchFailur
 from credentialing.domain.enums import ChangeSignal, Outcome
 from credentialing.domain.models import ConnectorCapabilities
 from credentialing.domain.ports import BulkListConnector
-from tests.connectors.fixtures import builders, fixture_bytes, mn_builders, nv_builders
+from tests.connectors.fixtures import (
+    builders,
+    fixture_bytes,
+    ma_masshealth_builders,
+    mi_builders,
+    mn_builders,
+    nv_builders,
+    oh_builders,
+)
+from tests.connectors.fixtures.co_builders import co_hcpf
 from tests.connectors.fixtures.de_builders import de_dmap
+from tests.connectors.fixtures.ks_builders import ks_kmap
+from tests.connectors.fixtures.nh_builders import nh_dhhs
 from tests.connectors.fixtures.wv_builders import wv_bms
 from tests.connectors.fixtures.wy_builders import wy_wdh
 from tests.fakes import ScriptedFetcher
@@ -45,6 +56,12 @@ CONNECTOR_FIXTURES: Final[dict[str, Callable[[], bytes]]] = {
     "nv_omig": nv_builders.nv_omig,
     "wv_bms": wv_bms,
     "wy_wdh": wy_wdh,
+    "co_hcpf": co_hcpf,
+    "ks_kmap": ks_kmap,
+    "ma_masshealth": ma_masshealth_builders.ma_masshealth,
+    "mi_mdhhs": mi_builders.mi_mdhhs,
+    "nh_dhhs": nh_dhhs,
+    "oh_medicaid": oh_builders.oh_medicaid,
 }
 """Each source's synthetic document: a recorded file, or a workbook built at test time."""
 
@@ -55,6 +72,10 @@ LOCATOR_FIXTURES: Final[dict[str, Callable[[bytes], bytes]]] = {
     "nv_omig": lambda _body: fixture_bytes("nv_omig_landing.html"),
     "wv_bms": lambda _body: fixture_bytes("wv_bms_landing.html"),
     "wy_wdh": lambda _body: fixture_bytes("wy_wdh_landing.html"),
+    "co_hcpf": lambda _body: fixture_bytes("co_hcpf_landing.html"),
+    "ma_masshealth": lambda _body: fixture_bytes("ma_masshealth_landing.html"),
+    "mi_mdhhs": lambda _body: fixture_bytes("mi_mdhhs_landing.html"),
+    "oh_medicaid": lambda _body: fixture_bytes("oh_medicaid_landing.html"),
 }
 """For a source whose file URL changes, the landing page or API answer that locates the
 document (given the document, so an API answer can carry its hash)."""

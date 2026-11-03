@@ -17,7 +17,17 @@ def test_the_browser_goes_only_to_connectors_that_need_it() -> None:
         if isinstance(connector, BulkListConnectorBase) and connector.uses_browser
     }
 
-    assert with_browser == {"wy_wdh"}
+    assert with_browser == {
+        "wy_wdh",
+        "mn_dhs_individuals",
+        "mn_dhs_organizations",
+        "co_hcpf",
+        "ks_kmap",
+        "ma_masshealth",
+        "mi_mdhhs",
+        "nh_dhhs",
+        "oh_medicaid",
+    }
 
 
 def test_without_a_browser_no_connector_uses_one() -> None:
