@@ -30,6 +30,13 @@ def test_the_browser_goes_only_to_connectors_that_need_it() -> None:
     }
 
 
+def test_illinois_is_registered_without_the_browser() -> None:
+    connector = build_registry(ScriptedFetcher(), browser=ScriptedFetcher()).get("il_hfs")
+
+    assert isinstance(connector, BulkListConnectorBase)
+    assert not connector.uses_browser
+
+
 def test_without_a_browser_no_connector_uses_one() -> None:
     connectors = build_registry(ScriptedFetcher()).bulk_connectors()
 

@@ -1,3 +1,4 @@
+import json
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -12,6 +13,8 @@ from credentialing.connectors.framework.http import (
     FetchOutcome,
     HttpFetcher,
     NotModified,
+    Response,
+    document_from,
 )
 from credentialing.domain.enums import ChangeSignal, Outcome
 from credentialing.domain.models import SourceSnapshot
@@ -336,3 +339,217 @@ async def test_no_crawl_delay_means_no_wait() -> None:
     await _fetch(lambda request: httpx2.Response(200, content=BODY), sleeps=sleeps)
 
     assert sleeps == []
+
+
+# --- sessions: several requests sharing one cookie jar (token flows) ------------------------
+
+PAGE = "https://example.test/page/"
+EXPORT = "https://example.test/export/1"
+
+
+def _session_fetcher(
+    handler: Handler, *, sleeps: list[float] | None = None
+) -> tuple[HttpFetcher, list[httpx2.AsyncClient]]:
+    """A fetcher whose sessions run on new clients over ``handler``; the clients are kept."""
+    created: list[httpx2.AsyncClient] = []
+
+    async def sleep(seconds: float) -> None:
+        if sleeps is not None:
+            sleeps.append(seconds)
+
+    def session_client() -> httpx2.AsyncClient:
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler), follow_redirects=True)
+        created.append(client)
+        return client
+
+    shared = httpx2.AsyncClient(transport=httpx2.MockTransport(handler), follow_redirects=True)
+    fetcher = HttpFetcher(
+        shared, FixedClock(NOW), session_client=session_client, retry_pause_seconds=0, sleep=sleep
+    )
+    return fetcher, created
+
+
+async def test_a_session_carries_its_cookies_and_posts_json() -> None:
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path == "/page/":
+            return httpx2.Response(
+                200, content=b"<html>token</html>", headers={"set-cookie": "sid=s1; Path=/"}
+            )
+        return httpx2.Response(200, json={"success": True})
+
+    fetcher, created = _session_fetcher(handler)
+    body = {"viewName": "Mock", "page": 1, "search": None}
+
+    async with fetcher.session(crawl_delay=timedelta(0)) as session:
+        page = await session.request("GET", PAGE, headers={"X-Requested-With": "XMLHttpRequest"})
+        answer = await session.request(
+            "POST",
+            EXPORT,
+            headers={"Content-Type": "application/json; charset=UTF-8"},
+            json=body,
+        )
+        file = await session.request("GET", EXPORT, params={"key": "k|1"})
+
+    assert isinstance(page, Response)
+    assert isinstance(answer, Response)
+    assert isinstance(file, Response)
+    assert seen[0].headers["x-requested-with"] == "XMLHttpRequest"
+    assert "cookie" not in seen[0].headers
+    assert seen[1].method == "POST"
+    assert seen[1].headers["cookie"] == "sid=s1"
+    assert seen[1].headers["content-type"] == "application/json; charset=UTF-8"
+    assert seen[1].content == json.dumps(body).encode()
+    assert seen[2].headers["cookie"] == "sid=s1"
+    assert seen[2].url.params["key"] == "k|1"
+    assert answer.body == b'{"success":true}'
+    assert [client.is_closed for client in created] == [True]
+
+
+async def test_json_without_a_content_type_is_sent_as_json() -> None:
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, content=b"{}")
+
+    fetcher, _ = _session_fetcher(handler)
+    async with fetcher.session(crawl_delay=timedelta(0)) as session:
+        await session.request("POST", EXPORT, json=[1, 2])
+
+    assert seen[0].headers["content-type"] == "application/json"
+    assert seen[0].content == b"[1, 2]"
+
+
+async def test_each_session_has_its_own_cookies_and_the_shared_client_none() -> None:
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, content=BODY, headers={"set-cookie": "sid=s1; Path=/"})
+
+    fetcher, created = _session_fetcher(handler)
+    async with fetcher.session(crawl_delay=timedelta(0)) as session:
+        await session.request("GET", PAGE)
+    async with fetcher.session(crawl_delay=timedelta(0)) as session:
+        await session.request("GET", PAGE)
+    await fetcher.fetch(URL, previous=None, change_signal=ChangeSignal.CONTENT_HASH)
+
+    assert [request.headers.get("cookie") for request in seen] == [None, None, None]
+    assert len(created) == 2
+    assert all(client.is_closed for client in created)
+
+
+async def test_the_crawl_delay_is_waited_before_every_session_request() -> None:
+    sleeps: list[float] = []
+    fetcher, _ = _session_fetcher(lambda request: httpx2.Response(200, content=b"x"), sleeps=sleeps)
+
+    async with fetcher.session(crawl_delay=timedelta(seconds=10)) as session:
+        await session.request("GET", PAGE)
+        await session.request("POST", EXPORT, json={})
+        await session.request("GET", EXPORT)
+
+    assert sleeps == [10.0, 10.0, 10.0]
+
+
+async def test_a_post_is_never_repeated() -> None:
+    attempts: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        attempts.append(request.method)
+        raise httpx2.ConnectError("refused", request=request)
+
+    fetcher, _ = _session_fetcher(handler)
+    async with fetcher.session(crawl_delay=timedelta(0)) as session:
+        posted = await session.request("POST", EXPORT, json={})
+        got = await session.request("GET", EXPORT)
+
+    assert attempts == ["POST", "GET", "GET"]
+    assert isinstance(posted, FetchFailure)
+    assert posted.outcome is Outcome.SOURCE_UNAVAILABLE
+    assert posted.note == "ConnectError (not repeated)"
+    assert posted.fetched_at == NOW
+    assert isinstance(got, FetchFailure)
+    assert got.note == f"ConnectError after {RETRY_ATTEMPTS + 1} attempts"
+
+
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        (httpx2.Response(403), Outcome.BLOCKED),
+        (httpx2.Response(429, headers={"retry-after": "60"}), Outcome.BLOCKED),
+        (httpx2.Response(500), Outcome.SOURCE_UNAVAILABLE),
+        (httpx2.Response(404), Outcome.FAILED),
+        (
+            httpx2.Response(
+                200,
+                content=b"<div class='cf-turnstile'></div>",
+                headers={"content-type": "text/html"},
+            ),
+            Outcome.BLOCKED,
+        ),
+    ],
+)
+async def test_session_answers_are_classified_like_fetch(
+    answer: httpx2.Response, outcome: Outcome
+) -> None:
+    fetcher, _ = _session_fetcher(lambda request: answer)
+
+    async with fetcher.session(crawl_delay=timedelta(0)) as session:
+        result = await session.request("POST", EXPORT, json={})
+
+    assert isinstance(result, FetchFailure)
+    assert result.outcome is outcome
+    assert result.status == answer.status_code
+    assert result.fetched_at == NOW
+
+
+async def test_a_session_body_over_the_cap_fails() -> None:
+    created: list[httpx2.AsyncClient] = []
+
+    def session_client() -> httpx2.AsyncClient:
+        transport = httpx2.MockTransport(lambda request: httpx2.Response(200, content=BODY))
+        created.append(httpx2.AsyncClient(transport=transport))
+        return created[-1]
+
+    async with httpx2.AsyncClient() as shared:
+        fetcher = HttpFetcher(
+            shared, FixedClock(NOW), session_client=session_client, max_body_bytes=10
+        )
+        async with fetcher.session(crawl_delay=timedelta(0)) as session:
+            result = await session.request("GET", EXPORT)
+
+    assert isinstance(result, FetchFailure)
+    assert result.outcome is Outcome.FAILED
+    assert "exceeds the cap" in result.note
+
+
+async def test_sessions_need_a_session_client() -> None:
+    async with httpx2.AsyncClient() as client:
+        fetcher = HttpFetcher(client, FixedClock(NOW))
+
+        with pytest.raises(TypeError, match="session_client"):
+            async with fetcher.session(crawl_delay=timedelta(0)):
+                pass
+
+
+def test_document_from_hashes_and_sizes_the_body() -> None:
+    response = Response(
+        status=200,
+        body=BODY,
+        etag=None,
+        last_modified=None,
+        content_type="text/csv",
+        final_url=URL,
+    )
+
+    document = document_from(response, NOW)
+
+    assert document.body == BODY
+    assert document.byte_size == len(BODY)
+    assert len(document.content_hash) == 64
+    assert document.fetched_at == NOW
+    assert document.final_url == URL
+    assert document.status == 200

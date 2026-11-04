@@ -1,4 +1,7 @@
+import warnings
+import zipfile
 from datetime import date
+from io import BytesIO
 
 import pytest
 
@@ -132,3 +135,96 @@ def test_a_changed_header_is_a_parse_error() -> None:
 def test_a_body_that_is_not_a_workbook_is_a_parse_error(body: bytes) -> None:
     with pytest.raises(ParseError, match="not a readable xlsx workbook"):
         list(read_sheet(body, expected_columns=COLUMNS))
+
+
+# --- Power Pages exports: an empty fill in the stylesheet (Illinois, 2026-11-03) ------------
+
+_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_DOCUMENT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_EXPORT_STYLES = (
+    f'\ufeff<?xml version="1.0" encoding="utf-8"?><x:styleSheet xmlns:x="{_MAIN}">'
+    "<x:numFmts /><x:fonts><x:font /></x:fonts><x:fills><x:fill /></x:fills>"
+    "<x:borders><x:border /></x:borders><x:cellStyleXfs><x:xf /></x:cellStyleXfs>"
+    '<x:cellXfs><x:xf /><x:xf numFmtId="14" applyNumberFormat="1" /></x:cellXfs>'
+    "</x:styleSheet>"
+)
+"""The stylesheet as the export writes it: every element empty, dates as format 14."""
+
+
+def _export_workbook(styles: str = _EXPORT_STYLES) -> bytes:
+    """A workbook written by hand in the export's shape: prefixed elements, inline strings
+    and a date serial (2025-06-18) in a cell styled as a date."""
+    parts = {
+        "[Content_Types].xml": (
+            '<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.'
+            'openxmlformats.org/package/2006/content-types"><Default Extension="rels" '
+            'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-'
+            'officedocument.spreadsheetml.sheet.main+xml"/></Types>'
+        ),
+        "_rels/.rels": (
+            f'<?xml version="1.0" encoding="utf-8"?><Relationships xmlns="{_RELATIONSHIPS}">'
+            f'<Relationship Type="{_DOCUMENT}/officeDocument" Target="/xl/workbook.xml" '
+            'Id="R1" /></Relationships>'
+        ),
+        "xl/workbook.xml": (
+            f'<?xml version="1.0" encoding="utf-8"?><x:workbook xmlns:x="{_MAIN}"><x:sheets>'
+            f'<x:sheet name="Active Sanctions" sheetId="1" r:id="R3" xmlns:r="{_DOCUMENT}" />'
+            "</x:sheets></x:workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            f'<?xml version="1.0" encoding="utf-8"?><Relationships xmlns="{_RELATIONSHIPS}">'
+            f'<Relationship Type="{_DOCUMENT}/styles" Target="/xl/styles.xml" Id="R2" />'
+            f'<Relationship Type="{_DOCUMENT}/worksheet" Target="/xl/worksheets/sheet.xml" '
+            'Id="R3" /></Relationships>'
+        ),
+        "xl/styles.xml": styles,
+        "xl/worksheets/sheet.xml": (
+            f'<?xml version="1.0" encoding="utf-8"?><x:worksheet xmlns:x="{_MAIN}">'
+            '<x:sheetData><x:row r="1"><x:c r="A1" t="inlineStr"><x:is><x:t>Name</x:t>'
+            '</x:is></x:c><x:c r="B1" t="inlineStr"><x:is><x:t>Date</x:t></x:is></x:c>'
+            '</x:row><x:row r="2"><x:c r="A2" t="inlineStr"><x:is><x:t>Testperson Avery'
+            '</x:t></x:is></x:c><x:c r="B2" s="1" t="n"><x:v>45826</x:v></x:c></x:row>'
+            "</x:sheetData></x:worksheet>"
+        ),
+    }
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, text in parts.items():
+            archive.writestr(name, text)
+    return output.getvalue()
+
+
+def test_a_workbook_with_an_empty_fill_is_read_after_repair() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # openpyxl's "no default style" warning is silenced
+
+        rows = list(read_sheet(_export_workbook(), expected_columns=("Name", "Date")))
+
+    assert rows == [{"Name": "Testperson Avery", "Date": "2025-06-18"}]
+
+
+def test_an_unprefixed_empty_fill_is_repaired_too() -> None:
+    styles = _EXPORT_STYLES.replace("x:", "").replace(f' xmlns:x="{_MAIN}"', f' xmlns="{_MAIN}"')
+    styles = styles.replace("<fill />", "<fill/>")
+
+    rows = list(read_sheet(_export_workbook(styles), expected_columns=("Name", "Date")))
+
+    assert rows == [{"Name": "Testperson Avery", "Date": "2025-06-18"}]
+
+
+@pytest.mark.parametrize(
+    "styles",
+    [
+        _EXPORT_STYLES.replace("<x:numFmts />", "<x:numFmts><x:numFmt /></x:numFmts>"),
+        _EXPORT_STYLES.replace("<x:numFmts />", "<x:numFmts><x:numFmt /></x:numFmts>").replace(
+            "<x:fill />", '<x:fill><x:patternFill patternType="none"/></x:fill>'
+        ),
+    ],
+    ids=["still-broken-after-repair", "nothing-to-repair"],
+)
+def test_another_stylesheet_type_error_is_a_parse_error(styles: str) -> None:
+    with pytest.raises(ParseError, match=r"not a readable xlsx workbook \(TypeError\)"):
+        list(read_sheet(_export_workbook(styles), expected_columns=("Name", "Date")))

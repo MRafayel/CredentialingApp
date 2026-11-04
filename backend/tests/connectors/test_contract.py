@@ -10,13 +10,14 @@ import pytest
 
 from credentialing.bootstrap import build_registry
 from credentialing.connectors.framework.base import BulkListConnectorBase
-from credentialing.connectors.framework.http import FetchedDocument, FetchFailure
+from credentialing.connectors.framework.http import FetchedDocument, FetchFailure, Response
 from credentialing.domain.enums import ChangeSignal, Outcome
 from credentialing.domain.models import ConnectorCapabilities
 from credentialing.domain.ports import BulkListConnector
 from tests.connectors.fixtures import (
     builders,
     fixture_bytes,
+    il_builders,
     ma_masshealth_builders,
     mi_builders,
     mn_builders,
@@ -62,6 +63,7 @@ CONNECTOR_FIXTURES: Final[dict[str, Callable[[], bytes]]] = {
     "mi_mdhhs": mi_builders.mi_mdhhs,
     "nh_dhhs": nh_dhhs,
     "oh_medicaid": oh_builders.oh_medicaid,
+    "il_hfs": il_builders.il_hfs,
 }
 """Each source's synthetic document: a recorded file, or a workbook built at test time."""
 
@@ -76,9 +78,16 @@ LOCATOR_FIXTURES: Final[dict[str, Callable[[bytes], bytes]]] = {
     "ma_masshealth": lambda _body: fixture_bytes("ma_masshealth_landing.html"),
     "mi_mdhhs": lambda _body: fixture_bytes("mi_mdhhs_landing.html"),
     "oh_medicaid": lambda _body: fixture_bytes("oh_medicaid_landing.html"),
+    "il_hfs": lambda _body: il_builders.il_hfs_page(),
 }
 """For a source whose file URL changes, the landing page or API answer that locates the
 document (given the document, so an API answer can carry its hash)."""
+
+SESSION_FIXTURES: Final[dict[str, Callable[[bytes], tuple[Response, ...]]]] = {
+    "il_hfs": il_builders.export_answers,
+}
+"""For a source whose file is behind a token flow, the session's answers ending in the
+document."""
 
 _RESOLVED: Final = (ChangeSignal.LINK_DISCOVERY, ChangeSignal.API_METADATA)
 
@@ -141,8 +150,11 @@ async def test_the_fixture_parses_into_records_of_this_snapshot(source_id: str) 
     body = CONNECTOR_FIXTURES[source_id]()
     locate = LOCATOR_FIXTURES.get(source_id)
     located = (_document(locate(body)),) if locate else ()
+    session = SESSION_FIXTURES.get(source_id)
+    answers = session(body) if session else ()
+    fetcher = ScriptedFetcher(*located, _document(body), session_answers=answers)
 
-    result = await _connector(source_id, ScriptedFetcher(*located, _document(body))).fetch(None)
+    result = await _connector(source_id, fetcher).fetch(None)
 
     assert result.snapshot.outcome is Outcome.COMPLETED
     assert result.records

@@ -7,6 +7,7 @@ connector registry, the repositories and the use cases.
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Final
 
 import httpx2
@@ -27,9 +28,10 @@ from credentialing.connectors.ca_dhcs import CaDhcsConnector
 from credentialing.connectors.co_hcpf import CoHcpfConnector
 from credentialing.connectors.de_dmap import DeDmapConnector
 from credentialing.connectors.framework.browser import ChromeFetcher
-from credentialing.connectors.framework.http import Fetcher, HttpFetcher
+from credentialing.connectors.framework.http import Fetcher, HttpFetcher, SessionFetcher
 from credentialing.connectors.ga_dch import GaDchConnector
 from credentialing.connectors.ia_medicaid import IaMedicaidConnector
+from credentialing.connectors.il_hfs import IlHfsConnector
 from credentialing.connectors.in_fssa import InFssaConnector
 from credentialing.connectors.ks_kmap import KsKmapConnector
 from credentialing.connectors.ma_masshealth import MaMassHealthConnector
@@ -98,7 +100,10 @@ class Services:
 
 
 def create_http_client(settings: Settings) -> httpx2.AsyncClient:
-    """The one HTTP client for every source: timeout, redirects and the configured identity."""
+    """The HTTP client for every source: timeout, redirects and the configured identity.
+
+    One is shared by every plain request; a source's session (a token flow) gets its own.
+    """
     return httpx2.AsyncClient(
         timeout=settings.http_timeout_seconds,
         follow_redirects=True,
@@ -119,10 +124,11 @@ def create_browser_fetcher(settings: Settings, clock: Clock) -> Fetcher | None:
     )
 
 
-def build_registry(fetcher: Fetcher, browser: Fetcher | None = None) -> ConnectorRegistry:
+def build_registry(fetcher: SessionFetcher, browser: Fetcher | None = None) -> ConnectorRegistry:
     """Register every connector. A new source is one more line here, nothing else.
 
-    ``browser`` goes only to connectors whose source needs the browser fallback.
+    ``browser`` goes only to connectors whose source needs the browser fallback; sessions
+    (``fetcher.session``) only to those whose file is behind a token flow.
     """
     registry = ConnectorRegistry()
     registry.register(OigLeieConnector(fetcher))
@@ -152,6 +158,7 @@ def build_registry(fetcher: Fetcher, browser: Fetcher | None = None) -> Connecto
     registry.register(MiMdhhsConnector(fetcher, browser=browser))
     registry.register(NhDhhsConnector(fetcher, browser=browser))
     registry.register(OhMedicaidConnector(fetcher, browser=browser))
+    registry.register(IlHfsConnector(fetcher))
     return registry
 
 
@@ -208,9 +215,10 @@ async def runtime(settings: Settings) -> AsyncIterator[Services]:
     await pool.open()
     try:
         async with create_http_client(settings) as client:
-            registry = build_registry(
-                HttpFetcher(client, clock), browser=create_browser_fetcher(settings, clock)
+            fetcher = HttpFetcher(
+                client, clock, session_client=partial(create_http_client, settings)
             )
+            registry = build_registry(fetcher, browser=create_browser_fetcher(settings, clock))
             yield build_services(pool, registry, clock)
     finally:
         await pool.close()

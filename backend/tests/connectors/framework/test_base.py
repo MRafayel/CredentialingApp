@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from credentialing.connectors.framework.base import BulkListConnectorBase, Metadata
+from credentialing.connectors.framework.base import BulkListConnectorBase, Located, Metadata
 from credentialing.connectors.framework.errors import ParseError
 from credentialing.connectors.framework.http import (
     FetchedDocument,
@@ -466,6 +466,115 @@ async def test_a_parse_failure_after_api_metadata_drops_the_kept_hash() -> None:
 
     assert result.snapshot.outcome is Outcome.FAILED
     assert result.snapshot.etag is None
+
+
+class _VersionConnector(_ApiConnector):
+    """An API that gives an edition token instead of a hash, and a download that needs more
+    than a GET (it records what the base hands it)."""
+
+    def __init__(self, fetcher: ScriptedFetcher, *, transfer: FetchOutcome | None = None) -> None:
+        super().__init__(fetcher)
+        self._transfer = transfer
+        self.downloads: list[tuple[Located, ChangeSignal]] = []
+
+    def read_metadata(self, body: bytes) -> Metadata:
+        answer = json.loads(body)
+        return Metadata(
+            url=answer["url"],
+            version=answer["version"],
+            last_modified=datetime(2026, 10, 13, 17, 34, 33, tzinfo=UTC),
+            parameters={"view": "Active"},
+        )
+
+    async def download(
+        self, location: Located, previous: SourceSnapshot | None, *, change_signal: ChangeSignal
+    ) -> FetchOutcome:
+        self.downloads.append((location, change_signal))
+        if self._transfer is None:
+            return await super().download(location, previous, change_signal=change_signal)
+        return self._transfer
+
+
+def _version_answer(version: str = "10/13/2026 12:34:33 PM|3273") -> bytes:
+    return json.dumps({"url": "/export/1", "version": version}).encode()
+
+
+async def test_a_version_is_kept_as_the_etag_and_never_checked_against_the_body() -> None:
+    connector = _VersionConnector(
+        ScriptedFetcher(_api_page(_version_answer())), transfer=_document(_BODY)
+    )
+
+    result = await connector.fetch(None)
+
+    [(location, signal)] = connector.downloads
+    assert location.url == "https://data.example.test/export/1"
+    assert location.md5 is None
+    assert location.version == "10/13/2026 12:34:33 PM|3273"
+    assert location.parameters == {"view": "Active"}
+    assert signal is ChangeSignal.CONTENT_HASH
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.etag == "10/13/2026 12:34:33 PM|3273"
+    assert result.snapshot.source_url == "https://data.example.test/export/1"
+    assert result.snapshot.last_modified == datetime(2026, 10, 13, 17, 34, 33, tzinfo=UTC)
+    assert result.records is not None
+
+
+async def test_an_unchanged_version_is_one_request() -> None:
+    previous = _completed("https://data.example.test/export/1", etag="10/13/2026 12:34:33 PM|3273")
+    connector = _VersionConnector(ScriptedFetcher(_api_page(_version_answer())))
+
+    result = await connector.fetch(previous)
+
+    assert connector.downloads == []
+    assert result.records is None
+    assert result.snapshot.note == "unchanged (metadata unchanged)"
+    assert result.snapshot.etag == "10/13/2026 12:34:33 PM|3273"
+
+
+async def test_a_new_version_downloads_again_through_the_hook() -> None:
+    previous = _completed("https://data.example.test/export/1", etag="10/06/2026|3270")
+    fetcher = ScriptedFetcher(_api_page(_version_answer()), _document(_BODY))
+    connector = _VersionConnector(fetcher)
+
+    result = await connector.fetch(previous)
+
+    assert [signal for _, signal in connector.downloads] == [ChangeSignal.CONDITIONAL_GET]
+    assert fetcher.requests[1] == (
+        "https://data.example.test/export/1",
+        ChangeSignal.CONDITIONAL_GET,
+    )
+    assert result.records is not None
+
+
+async def test_a_failed_download_hook_is_the_outcome() -> None:
+    failure = FetchFailure(
+        outcome=Outcome.BLOCKED, status=403, note="export request: HTTP 403", fetched_at=NOW
+    )
+    connector = _VersionConnector(ScriptedFetcher(_api_page(_version_answer())), transfer=failure)
+
+    result = await connector.fetch(None)
+
+    assert result.snapshot.outcome is Outcome.BLOCKED
+    assert result.snapshot.note == "export request: HTTP 403"
+    assert result.snapshot.etag is None
+    assert result.records is None
+
+
+@pytest.mark.parametrize("version", ["", "  "])
+async def test_metadata_without_a_hash_or_a_version_is_unreadable(version: str) -> None:
+    connector = _VersionConnector(ScriptedFetcher(_api_page(_version_answer(version))))
+
+    result = await connector.fetch(None)
+
+    assert result.snapshot.outcome is Outcome.FAILED
+    assert result.snapshot.note == (
+        "metadata unreadable: the metadata gives neither a hash nor a version"
+    )
+
+
+def test_metadata_needs_a_hash_or_a_version() -> None:
+    with pytest.raises(ParseError, match="neither a hash nor a version"):
+        Metadata(url="https://example.test/list.csv")
 
 
 _BLOCKED = FetchFailure(

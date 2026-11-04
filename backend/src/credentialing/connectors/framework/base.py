@@ -7,9 +7,16 @@ A subclass declares its ``capabilities`` and implements ``parse``, plus where it
   :meth:`~BulkListConnectorBase.find_link`, which picks the file's link out of the landing
   page;
 - a file described by an API (``API_METADATA``): ``metadata_url`` and
-  :meth:`~BulkListConnectorBase.read_metadata`, which reads the file's URL and MD5 hash.
+  :meth:`~BulkListConnectorBase.read_metadata`, which reads the file's URL and MD5 hash, or
+  an edition token the source publishes (``Metadata.version``, such as a page's "last
+  updated" stamp) when it gives no hash.
 
 Nothing else is source-specific. Either way an unchanged source costs one request per poll.
+
+A file behind a form or token flow (an anti-forgery token, a POST that prepares the export)
+overrides :meth:`~BulkListConnectorBase.download`, usually with a ``Session`` from a
+``SessionFetcher`` (``framework/http.py``); ``Metadata.parameters`` carries what that flow
+needs from the page that described the file.
 
 A connector whose capabilities set ``browser_fallback`` and that was given a ``browser``
 fetcher repeats a request answered ``BLOCKED``, or HTTP 404 (a block some firewalls disguise as
@@ -28,7 +35,8 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import ClassVar, Final, TypeGuard
 from urllib.parse import urljoin, urlsplit
@@ -75,11 +83,26 @@ def first_href(page: str, pattern: re.Pattern[str]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Metadata:
-    """What a source's API says about its current file: where it is, its MD5, when it changed."""
+    """What a source's API says about its current file: where it is, its MD5 or an edition
+    token, when it changed, and what its download needs beyond the URL.
+
+    Raises:
+        ParseError: Neither ``hash`` nor ``version`` is given.
+    """
 
     url: str
-    hash: str
+    hash: str | None = None
     last_modified: datetime | None = None
+    version: str | None = None
+    """An opaque edition token the source publishes, such as a page's "last updated" stamp and
+    count; kept as the snapshot's ``etag`` and compared on the next poll. Unlike ``hash`` it is
+    never checked against the body."""
+    parameters: Mapping[str, str] = field(default_factory=dict)
+    """What the download needs beyond the URL, opaque to the base, handed to ``download``."""
+
+    def __post_init__(self) -> None:
+        if not (self.hash or "").strip() and not (self.version or "").strip():
+            raise ParseError("the metadata gives neither a hash nor a version")
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,12 +112,16 @@ class Located:
 
     ``url`` becomes the snapshot's ``source_url``, so the next poll can tell an unchanged link.
     ``md5`` (an API's hash of the file) must equal the downloaded body's MD5 and is kept as the
-    snapshot's ``etag``, the validator the next poll compares; ``last_modified`` is the API's.
+    snapshot's ``etag``, the validator the next poll compares; without one, ``version`` (the
+    source's edition token) is kept there instead. ``last_modified`` is the API's;
+    ``parameters`` are the metadata's, for :meth:`BulkListConnectorBase.download`.
     """
 
     url: str
     md5: str | None = None
     last_modified: datetime | None = None
+    version: str | None = None
+    parameters: Mapping[str, str] = field(default_factory=dict)
     fetched_in_browser: bool = False
     """The landing page or API answer that located the file came from the browser fallback."""
 
@@ -148,7 +175,8 @@ class BulkListConnectorBase(ABC):
         raise NotImplementedError(f"{type(self).__name__} does not discover links")
 
     def read_metadata(self, body: bytes) -> Metadata:
-        """``API_METADATA``: the file's URL, MD5 hash and modified time from the API's answer.
+        """``API_METADATA``: the file's URL, MD5 hash (or edition token) and modified time from
+        the API's answer.
 
         Raises:
             ParseError: The answer does not have the expected shape.
@@ -178,10 +206,11 @@ class BulkListConnectorBase(ABC):
         return Located(url=found, fetched_in_browser=page.fetched_in_browser)
 
     async def metadata(self, previous: SourceSnapshot | None) -> Location:
-        """``API_METADATA``: ask the API for the file's URL and hash.
+        """``API_METADATA``: ask the API for the file's URL and hash or edition token.
 
-        When the hash equals the one kept on ``previous`` (its ``etag``) and that fetch
-        completed, the file is unchanged and this one request is the whole poll.
+        When the hash (or, without one, the version) equals the one kept on ``previous`` (its
+        ``etag``) and that fetch completed, the file is unchanged and this one request is the
+        whole poll.
         """
         url = _required(self.metadata_url, "metadata_url", self)
         answer = await self._get(url, previous=None, change_signal=ChangeSignal.CONTENT_HASH)
@@ -191,11 +220,13 @@ class BulkListConnectorBase(ABC):
             described = self.read_metadata(answer.body)
         except Exception as error:  # any unreadable answer is this source's FAILED outcome
             return _failure(answer, "metadata unreadable", error)
-        md5 = described.hash.strip().lower()
-        if _completed(previous) and previous.etag == md5:
+        md5 = (described.hash or "").strip().lower() or None
+        version = (described.version or "").strip() or None
+        token = md5 or version
+        if _completed(previous) and previous.etag == token:
             return NotModified(
                 reason="metadata unchanged",
-                etag=md5,
+                etag=token,
                 last_modified=described.last_modified,
                 fetched_at=answer.fetched_at,
                 status=answer.status,
@@ -205,6 +236,8 @@ class BulkListConnectorBase(ABC):
             url=urljoin(url, described.url),
             md5=md5,
             last_modified=described.last_modified,
+            version=version,
+            parameters=described.parameters,
             fetched_in_browser=answer.fetched_in_browser,
         )
 
@@ -293,13 +326,24 @@ class BulkListConnectorBase(ABC):
             return replace(answer, note=f"{result.note}; browser fallback: {answer.note}")
         return answer
 
+    async def download(
+        self, location: Located, previous: SourceSnapshot | None, *, change_signal: ChangeSignal
+    ) -> FetchOutcome:
+        """Transfer the located file: one GET by default, repeated in the browser when refused.
+
+        A source whose file is behind a form or token flow overrides this (module docstring).
+        ``change_signal`` is the signal the GET uses (conditional only when the located URL is
+        the previous fetch's).
+        """
+        return await self._get(location.url, previous=previous, change_signal=change_signal)
+
     async def _download(self, location: Located, previous: SourceSnapshot | None) -> FetchOutcome:
-        """Download the located file; conditional only when it is the previous fetch's URL."""
+        """Download the located file and check it against the API's MD5, when there is one."""
         signal = self.capabilities.change_signal
         if signal in (ChangeSignal.LINK_DISCOVERY, ChangeSignal.API_METADATA):
             same = previous is not None and previous.source_url == location.url
             signal = ChangeSignal.CONDITIONAL_GET if same else ChangeSignal.CONTENT_HASH
-        result = await self._get(location.url, previous=previous, change_signal=signal)
+        result = await self.download(location, previous, change_signal=signal)
         if (
             location.md5 is not None
             and isinstance(result, FetchedDocument)
@@ -421,8 +465,8 @@ def _stamp(snapshot: SourceSnapshot, location: Located, *, resolved: bool) -> So
     update: dict[str, object] = {}
     if resolved:
         update["source_url"] = location.url
-    if location.md5 is not None:
-        update["etag"] = location.md5
+    if (token := location.md5 or location.version) is not None:
+        update["etag"] = token
     if location.last_modified is not None:
         update["last_modified"] = location.last_modified
     return snapshot.model_copy(update=update) if update else snapshot

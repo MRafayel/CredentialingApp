@@ -52,6 +52,11 @@ The heuristics here are deterministic and documented so a wrong split can be exp
    suffix off a last-name cell ("SAMPLEPERSON JR", "SAMPLEPERSON, Jr."), and
    :func:`split_aliases` cuts a cell at its alias markers ("Avery a.k.a Jay" gives "Avery"
    and the alias "Jay"), so the connector can complete an alias with the other name column.
+8. Credentials inside a surname-first name (:func:`split_credentials`, Illinois): a
+   credential or generational suffix written after the surname but before the given names
+   ("SAMPLEPERSON M.D. AVERY", "SAMPLEPERSON JR AVERY Q") is taken out, wherever it stands
+   after the first word, and becomes the suffix, as long as a surname and a given name remain.
+   The first word is never taken: it is the surname, and "DO" or "LE" can be one.
 
 Known limits: a two-word surname without a particle ("GARCIA LOPEZ MARIA") is read as last
 name "GARCIA", first name "LOPEZ" (first name first: "MARIA GARCIA LOPEZ" has last name
@@ -250,6 +255,24 @@ def split_suffix(last_name: str) -> tuple[str, str | None]:
     if not suffixes:
         return last_name.strip(), None
     return _trim(" ".join(tokens)), " ".join(suffixes)
+
+
+def split_credentials(text: str) -> tuple[str, str | None]:
+    """A surname-first name without the credentials and suffixes written inside it, and those
+    as the suffix, in the order written (rule 8).
+
+    "SAMPLEPERSON M.D. AVERY" gives ``("SAMPLEPERSON AVERY", "M.D.")``; a name with no such
+    word, or one that would keep fewer than two words, comes back whole with ``None``.
+    """
+    words = text.split()
+    if not words:
+        return text.strip(), None
+    first, *rest = words
+    kept = [word for word in rest if not _is_suffix(word)]
+    if len(kept) == len(rest) or not kept:
+        return text.strip(), None
+    taken = [word.rstrip(",") for word in rest if _is_suffix(word)]
+    return " ".join([first, *kept]), " ".join(taken)
 
 
 def split_aliases(text: str | None) -> tuple[str, tuple[str, ...]]:

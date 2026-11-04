@@ -30,6 +30,7 @@ from credentialing.connectors.ga_dch.connector import COLUMNS as GA_COLUMNS
 from credentialing.connectors.ga_dch.connector import GaDchConnector
 from credentialing.connectors.ia_medicaid.connector import COLUMNS as IA_COLUMNS
 from credentialing.connectors.ia_medicaid.connector import IaMedicaidConnector
+from credentialing.connectors.il_hfs.connector import IlHfsConnector
 from credentialing.connectors.in_fssa.connector import COLUMNS as IN_COLUMNS
 from credentialing.connectors.in_fssa.connector import InFssaConnector
 from credentialing.connectors.ks_kmap.connector import COLUMNS as KS_COLUMNS
@@ -218,6 +219,7 @@ async def test_ca_metadata_hash_and_csv_header() -> None:
                     break
     rows = csv.reader(io.StringIO(header.decode("utf-8-sig"), newline=""))
     assert tuple(cell.strip() for cell in next(rows)) == CA_COLUMNS
+    assert metadata.hash is not None
     assert len(metadata.hash) == 32
 
 
@@ -405,3 +407,22 @@ async def test_oh_linked_workbook_headers() -> None:
     for sheet, columns in (("Individuals", OH_IND_COLUMNS), ("Organizations", OH_ORG_COLUMNS)):
         rows = read_sheet(response.content, sheet=sheet, expected_columns=columns)
         assert set(next(rows)) == set(columns)
+
+
+async def test_il_page_stamp_count_and_export_configuration() -> None:
+    # One page GET only: the export is a POST that prepares a file on the server, which a
+    # smoke test should not cause. The page has no robots.txt; the crawl delay is waited.
+    connector = IlHfsConnector(ScriptedFetcher())
+    assert connector.metadata_url is not None
+    await asyncio.sleep(connector.capabilities.crawl_delay.total_seconds())
+    async with create_http_client(get_settings()) as client:
+        page = await client.get(connector.metadata_url)
+    _skip_if_refused(page, "the sanctions page")
+    assert page.status_code == 200
+    metadata = connector.read_metadata(page.content)
+    assert metadata.version is not None
+    stamp, count = metadata.version.split("|")
+    assert stamp
+    assert int(count) > 0
+    assert metadata.last_modified is not None
+    assert metadata.url.startswith("https://ilhfspartner3.dynamics365portals.us/_services/")

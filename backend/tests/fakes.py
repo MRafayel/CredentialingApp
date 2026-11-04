@@ -1,11 +1,18 @@
 """In-memory implementations of the domain ports, for fast tests of use cases and the API."""
 
 import re
-from collections.abc import Sequence
-from datetime import datetime, timedelta
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from credentialing.connectors.framework.http import FetchOutcome
+from credentialing.connectors.framework.http import (
+    FetchFailure,
+    FetchOutcome,
+    Response,
+    Session,
+)
 from credentialing.domain.enums import (
     AccessPolicy,
     ChangeSignal,
@@ -85,19 +92,80 @@ class ScriptedConnector:
         return self._results.pop(0)
 
 
+SESSION_OPENED_AT = datetime(2026, 1, 15, 12, 0, 30, tzinfo=UTC)
+"""When every scripted session opens."""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRequest:
+    """One request a scripted session received."""
+
+    method: str
+    url: str
+    headers: Mapping[str, str] = field(default_factory=dict)
+    params: Mapping[str, str] = field(default_factory=dict)
+    json: object | None = None
+
+
+class ScriptedSession:
+    """A :class:`~credentialing.connectors.framework.http.Session` answering from a script."""
+
+    def __init__(self, answers: list[Response | FetchFailure], log: list[SessionRequest]) -> None:
+        self._answers = answers
+        self._log = log
+        self.closed = False
+
+    @property
+    def opened_at(self) -> datetime:
+        return SESSION_OPENED_AT
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | None = None,
+        json: object | None = None,
+    ) -> Response | FetchFailure:
+        assert self._answers, f"no scripted answer for {method} {url}"
+        self._log.append(SessionRequest(method, url, dict(headers or {}), dict(params or {}), json))
+        return self._answers.pop(0)
+
+
 class ScriptedFetcher:
-    """A :class:`~credentialing.connectors.framework.http.Fetcher` returning prepared outcomes.
+    """A :class:`~credentialing.connectors.framework.http.SessionFetcher` returning prepared
+    outcomes.
 
     The outcomes are returned in order and the last one answers every further request (a
     landing page or API answer first, then the file). Without an outcome it is for tests that
     only call ``parse``, and fails if fetched. ``requests`` records each URL and change signal,
     ``entry_urls`` each request's warm-up page (``None`` when there was none).
+
+    ``session_answers`` answer the requests of the sessions it opens, in order and each once;
+    ``session_requests`` records them, ``sessions`` the sessions opened.
     """
 
-    def __init__(self, *outcomes: FetchOutcome) -> None:
+    def __init__(
+        self, *outcomes: FetchOutcome, session_answers: Sequence[Response | FetchFailure] = ()
+    ) -> None:
         self.outcomes = list(outcomes)
         self.requests: list[tuple[str, ChangeSignal]] = []
         self.entry_urls: list[str | None] = []
+        self.session_answers = list(session_answers)
+        self.session_requests: list[SessionRequest] = []
+        self.sessions: list[ScriptedSession] = []
+        self.crawl_delays: list[timedelta] = []
+
+    @asynccontextmanager
+    async def session(self, *, crawl_delay: timedelta) -> AsyncIterator[Session]:
+        self.crawl_delays.append(crawl_delay)
+        session = ScriptedSession(self.session_answers, self.session_requests)
+        self.sessions.append(session)
+        try:
+            yield session
+        finally:
+            session.closed = True
 
     async def fetch(
         self,

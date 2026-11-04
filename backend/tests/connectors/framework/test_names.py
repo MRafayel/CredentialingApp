@@ -7,6 +7,7 @@ from credentialing.connectors.framework.names import (
     parse_name_field,
     parse_name_lines,
     split_aliases,
+    split_credentials,
     split_single_name_field,
     split_suffix,
 )
@@ -383,3 +384,23 @@ def test_split_suffix(text: str, expected: tuple[str, str | None]) -> None:
 )
 def test_split_aliases(text: str | None, expected: tuple[str, tuple[str, ...]]) -> None:
     assert split_aliases(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("SAMPLEPERSON M.D. AVERY", ("SAMPLEPERSON AVERY", "M.D.")),
+        ("SAMPLEPERSON MD AVERY", ("SAMPLEPERSON AVERY", "MD")),
+        ("SAMPLEPERSON JR AVERY Q", ("SAMPLEPERSON AVERY Q", "JR")),
+        ("SAMPLEPERSON II AVERY", ("SAMPLEPERSON AVERY", "II")),
+        ("SAMPLEPERSON AVERY JR.", ("SAMPLEPERSON AVERY", "JR.")),
+        ("SAMPLEPERSON MD AVERY DDS", ("SAMPLEPERSON AVERY", "MD DDS")),
+        ("SAMPLEPERSON AVERY", ("SAMPLEPERSON AVERY", None)),
+        ("DO MINH Q", ("DO MINH Q", None)),
+        ("SAMPLEPERSON MD", ("SAMPLEPERSON MD", None)),
+        ("SAMPLEPERSON", ("SAMPLEPERSON", None)),
+        ("", ("", None)),
+    ],
+)
+def test_split_credentials(text: str, expected: tuple[str, str | None]) -> None:
+    assert split_credentials(text) == expected

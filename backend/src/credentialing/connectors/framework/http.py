@@ -16,13 +16,20 @@ and the configured User-Agent, a standard browser string by default) is wrapped 
 Which URL to fetch, and whether to fetch at all, is the connector's business: link-discovery
 and API-metadata sources resolve the file's URL first (``framework/base.py``) and then fetch
 it here like any other.
+
+A source whose file sits behind a token flow (a page's anti-forgery token, a POST that
+prepares the export, a GET with the key it returns) opens a :class:`Session`: requests that
+share one cookie jar, on a client of their own that is closed when the session ends, with the
+same crawl delay, size cap and failure mapping. A POST is never repeated.
 """
 
 import asyncio
 import hashlib
+import json as json_module
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime, parsedate_to_datetime
@@ -47,6 +54,7 @@ MAX_BODY_BYTES: Final = 50 * 1024 * 1024
 """Largest body accepted; a bigger one is ``FAILED`` rather than read into memory."""
 
 _BLOCKING_STATUSES: Final = frozenset({401, 403, 429})
+_REPEATABLE_METHODS: Final = frozenset({"GET", "HEAD"})
 _CHALLENGE_SCAN_BYTES: Final = 64 * 1024
 _CHALLENGE_MARKERS: Final = (
     b"/cdn-cgi/challenge-platform/",
@@ -125,7 +133,9 @@ class Fetcher(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class _Response:
+class Response:
+    """One answered request (2xx or 304), with the body and the headers the framework reads."""
+
     status: int
     body: bytes
     etag: str | None
@@ -134,23 +144,258 @@ class _Response:
     final_url: str
 
 
+def document_from(response: Response, fetched_at: datetime) -> FetchedDocument:
+    """A new document from an answered request, hashed and sized."""
+    return FetchedDocument(
+        body=response.body,
+        content_hash=hashlib.sha256(response.body).hexdigest(),
+        etag=response.etag,
+        last_modified=response.last_modified,
+        content_type=response.content_type,
+        final_url=response.final_url,
+        byte_size=len(response.body),
+        fetched_at=fetched_at,
+        status=response.status,
+    )
+
+
+class Session(Protocol):
+    """Requests that share one cookie jar, for a source whose file needs more than a GET."""
+
+    @property
+    def opened_at(self) -> datetime:
+        """When the session opened: the ``fetched_at`` of its failures and of its document."""
+        ...
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | None = None,
+        json: object | None = None,
+    ) -> Response | FetchFailure:
+        """Send one request after the crawl delay and classify the answer like ``fetch``.
+
+        ``json`` is sent as the body, serialized with :func:`json.dumps`. A transport error is
+        retried once for GET and HEAD only; a POST is never repeated.
+        """
+        ...
+
+
+class SessionFactory(Protocol):
+    """Opens :class:`Session` s."""
+
+    def session(self, *, crawl_delay: timedelta) -> AbstractAsyncContextManager[Session]:
+        """A new session, with its own cookies, closed when the context ends."""
+        ...
+
+
+class SessionFetcher(Fetcher, SessionFactory, Protocol):
+    """A fetcher that can also open sessions: what a connector with a token flow needs."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Transport:
+    """Sending one request and classifying its answer, shared by the fetcher and sessions."""
+
+    retry_pause: float
+    max_body_bytes: int
+    sleep: Callable[[float], Awaitable[None]]
+
+    async def request(
+        self,
+        client: httpx2.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        fetched_at: datetime,
+        delay: float,
+        params: Mapping[str, str] | None = None,
+        content: bytes | None = None,
+        retry: bool = True,
+    ) -> Response | FetchFailure:
+        """Send one request, retrying once on a transport error when ``retry``, and classify
+        the answer.
+
+        ``delay`` (the crawl delay, in seconds) is waited before each attempt.
+        """
+        attempts = RETRY_ATTEMPTS + 1 if retry else 1
+        for attempt in range(1, attempts + 1):
+            if delay > 0:
+                await self.sleep(delay)
+            try:
+                async with client.stream(
+                    method, url, headers=dict(headers), params=params, content=content
+                ) as response:
+                    return await self._read(response, method, url, fetched_at)
+            except httpx2.TransportError as error:
+                if attempt < attempts:
+                    logger.warning(
+                        "http retry url=%s error=%s attempt=%d", url, type(error).__name__, attempt
+                    )
+                    await self.sleep(self.retry_pause)
+                    continue
+                tries = f"after {attempts} attempts" if attempts > 1 else "(not repeated)"
+                return FetchFailure(
+                    outcome=Outcome.SOURCE_UNAVAILABLE,
+                    status=None,
+                    note=f"{type(error).__name__} {tries}",
+                    fetched_at=fetched_at,
+                )
+            except httpx2.HTTPError as error:
+                return FetchFailure(
+                    outcome=Outcome.FAILED,
+                    status=None,
+                    note=f"request failed: {type(error).__name__}",
+                    fetched_at=fetched_at,
+                )
+        raise AssertionError("unreachable: the loop always returns")
+
+    async def _read(
+        self, response: httpx2.Response, method: str, requested_url: str, fetched_at: datetime
+    ) -> Response | FetchFailure:
+        status = response.status_code
+
+        def failure(outcome: Outcome, note: str) -> FetchFailure:
+            return FetchFailure(outcome=outcome, status=status, note=note, fetched_at=fetched_at)
+
+        if response.headers.get("cf-mitigated", "").lower() == "challenge":
+            return failure(Outcome.BLOCKED, f"challenge page (HTTP {status})")
+        if status in _BLOCKING_STATUSES:
+            retry_after = response.headers.get("retry-after")
+            suffix = f", Retry-After {retry_after}" if retry_after else ""
+            return failure(Outcome.BLOCKED, f"HTTP {status}{suffix}")
+        if status >= 500:
+            return failure(Outcome.SOURCE_UNAVAILABLE, f"HTTP {status}")
+        if status != 304 and not 200 <= status < 300:
+            return failure(Outcome.FAILED, f"unexpected HTTP {status}")
+
+        body = b""
+        if method != "HEAD" and status != 304:
+            declared = response.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > self.max_body_bytes:
+                return failure(Outcome.FAILED, f"body of {declared} bytes exceeds the cap")
+            chunks = bytearray()
+            async for chunk in response.aiter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > self.max_body_bytes:
+                    return failure(
+                        Outcome.FAILED, f"body exceeds the cap of {self.max_body_bytes} bytes"
+                    )
+            body = bytes(chunks)
+
+        content_type = response.headers.get("content-type")
+        if _is_challenge(content_type, body):
+            return failure(Outcome.BLOCKED, f"challenge page (HTTP {status})")
+        final_host = _host(str(response.url))
+        if final_host != _host(requested_url) and _is_html(content_type):
+            return failure(Outcome.BLOCKED, f"redirected to {final_host}")
+        return Response(
+            status=status,
+            body=body,
+            etag=response.headers.get("etag"),
+            last_modified=_parse_http_date(response.headers.get("last-modified")),
+            content_type=content_type,
+            final_url=str(response.url),
+        )
+
+
+class _HttpSession:
+    """Implements :class:`Session` over a client of its own (its own cookie jar)."""
+
+    def __init__(
+        self, client: httpx2.AsyncClient, transport: _Transport, delay: float, opened_at: datetime
+    ) -> None:
+        self._client = client
+        self._transport = transport
+        self._delay = delay
+        self._opened_at = opened_at
+
+    @property
+    def opened_at(self) -> datetime:
+        """When the session opened."""
+        return self._opened_at
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | None = None,
+        json: object | None = None,
+    ) -> Response | FetchFailure:
+        """One request of the session (see :class:`Session`)."""
+        started = time.perf_counter()
+        sent = dict(headers or {})
+        content = None
+        if json is not None:
+            content = json_module.dumps(json).encode()
+            if not any(name.lower() == "content-type" for name in sent):
+                sent["Content-Type"] = "application/json"
+        result = await self._transport.request(
+            self._client,
+            method,
+            url,
+            headers=sent,
+            fetched_at=self._opened_at,
+            delay=self._delay,
+            params=params,
+            content=content,
+            retry=method in _REPEATABLE_METHODS,
+        )
+        logger.info(
+            "http session request method=%s url=%s result=%s status=%s bytes=%s duration_ms=%d",
+            method,
+            url,
+            result.outcome.value if isinstance(result, FetchFailure) else "ok",
+            result.status,
+            len(result.body) if isinstance(result, Response) else "-",
+            (time.perf_counter() - started) * 1000,
+        )
+        return result
+
+
 class HttpFetcher:
-    """Implements :class:`Fetcher` over one shared ``httpx2.AsyncClient``."""
+    """Implements :class:`SessionFetcher` over one shared ``httpx2.AsyncClient``.
+
+    ``session_client`` builds the client of each :meth:`session`, so a session's cookies never
+    reach the shared client; a fetcher built without it cannot open sessions.
+    """
 
     def __init__(
         self,
         client: httpx2.AsyncClient,
         clock: Clock,
         *,
+        session_client: Callable[[], httpx2.AsyncClient] | None = None,
         retry_pause_seconds: float = RETRY_PAUSE_SECONDS,
         max_body_bytes: int = MAX_BODY_BYTES,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client = client
         self._clock = clock
-        self._retry_pause = retry_pause_seconds
-        self._max_body_bytes = max_body_bytes
-        self._sleep = sleep
+        self._session_client = session_client
+        self._transport = _Transport(
+            retry_pause=retry_pause_seconds, max_body_bytes=max_body_bytes, sleep=sleep
+        )
+
+    @asynccontextmanager
+    async def session(self, *, crawl_delay: timedelta) -> AsyncIterator[Session]:
+        """A session on a new client from ``session_client``, closed when the context ends.
+
+        Raises:
+            TypeError: The fetcher was built without a ``session_client``.
+        """
+        if self._session_client is None:
+            raise TypeError("this HttpFetcher was built without a session_client")
+        async with self._session_client() as client:
+            yield _HttpSession(
+                client, self._transport, crawl_delay.total_seconds(), self._clock.now()
+            )
 
     async def fetch(
         self,
@@ -248,8 +493,8 @@ class HttpFetcher:
                 fetched_at=fetched_at,
                 status=304,
             )
-        content_hash = hashlib.sha256(response.body).hexdigest()
-        if previous is not None and previous.content_hash == content_hash:
+        document = document_from(response, fetched_at)
+        if previous is not None and previous.content_hash == document.content_hash:
             return NotModified(
                 reason="content hash unchanged",
                 etag=response.etag,
@@ -257,100 +502,14 @@ class HttpFetcher:
                 fetched_at=fetched_at,
                 status=response.status,
             )
-        return FetchedDocument(
-            body=response.body,
-            content_hash=content_hash,
-            etag=response.etag,
-            last_modified=response.last_modified,
-            content_type=response.content_type,
-            final_url=response.final_url,
-            byte_size=len(response.body),
-            fetched_at=fetched_at,
-            status=response.status,
-        )
+        return document
 
     async def _request(
         self, method: str, url: str, headers: dict[str, str], fetched_at: datetime, delay: float
-    ) -> _Response | FetchFailure:
-        """Send one request, retrying once on a transport error, and classify the answer.
-
-        ``delay`` (the crawl delay, in seconds) is waited before each attempt.
-        """
-        attempts = RETRY_ATTEMPTS + 1
-        for attempt in range(1, attempts + 1):
-            if delay > 0:
-                await self._sleep(delay)
-            try:
-                async with self._client.stream(method, url, headers=headers) as response:
-                    return await self._read(response, method, url, fetched_at)
-            except httpx2.TransportError as error:
-                if attempt < attempts:
-                    logger.warning(
-                        "http retry url=%s error=%s attempt=%d", url, type(error).__name__, attempt
-                    )
-                    await self._sleep(self._retry_pause)
-                    continue
-                return FetchFailure(
-                    outcome=Outcome.SOURCE_UNAVAILABLE,
-                    status=None,
-                    note=f"{type(error).__name__} after {attempts} attempts",
-                    fetched_at=fetched_at,
-                )
-            except httpx2.HTTPError as error:
-                return FetchFailure(
-                    outcome=Outcome.FAILED,
-                    status=None,
-                    note=f"request failed: {type(error).__name__}",
-                    fetched_at=fetched_at,
-                )
-        raise AssertionError("unreachable: the loop always returns")
-
-    async def _read(
-        self, response: httpx2.Response, method: str, requested_url: str, fetched_at: datetime
-    ) -> _Response | FetchFailure:
-        status = response.status_code
-
-        def failure(outcome: Outcome, note: str) -> FetchFailure:
-            return FetchFailure(outcome=outcome, status=status, note=note, fetched_at=fetched_at)
-
-        if response.headers.get("cf-mitigated", "").lower() == "challenge":
-            return failure(Outcome.BLOCKED, f"challenge page (HTTP {status})")
-        if status in _BLOCKING_STATUSES:
-            retry_after = response.headers.get("retry-after")
-            suffix = f", Retry-After {retry_after}" if retry_after else ""
-            return failure(Outcome.BLOCKED, f"HTTP {status}{suffix}")
-        if status >= 500:
-            return failure(Outcome.SOURCE_UNAVAILABLE, f"HTTP {status}")
-        if status != 304 and not 200 <= status < 300:
-            return failure(Outcome.FAILED, f"unexpected HTTP {status}")
-
-        body = b""
-        if method != "HEAD" and status != 304:
-            declared = response.headers.get("content-length")
-            if declared and declared.isdigit() and int(declared) > self._max_body_bytes:
-                return failure(Outcome.FAILED, f"body of {declared} bytes exceeds the cap")
-            chunks = bytearray()
-            async for chunk in response.aiter_bytes():
-                chunks.extend(chunk)
-                if len(chunks) > self._max_body_bytes:
-                    return failure(
-                        Outcome.FAILED, f"body exceeds the cap of {self._max_body_bytes} bytes"
-                    )
-            body = bytes(chunks)
-
-        content_type = response.headers.get("content-type")
-        if _is_challenge(content_type, body):
-            return failure(Outcome.BLOCKED, f"challenge page (HTTP {status})")
-        final_host = _host(str(response.url))
-        if final_host != _host(requested_url) and _is_html(content_type):
-            return failure(Outcome.BLOCKED, f"redirected to {final_host}")
-        return _Response(
-            status=status,
-            body=body,
-            etag=response.headers.get("etag"),
-            last_modified=_parse_http_date(response.headers.get("last-modified")),
-            content_type=content_type,
-            final_url=str(response.url),
+    ) -> Response | FetchFailure:
+        """One request on the shared client, retried once on a transport error."""
+        return await self._transport.request(
+            self._client, method, url, headers=headers, fetched_at=fetched_at, delay=delay
         )
 
 
@@ -370,7 +529,7 @@ def _is_challenge(content_type: str | None, body: bytes) -> bool:
     return any(marker in head for marker in _CHALLENGE_MARKERS)
 
 
-def _same_validators(previous: SourceSnapshot, response: _Response) -> bool:
+def _same_validators(previous: SourceSnapshot, response: Response) -> bool:
     """True when at least one validator is on both sides and every shared one is equal."""
     compared = False
     if previous.etag and response.etag:

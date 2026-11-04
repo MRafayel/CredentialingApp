@@ -4,8 +4,14 @@ openpyxl ships no type information, so it is used only here, and every cell leav
 as a ``str``. State lists put title rows, logos and merged cells above the header, change the
 sheet name every month, repeat column names and end with footnotes; :func:`read_sheet` finds
 the header by its expected names and handles the rest.
+
+Some generators (Power Pages' "Export Data", Illinois) write a stylesheet with an empty fill
+element, which openpyxl cannot load ("Fill() takes no arguments"). Such a workbook is read
+once more with each empty fill replaced by an explicit "no fill"; nothing else is changed.
 """
 
+import re
+import warnings
 import zipfile
 from collections import Counter
 from collections.abc import Iterator, Sequence
@@ -21,6 +27,11 @@ from credentialing.connectors.framework.values import collapse
 
 DEFAULT_HEADER_SEARCH_ROWS: Final = 10
 """Rows searched for the header: enough for every title block observed (North Carolina: 6)."""
+
+_STYLES: Final = "xl/styles.xml"
+_EMPTY_FILL: Final = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?fill\s*/>")
+_NO_DEFAULT_STYLE: Final = "Workbook contains no default style"
+_UNREADABLE: Final = (InvalidFileException, zipfile.BadZipFile, KeyError, OSError, ValueError)
 
 
 def read_sheet(
@@ -50,10 +61,7 @@ def read_sheet(
         ParseError: The body is not a workbook, the sheet does not exist, or no row in the
             search range is the expected header.
     """
-    try:
-        workbook = load_workbook(BytesIO(body), read_only=True, data_only=True)
-    except (InvalidFileException, zipfile.BadZipFile, KeyError, OSError, ValueError) as error:
-        raise ParseError(f"not a readable xlsx workbook ({type(error).__name__})") from error
+    workbook = _load(body)
     try:
         yield from _rows(
             _worksheet(workbook, sheet),
@@ -68,6 +76,50 @@ def read_sheet(
 # openpyxl is untyped: its workbook and worksheet objects are ``Any`` inside this module only.
 type _Workbook = Any
 type _Worksheet = Any
+
+
+def _load(body: bytes) -> _Workbook:
+    """Open the workbook, once more with a repaired stylesheet when openpyxl rejects its fills."""
+    try:
+        return load_workbook(BytesIO(body), read_only=True, data_only=True)
+    except _UNREADABLE as error:
+        raise ParseError(f"not a readable xlsx workbook ({type(error).__name__})") from error
+    except TypeError as error:
+        repaired = _with_explicit_fills(body)
+        if repaired is None:
+            raise ParseError(f"not a readable xlsx workbook ({type(error).__name__})") from error
+    try:
+        with warnings.catch_warnings():
+            # The repaired stylesheet still has no default cell style; openpyxl warns and
+            # uses its own, which is what reading values needs.
+            warnings.filterwarnings("ignore", message=_NO_DEFAULT_STYLE, category=UserWarning)
+            return load_workbook(BytesIO(repaired), read_only=True, data_only=True)
+    except (*_UNREADABLE, TypeError) as error:
+        raise ParseError(f"not a readable xlsx workbook ({type(error).__name__})") from error
+
+
+def _with_explicit_fills(body: bytes) -> bytes | None:
+    """The archive with every empty fill element in its stylesheet replaced by "no fill", or
+    ``None`` when the stylesheet has none (or is missing), so a retry would change nothing."""
+    try:
+        with zipfile.ZipFile(BytesIO(body)) as archive:
+            styles = archive.read(_STYLES)
+            repaired, count = _EMPTY_FILL.subn(_explicit_fill, styles)
+            if not count:
+                return None
+            output = BytesIO()
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as rebuilt:
+                for entry in archive.infolist():
+                    data = repaired if entry.filename == _STYLES else archive.read(entry)
+                    rebuilt.writestr(entry, data)
+    except zipfile.BadZipFile, KeyError, OSError:
+        return None
+    return output.getvalue()
+
+
+def _explicit_fill(found: re.Match[bytes]) -> bytes:
+    prefix = found["prefix"] or b""
+    return b'<%sfill><%spatternFill patternType="none"/></%sfill>' % (prefix, prefix, prefix)
 
 
 def _worksheet(workbook: _Workbook, sheet: int | str) -> _Worksheet:
