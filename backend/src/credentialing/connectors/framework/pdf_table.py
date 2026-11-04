@@ -5,8 +5,11 @@ Virginia, Wyoming, Nevada). pdfplumber's table finder follows that ruling, so a 
 stays in its cell and the columns never shift when a cell is empty, which plain text
 extraction cannot guarantee. Where a row's ruling is incomplete (Wyoming draws some rows
 without the rule left of the first cell) the finder sees no cell there; that cell's text is
-then read from the column's span on the page. :func:`read_pdf_table` finds the header row and
-keys the data rows by column name, like the delimited, spreadsheet and HTML table readers.
+then read from the column's span on the page. A row drawn without its inner rules (Alaska:
+one cell across the whole row, the others missing) is split into the table's columns by the
+position of its text the same way, or is an :class:`UnreadableRow` when a run of its text
+crosses a column boundary. :func:`read_pdf_table` finds the header row and keys the data rows
+by column name, like the delimited, spreadsheet and HTML table readers.
 """
 
 import io
@@ -20,7 +23,7 @@ from pdfplumber.page import Page
 from pdfplumber.table import Table as PdfTable
 from pdfplumber.table import TableSettings
 from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
-from pdfplumber.utils.text import extract_text
+from pdfplumber.utils.text import extract_text, extract_words
 
 from credentialing.connectors.framework.errors import ParseError
 from credentialing.connectors.framework.rows import UnreadableRow
@@ -33,7 +36,7 @@ pdfplumber wraps pdfminer's errors while opening (``b"not a pdf"``, a truncated 
 read lazily.
 """
 
-type Table = Sequence[Sequence[str | None]]
+type Table = Sequence[Sequence[str | None] | UnreadableRow]
 
 # pdfminer's warnings and errors on a damaged file quote raw content-stream bytes (list text);
 # every failure that matters still reaches read_pdf_table as an exception.
@@ -52,7 +55,8 @@ def read_pdf_table(
     (a title row) and later repeats of it (one per page) are skipped, and so are rows without
     text. Cells are stripped but keep their internal line breaks as ``"\\n"``, because the
     source's wrapping can be content (several NPIs, one per line). A row with another cell
-    count is an :class:`UnreadableRow`.
+    count, or a row in one cell that cannot be split into the columns, is an
+    :class:`UnreadableRow`.
 
     Raises:
         ParseError: The body is not a readable PDF, has no page, or no row is the header.
@@ -85,18 +89,25 @@ type _Box = tuple[float, float, float, float]
 
 def _fill_missing_cells(
     table: PdfTable, extracted: list[list[str | None]], text_settings: dict[str, Any]
-) -> list[list[str | None]]:
+) -> list[list[str | None] | UnreadableRow]:
     """Read the text of cells the finder could not close from the page itself.
 
     A missing cell spans its column, narrowed to the gap between the row's present
     neighbours, so a column inside a merged cell stays empty instead of repeating its text.
+    A row whose only cell spans several columns is split by :func:`_split_spanning`.
     Characters are selected by their midpoint, as pdfplumber does for a found cell.
     """
     left, _, right, _ = table.bbox
     columns = sorted({cell[0] for cell in table.cells})
     edges = [*columns[1:], right]
+    rows: list[list[str | None] | UnreadableRow] = []
     for row, texts in zip(table.rows, extracted, strict=True):
         cells: Sequence[_Box | None] = row.cells
+        rows.append(texts)
+        present = [cell for cell in cells if cell is not None]
+        if len(present) == 1 and _covered(present[0], columns, edges) > 1:
+            rows[-1] = _split_spanning(table.page, row.bbox, columns, edges, text_settings)
+            continue
         for index, cell in enumerate(cells):
             if cell is not None:
                 continue
@@ -108,7 +119,49 @@ def _fill_missing_cells(
                 box = (x0, row.bbox[1], x1, row.bbox[3])
                 chars = [char for char in table.page.chars if _inside(char, box)]
                 texts[index] = extract_text(chars, **text_settings) if chars else ""
-    return extracted
+    return rows
+
+
+_EDGE_TOLERANCE: Final = 1.0
+"""Points by which a cell's ruling may miss a column edge and still cover that column."""
+
+
+def _covered(box: _Box, columns: Sequence[float], edges: Sequence[float]) -> int:
+    """How many of the table's columns the cell ``box`` covers."""
+    x0, _, x1, _ = box
+    return sum(
+        1
+        for start, end in zip(columns, edges, strict=True)
+        if x0 <= start + _EDGE_TOLERANCE and x1 >= end - _EDGE_TOLERANCE
+    )
+
+
+def _split_spanning(
+    page: Page,
+    row: _Box,
+    columns: Sequence[float],
+    edges: Sequence[float],
+    text_settings: dict[str, Any],
+) -> list[str | None] | UnreadableRow:
+    """A row drawn as one cell across several columns, its text split by column position.
+
+    The row's text is read by the columns' spans on the page, as for a missing cell. A run of
+    text (characters as pdfplumber's text settings join them, spaces included) that crosses a
+    column boundary means the text does not sit in the columns, as when it overflows its cell,
+    so the row is unreadable rather than split wrongly. Text in separate cells is apart by
+    the cells' padding, more than the joining tolerance.
+    """
+    _, top, _, bottom = row
+    chars = [char for char in page.chars if _inside(char, row)]
+    boundaries = columns[1:]
+    for word in extract_words(chars, keep_blank_chars=True, **text_settings):
+        if any(float(word["x0"]) < edge < float(word["x1"]) for edge in boundaries):
+            return UnreadableRow("a row drawn as one cell does not split into the columns")
+    texts: list[str | None] = []
+    for start, end in zip(columns, edges, strict=True):
+        inside = [char for char in chars if _inside(char, (start, top, end, bottom))]
+        texts.append(extract_text(inside, **text_settings) if inside else "")
+    return texts
 
 
 def _inside(char: dict[str, Any], box: _Box) -> bool:
@@ -127,6 +180,10 @@ def _rows(
     found = False
     for table in tables:
         for raw in table:
+            if isinstance(raw, UnreadableRow):
+                if found:
+                    yield raw
+                continue
             cells = [(cell or "").strip() for cell in raw]
             if not any(cells):
                 continue

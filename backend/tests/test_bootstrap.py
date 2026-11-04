@@ -27,6 +27,7 @@ def test_the_browser_goes_only_to_connectors_that_need_it() -> None:
         "mi_mdhhs",
         "nh_dhhs",
         "oh_medicaid",
+        "ak_dhss",
     }
 
 

@@ -22,14 +22,20 @@ from credentialing.connectors.framework.rows import (
     RowIssues,
     build_records,
 )
-from credentialing.domain.enums import ChangeSignal, EntityKind, ExclusionAction, Outcome
+from credentialing.domain.enums import (
+    AccessPolicy,
+    ChangeSignal,
+    EntityKind,
+    ExclusionAction,
+    Outcome,
+)
 from credentialing.domain.models import (
     ConnectorCapabilities,
     ExclusionRecord,
     PersonName,
     SourceSnapshot,
 )
-from tests.fakes import ScriptedFetcher, capabilities
+from tests.fakes import BrowserOptions, ScriptedFetcher, capabilities
 from tests.synthetic import NOW
 
 pytestmark = pytest.mark.anyio
@@ -357,6 +363,9 @@ async def test_the_crawl_delay_reaches_the_fetcher() -> None:
             change_signal: ChangeSignal,
             crawl_delay: timedelta = timedelta(0),
             entry_url: str | None = None,
+            profile: str | None = None,
+            hide_webdriver: bool = False,
+            challenge_timeout: timedelta | None = None,
         ) -> FetchOutcome:
             delays.append(crawl_delay)
             return await super().fetch(url, previous=previous, change_signal=change_signal)
@@ -611,6 +620,50 @@ async def test_a_blocked_request_is_repeated_in_the_browser_and_the_note_says_so
     assert len(result.records) == 1
 
 
+class _BrowserOnlyConnector(_Connector):
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return CAPABILITIES.model_copy(
+            update={"browser_fallback": True, "access_policy": AccessPolicy.BROWSER}
+        )
+
+
+async def test_a_browser_policy_source_sends_no_plain_request() -> None:
+    http = ScriptedFetcher()  # fails if fetched
+    browser = ScriptedFetcher(_in_browser(_document()))
+
+    result = await _BrowserOnlyConnector(http, browser=browser).fetch(None)
+
+    assert http.requests == []
+    assert browser.requests == [("https://example.test/list.csv", ChangeSignal.CONTENT_HASH)]
+    assert browser.browser_options == [BrowserOptions(CAPABILITIES.source_id, False, None)]
+    assert result.snapshot.outcome is Outcome.COMPLETED
+    assert result.snapshot.note == "browser fallback; 2 rows, 1 records, 1 skipped"
+
+
+async def test_a_browser_policy_source_refused_in_the_browser_keeps_the_browser_note() -> None:
+    refused = FetchFailure(
+        outcome=Outcome.BLOCKED,
+        status=403,
+        note="challenge page not cleared (HTTP 403)",
+        fetched_at=NOW,
+    )
+
+    result = await _BrowserOnlyConnector(ScriptedFetcher(), browser=ScriptedFetcher(refused)).fetch(
+        None
+    )
+
+    assert result.snapshot.outcome is Outcome.BLOCKED
+    assert result.snapshot.note == "challenge page not cleared (HTTP 403)"
+
+
+async def test_a_browser_policy_source_without_a_browser_uses_plain_http() -> None:
+    result = await _BrowserOnlyConnector(ScriptedFetcher(_BLOCKED)).fetch(None)
+
+    assert result.snapshot.outcome is Outcome.BLOCKED
+    assert result.snapshot.note == "challenge page (HTTP 403)"
+
+
 async def test_a_request_blocked_in_the_browser_too_stays_blocked() -> None:
     browser_blocked = FetchFailure(
         outcome=Outcome.BLOCKED,
@@ -778,6 +831,32 @@ async def test_the_browser_opens_the_landing_page_first_only_with_the_warm_up() 
     assert warmed.entry_urls == [CAPABILITIES.source_url]
     assert plain.entry_urls == [None]
     assert http.entry_urls == [None]
+
+
+class _TunedBrowserConnector(_Connector):
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return CAPABILITIES.model_copy(
+            update={
+                "browser_fallback": True,
+                "browser_hide_webdriver": True,
+                "browser_challenge_timeout": timedelta(seconds=150),
+            }
+        )
+
+
+async def test_the_browser_runs_in_the_source_profile_with_its_own_options() -> None:
+    http = ScriptedFetcher(_BLOCKED)
+    tuned = ScriptedFetcher(_in_browser(_document()))
+    plain = ScriptedFetcher(_in_browser(_document()))
+
+    await _TunedBrowserConnector(http, browser=tuned).fetch(None)
+    await _BrowserConnector(ScriptedFetcher(_BLOCKED), browser=plain).fetch(None)
+
+    source_id = CAPABILITIES.source_id
+    assert tuned.browser_options == [BrowserOptions(source_id, True, timedelta(seconds=150))]
+    assert plain.browser_options == [BrowserOptions(source_id, False, None)]
+    assert http.browser_options == [BrowserOptions(None, False, None)]
 
 
 class _ServingTimestampConnector(_Connector):

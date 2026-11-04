@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple
 from uuid import UUID
 
 from credentialing.connectors.framework.http import (
@@ -133,6 +134,14 @@ class ScriptedSession:
         return self._answers.pop(0)
 
 
+class BrowserOptions(NamedTuple):
+    """The browser options one :meth:`ScriptedFetcher.fetch` call received."""
+
+    profile: str | None
+    hide_webdriver: bool
+    challenge_timeout: timedelta | None
+
+
 class ScriptedFetcher:
     """A :class:`~credentialing.connectors.framework.http.SessionFetcher` returning prepared
     outcomes.
@@ -140,7 +149,8 @@ class ScriptedFetcher:
     The outcomes are returned in order and the last one answers every further request (a
     landing page or API answer first, then the file). Without an outcome it is for tests that
     only call ``parse``, and fails if fetched. ``requests`` records each URL and change signal,
-    ``entry_urls`` each request's warm-up page (``None`` when there was none).
+    ``entry_urls`` each request's warm-up page (``None`` when there was none),
+    ``browser_options`` each request's browser options (profile, marker, challenge timeout).
 
     ``session_answers`` answer the requests of the sessions it opens, in order and each once;
     ``session_requests`` records them, ``sessions`` the sessions opened.
@@ -152,6 +162,7 @@ class ScriptedFetcher:
         self.outcomes = list(outcomes)
         self.requests: list[tuple[str, ChangeSignal]] = []
         self.entry_urls: list[str | None] = []
+        self.browser_options: list[BrowserOptions] = []
         self.session_answers = list(session_answers)
         self.session_requests: list[SessionRequest] = []
         self.sessions: list[ScriptedSession] = []
@@ -175,10 +186,14 @@ class ScriptedFetcher:
         change_signal: ChangeSignal,
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
+        profile: str | None = None,
+        hide_webdriver: bool = False,
+        challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         assert self.outcomes, "this fetcher has no scripted outcome"
         self.requests.append((url, change_signal))
         self.entry_urls.append(entry_url)
+        self.browser_options.append(BrowserOptions(profile, hide_webdriver, challenge_timeout))
         return self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
 
 

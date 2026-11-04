@@ -122,12 +122,20 @@ class Fetcher(Protocol):
         change_signal: ChangeSignal,
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
+        profile: str | None = None,
+        hide_webdriver: bool = False,
+        challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         """Download ``url`` unless ``previous`` shows it unchanged, or report the failure.
 
         ``crawl_delay`` is waited before every request sent. ``entry_url`` is a page to open
         first in the same session (the browser fallback's warm-up,
         ``ConnectorCapabilities.browser_warm_up``); a fetcher without sessions ignores it.
+        The browser fallback's own options are ignored by a fetcher without a browser:
+        ``profile`` (a folder of the browser profile kept for one source),
+        ``hide_webdriver`` (``ConnectorCapabilities.browser_hide_webdriver``) and
+        ``challenge_timeout`` (``ConnectorCapabilities.browser_challenge_timeout``, ``None``
+        for the fetcher's default).
         """
         ...
 
@@ -405,6 +413,9 @@ class HttpFetcher:
         change_signal: ChangeSignal,
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
+        profile: str | None = None,
+        hide_webdriver: bool = False,
+        challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         """Fetch ``url`` with the change detection ``change_signal`` names.
 
@@ -416,8 +427,9 @@ class HttpFetcher:
 
         After any GET, a body hashing equal to ``previous`` is reported as unchanged too, for
         servers that ignore conditional requests. ``crawl_delay`` is waited before every
-        request (HEAD, GET and the retry). ``entry_url`` is accepted for the protocol and
-        ignored: plain HTTP keeps no session to warm up, and the base never passes it here.
+        request (HEAD, GET and the retry). ``entry_url``, ``profile``, ``hide_webdriver`` and
+        ``challenge_timeout`` are accepted for the protocol and ignored: plain HTTP keeps no
+        session to warm up and runs no browser, and the base never passes them here.
         """
         started = time.perf_counter()
         fetched_at = self._clock.now()

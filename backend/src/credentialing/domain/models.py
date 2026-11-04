@@ -474,6 +474,15 @@ class ConnectorCapabilities(DomainModel):
     accept it after the page that links it. The browser stays on the landing page until it
     has loaded and the firewall's clearance cookie is set (bounded), dwells a few seconds
     more, and opens the URL with the landing page as its Referer; nothing is clicked."""
+    browser_hide_webdriver: bool = False
+    """In the browser fallback, launch Chrome without its automation marker
+    (``navigator.webdriver`` false, the ``--disable-blink-features=AutomationControlled``
+    argument). Used for sites whose bot manager loops its own non-interactive challenge for a
+    browser that reports the marker (Alaska); everything else stays Chrome's own identity, and
+    no challenge is ever clicked."""
+    browser_challenge_timeout: timedelta | None = None
+    """How long the browser waits for a challenge to clear by itself, when the fetcher's
+    default (45 s) is too short for the site; ``None`` keeps the default."""
     last_modified_is_meaningful: bool = True
     """Whether the source's ``Last-Modified`` header dates its content. When ``False`` the
     header is a serving timestamp (the request time) and is not kept on the snapshot, so it

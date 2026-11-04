@@ -15,6 +15,8 @@ import httpx2
 import pytest
 
 from credentialing.bootstrap import create_http_client
+from credentialing.connectors.ak_dhss.connector import COLUMNS as AK_COLUMNS
+from credentialing.connectors.ak_dhss.connector import AkDhssConnector
 from credentialing.connectors.ca_dhcs.connector import COLUMNS as CA_COLUMNS
 from credentialing.connectors.ca_dhcs.connector import CaDhcsConnector
 from credentialing.connectors.co_hcpf.connector import COLUMNS as CO_COLUMNS
@@ -407,6 +409,16 @@ async def test_oh_linked_workbook_headers() -> None:
     for sheet, columns in (("Individuals", OH_IND_COLUMNS), ("Organizations", OH_ORG_COLUMNS)):
         rows = read_sheet(response.content, sheet=sheet, expected_columns=columns)
         assert set(next(rows)) == set(columns)
+
+
+async def test_ak_linked_pdf_header() -> None:
+    # Cloudflare's managed challenge answered every script request on 2026-11-04, so this is
+    # expected to skip; the connector reads the page and the file in headed Chrome.
+    response = await _linked_file(AkDhssConnector(ScriptedFetcher()))
+    assert response.content.startswith(b"%PDF")
+    first = next(read_pdf_table(response.content, expected_columns=AK_COLUMNS))
+    assert isinstance(first, dict)
+    assert set(first) == set(AK_COLUMNS)
 
 
 async def test_il_page_stamp_count_and_export_configuration() -> None:

@@ -140,6 +140,56 @@ def test_columns_covered_by_a_merged_cell_stay_empty() -> None:
     ]
 
 
+def test_a_row_drawn_as_one_cell_is_split_into_the_columns_by_position() -> None:
+    pages = [
+        [
+            HEADER,
+            ["Testperson", "Avery", "01/02/2020", "Excluded"],
+            ["Sampleton", "Jordan\nLee", "03/04/2021", "Terminated"],
+        ]
+    ]
+    body = build_table_pdf(pages, spanning_rows={(0, 2)})
+    with pdfplumber.open(io.BytesIO(body)) as document:
+        spanning = document.pages[0].extract_tables()[0][2]
+        assert spanning[1:] == [None, None, None]
+        assert spanning[0] is not None
+        assert "Sampleton" in spanning[0]
+
+    assert rows(body)[1] == {
+        "Last Name": "Sampleton",
+        "First Name": "Jordan\nLee",
+        "Exclusion Date": "03/04/2021",
+        "Excluded / Terminated": "Terminated",
+    }
+
+
+def test_a_row_in_one_cell_whose_text_crosses_a_column_is_unreadable() -> None:
+    note = "Sampleville note running across more than one column of the grid"
+    body = build_table_pdf(
+        [[HEADER, ["Testperson", "Avery", "01/02/2020", "Excluded"], [note, "", "", ""]]],
+        spanning_rows={(0, 2)},
+    )
+
+    assert rows(body)[1:] == [
+        UnreadableRow("a row drawn as one cell does not split into the columns")
+    ]
+
+
+def test_a_row_in_one_cell_above_the_header_is_skipped_unread() -> None:
+    body = build_table_pdf(
+        [
+            [
+                ["Sampleville Medicaid notice for the list", "", "", ""],
+                HEADER,
+                ["Testperson", "Avery", "01/02/2020", "Excluded"],
+            ]
+        ],
+        spanning_rows={(0, 0)},
+    )
+
+    assert len(rows(body)) == 1
+
+
 def test_a_table_with_another_column_count_yields_unreadable_rows() -> None:
     body = build_table_pdf(
         [

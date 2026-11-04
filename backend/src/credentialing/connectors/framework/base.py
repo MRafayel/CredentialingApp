@@ -22,7 +22,11 @@ A connector whose capabilities set ``browser_fallback`` and that was given a ``b
 fetcher repeats a request answered ``BLOCKED``, or HTTP 404 (a block some firewalls disguise as
 a missing page), in that browser (``framework/browser.py``); the browser's answer decides, and
 the snapshot note then starts with "browser fallback; ". With ``browser_warm_up`` the browser
-opens ``capabilities.source_url`` first, in the same session.
+opens ``capabilities.source_url`` first, in the same session. Each source has its own browser
+profile; ``browser_hide_webdriver`` and ``browser_challenge_timeout`` adapt the browser to one
+site. A source whose ``access_policy`` is ``BROWSER`` (Alaska: its firewall challenges every
+script request) sends every request straight to the browser, with no plain request first; it
+falls back to plain HTTP only when no browser was given.
 
 A source whose ``Last-Modified`` is a serving timestamp (``last_modified_is_meaningful`` false)
 keeps none on its snapshots.
@@ -51,7 +55,7 @@ from credentialing.connectors.framework.http import (
 )
 from credentialing.connectors.framework.rows import ParsedList
 from credentialing.connectors.framework.snapshots import snapshot_from
-from credentialing.domain.enums import ChangeSignal, Outcome
+from credentialing.domain.enums import AccessPolicy, ChangeSignal, Outcome
 from credentialing.domain.models import (
     ConnectorCapabilities,
     ExclusionRecord,
@@ -294,30 +298,33 @@ class BulkListConnectorBase(ABC):
         Refused means ``BLOCKED`` or HTTP 404: some firewalls (Ohio's CloudFront) answer a
         script with a static 404 page. The browser's answer decides, so a real 404 stays
         ``FAILED`` with both notes. With ``browser_warm_up`` the browser opens the landing page
-        (``source_url``) before ``url``; plain HTTP never gets an entry page.
+        (``source_url``) before ``url``; plain HTTP never gets an entry page. The browser runs
+        in the source's own profile folder (named by ``source_id``), with the source's
+        ``browser_hide_webdriver`` and ``browser_challenge_timeout``.
+
+        A ``BROWSER`` access policy skips the plain request: the source is known to refuse
+        every script request, so sending one each poll would only knock for a refusal.
         """
-        crawl_delay = self.capabilities.crawl_delay
+        capabilities = self.capabilities
+        browser = self._browser if capabilities.browser_fallback else None
+        if browser is not None and capabilities.access_policy is AccessPolicy.BROWSER:
+            return await self._in_browser(browser, url, previous, change_signal)
         result = await self._fetcher.fetch(
-            url, previous=previous, change_signal=change_signal, crawl_delay=crawl_delay
+            url,
+            previous=previous,
+            change_signal=change_signal,
+            crawl_delay=capabilities.crawl_delay,
         )
         if not (
-            self._browser is not None
-            and self.capabilities.browser_fallback
+            browser is not None
             and isinstance(result, FetchFailure)
             and (result.outcome is Outcome.BLOCKED or result.status == 404)
         ):
             return result
-        capabilities = self.capabilities
-        answer = await self._browser.fetch(
-            url,
-            previous=previous,
-            change_signal=change_signal,
-            crawl_delay=crawl_delay,
-            entry_url=capabilities.source_url if capabilities.browser_warm_up else None,
-        )
+        answer = await self._in_browser(browser, url, previous, change_signal)
         logger.info(
             "browser fallback source_id=%s url=%s http=%s browser=%s",
-            self.capabilities.source_id,
+            capabilities.source_id,
             url,
             result.outcome.value,
             answer.outcome.value if isinstance(answer, FetchFailure) else "ok",
@@ -325,6 +332,26 @@ class BulkListConnectorBase(ABC):
         if isinstance(answer, FetchFailure):
             return replace(answer, note=f"{result.note}; browser fallback: {answer.note}")
         return answer
+
+    async def _in_browser(
+        self,
+        browser: Fetcher,
+        url: str,
+        previous: SourceSnapshot | None,
+        change_signal: ChangeSignal,
+    ) -> FetchOutcome:
+        """The request in the browser, with the source's profile and browser options."""
+        capabilities = self.capabilities
+        return await browser.fetch(
+            url,
+            previous=previous,
+            change_signal=change_signal,
+            crawl_delay=capabilities.crawl_delay,
+            entry_url=capabilities.source_url if capabilities.browser_warm_up else None,
+            profile=capabilities.source_id,
+            hide_webdriver=capabilities.browser_hide_webdriver,
+            challenge_timeout=capabilities.browser_challenge_timeout,
+        )
 
     async def download(
         self, location: Located, previous: SourceSnapshot | None, *, change_signal: ChangeSignal

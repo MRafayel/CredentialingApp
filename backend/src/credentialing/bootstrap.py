@@ -24,6 +24,7 @@ from credentialing.application.register_provider import RegisterProvider
 from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
 from credentialing.application.verification_history import VerificationHistory
+from credentialing.connectors.ak_dhss import AkDhssConnector
 from credentialing.connectors.ca_dhcs import CaDhcsConnector
 from credentialing.connectors.co_hcpf import CoHcpfConnector
 from credentialing.connectors.de_dmap import DeDmapConnector
@@ -159,6 +160,7 @@ def build_registry(fetcher: SessionFetcher, browser: Fetcher | None = None) -> C
     registry.register(NhDhhsConnector(fetcher, browser=browser))
     registry.register(OhMedicaidConnector(fetcher, browser=browser))
     registry.register(IlHfsConnector(fetcher))
+    registry.register(AkDhssConnector(fetcher, browser=browser))
     return registry
 
 

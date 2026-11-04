@@ -28,6 +28,7 @@ dist/
 CLAUDE.md
 .claude/
 docs/product-brief.md
+docs/sources/
 
 # Tooling and OS
 .tools/

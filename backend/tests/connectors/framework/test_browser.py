@@ -380,6 +380,9 @@ async def _fetch(
     warm_up_timeout: timedelta = timedelta(seconds=30),
     entry_url: str | None = None,
     profile_dir: Path = Path("profile"),
+    profile: str | None = None,
+    hide_webdriver: bool = False,
+    fetch_challenge_timeout: timedelta | None = None,
 ) -> object:
     return await browser.fetcher(challenge_timeout, warm_up_timeout, profile_dir).fetch(
         _URL,
@@ -387,6 +390,9 @@ async def _fetch(
         change_signal=ChangeSignal.CONTENT_HASH,
         crawl_delay=crawl_delay,
         entry_url=entry_url,
+        profile=profile,
+        hide_webdriver=hide_webdriver,
+        challenge_timeout=fetch_challenge_timeout,
     )
 
 
@@ -426,6 +432,83 @@ async def test_chrome_is_launched_headed_with_its_own_identity_and_downloads() -
             "timeout": 60_000.0,
         }
     ]
+
+
+async def test_a_source_profile_is_its_own_folder_and_hiding_the_marker_adds_one_argument(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    browser = _Browser()
+
+    with caplog.at_level(logging.INFO):
+        await _fetch(browser, profile="ak_dhss", hide_webdriver=True)
+
+    assert browser.chromium.launched == [
+        {
+            "user_data_dir": Path("profile/ak_dhss"),
+            "channel": "chrome",
+            "headless": False,
+            "accept_downloads": True,
+            "downloads_path": Path("profile/ak_dhss/downloads"),
+            "timeout": 60_000.0,
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+    ]
+    assert "profile=ak_dhss hide_webdriver=True" in caplog.text
+
+
+async def test_a_source_profile_keeps_chrome_marker_unless_asked() -> None:
+    browser = _Browser()
+
+    await _fetch(browser, profile="wy_wdh")
+
+    [launched] = browser.chromium.launched
+    assert launched["user_data_dir"] == Path("profile/wy_wdh")
+    assert "args" not in launched
+
+
+@pytest.mark.parametrize("profile", ["", "../outside", "Ak_Dhss", "ak/dhss", "ak dhss"])
+async def test_a_profile_that_is_not_a_plain_name_is_a_programming_error(profile: str) -> None:
+    browser = _Browser()
+
+    with pytest.raises(ValueError, match="not a profile name"):
+        await _fetch(browser, profile=profile)
+    assert browser.chromium.launched == []
+
+
+async def test_a_fetch_challenge_timeout_replaces_the_fetcher_default_for_that_fetch() -> None:
+    browser = _Browser([(403, _CHALLENGE)])
+    fetcher = browser.fetcher(timedelta(seconds=1))
+
+    longer = await fetcher.fetch(
+        _URL,
+        previous=None,
+        change_signal=ChangeSignal.CONTENT_HASH,
+        challenge_timeout=timedelta(seconds=2),
+    )
+    waited = len(browser.sleeps)
+    default = await fetcher.fetch(_URL, previous=None, change_signal=ChangeSignal.CONTENT_HASH)
+
+    assert isinstance(longer, FetchFailure)
+    assert longer.outcome is Outcome.BLOCKED
+    assert isinstance(default, FetchFailure)
+    assert default.outcome is Outcome.BLOCKED
+    assert waited == 4
+    assert len(browser.sleeps) - waited == 2
+
+
+async def test_a_fetch_challenge_timeout_applies_to_the_entry_page_too() -> None:
+    browser = _Browser(routes={_ENTRY_URL: [(403, _CHALLENGE)]})
+
+    result = await _fetch(
+        browser,
+        entry_url=_ENTRY_URL,
+        challenge_timeout=timedelta(seconds=1),
+        fetch_challenge_timeout=timedelta(seconds=3),
+    )
+
+    assert isinstance(result, FetchFailure)
+    assert result.note == "challenge page not cleared on the entry page (HTTP 403)"
+    assert browser.sleeps == [0.5] * 6
 
 
 async def test_a_page_navigating_away_from_its_challenge_is_looked_at_again() -> None:
@@ -870,6 +953,23 @@ async def test_after_any_fetch_the_profile_keeps_only_its_allow_list(
     assert _tree(profile) == _KEPT_TREE
     assert (tmp_path / "outside.sock").exists()
     assert f"profile={profile} removed=10 failed=0" in caplog.text
+
+
+async def test_a_source_profile_is_trimmed_and_the_others_are_left_alone(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    profiles = tmp_path / "profiles"
+    source = _profile(profiles)  # the folder of the source named "profile"
+    sibling = profiles / "wy_wdh" / "Default" / "History"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_bytes(b"made-up")
+
+    with caplog.at_level(logging.INFO):
+        await _fetch(_Browser(), profile_dir=profiles, profile="profile")
+
+    assert _tree(source) == _KEPT_TREE
+    assert sibling.exists()
+    assert f"profile={source} removed=10 failed=0" in caplog.text
 
 
 async def test_a_missing_profile_is_left_alone(

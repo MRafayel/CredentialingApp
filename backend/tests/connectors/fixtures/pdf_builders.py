@@ -32,6 +32,7 @@ def build_table_pdf(
     page_size: tuple[float, float] = (792, 612),
     column_widths: Sequence[float] | None = None,
     open_left_rows: Collection[tuple[int, int]] = (),
+    spanning_rows: Collection[tuple[int, int]] = (),
 ) -> bytes:
     """A PDF with one ruled table per page: ``pages`` → rows → cells.
 
@@ -39,7 +40,9 @@ def build_table_pdf(
     cell is drawn as its own rectangle. Without ``column_widths`` a row's cells share the
     usable width equally, so rows with the same cell count line up. ``title`` is drawn above
     the grid on every page, outside it. ``open_left_rows`` holds ``(page, row)`` positions,
-    counted from 0, whose first cell is drawn without its left rule (as Wyoming does).
+    counted from 0, whose first cell is drawn without its left rule (as Wyoming does);
+    ``spanning_rows`` those drawn as one rectangle across the row, without inner rules, the
+    text still at each cell's position (as Alaska does).
 
     Raises:
         ValueError: A page's rows do not fit on it, or a row has more cells than
@@ -54,6 +57,7 @@ def build_table_pdf(
             height,
             column_widths,
             {row for page, row in open_left_rows if page == index},
+            {row for page, row in spanning_rows if page == index},
         )
         for index, rows in enumerate(pages)
     ]
@@ -67,6 +71,7 @@ def _page_stream(
     height: float,
     column_widths: Sequence[float] | None,
     open_left: Collection[int],
+    spanning: Collection[int],
 ) -> bytes:
     commands = [f"{LINE_WIDTH} w"]
     top = height - MARGIN
@@ -80,12 +85,13 @@ def _page_stream(
         if bottom < MARGIN:
             raise ValueError("the rows do not fit on the page")
         x = MARGIN
-        for position, (cell, cell_width) in enumerate(
-            zip(row, _widths(row, width, column_widths), strict=True)
-        ):
+        widths = _widths(row, width, column_widths)
+        if number in spanning:
+            commands.append(f"{x:.2f} {bottom:.2f} {sum(widths):.2f} {row_height:.2f} re S")
+        for position, (cell, cell_width) in enumerate(zip(row, widths, strict=True)):
             if position == 0 and number in open_left:
                 commands.append(_open_left(x, bottom, cell_width, row_height))
-            else:
+            elif number not in spanning:
                 commands.append(f"{x:.2f} {bottom:.2f} {cell_width:.2f} {row_height:.2f} re S")
             baseline = top - INSET - FONT_SIZE
             for line in cell.split("\n"):

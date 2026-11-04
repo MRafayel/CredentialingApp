@@ -15,6 +15,7 @@ from credentialing.domain.enums import ChangeSignal, Outcome
 from credentialing.domain.models import ConnectorCapabilities
 from credentialing.domain.ports import BulkListConnector
 from tests.connectors.fixtures import (
+    ak_builders,
     builders,
     fixture_bytes,
     il_builders,
@@ -64,6 +65,7 @@ CONNECTOR_FIXTURES: Final[dict[str, Callable[[], bytes]]] = {
     "nh_dhhs": nh_dhhs,
     "oh_medicaid": oh_builders.oh_medicaid,
     "il_hfs": il_builders.il_hfs,
+    "ak_dhss": ak_builders.ak_dhss,
 }
 """Each source's synthetic document: a recorded file, or a workbook built at test time."""
 
@@ -79,6 +81,7 @@ LOCATOR_FIXTURES: Final[dict[str, Callable[[bytes], bytes]]] = {
     "mi_mdhhs": lambda _body: fixture_bytes("mi_mdhhs_landing.html"),
     "oh_medicaid": lambda _body: fixture_bytes("oh_medicaid_landing.html"),
     "il_hfs": lambda _body: il_builders.il_hfs_page(),
+    "ak_dhss": lambda _body: ak_builders.ak_dhss_landing(),
 }
 """For a source whose file URL changes, the landing page or API answer that locates the
 document (given the document, so an API answer can carry its hash)."""

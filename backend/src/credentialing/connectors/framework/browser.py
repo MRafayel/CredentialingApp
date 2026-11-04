@@ -11,7 +11,15 @@ How one fetch works:
 
 1. Launch Chrome headed (headless Chrome is rejected by these firewalls) with a persistent
    profile and Chrome's own identity: no User-Agent override, no stealth, nothing hidden.
-   Downloads are accepted into ``<profile>/downloads``.
+   Downloads are accepted into ``<profile>/downloads``. With a ``profile`` name (the base
+   passes the source id) the profile is that source's own folder under the profile directory,
+   so each site's clearance cookie is kept apart and refreshed by each poll of that source.
+   One exception, chosen per source for that website's specifics
+   (``ConnectorCapabilities.browser_hide_webdriver``, Alaska): Chrome is launched with
+   ``--disable-blink-features=AutomationControlled``, so ``navigator.webdriver`` is false.
+   Alaska's Cloudflare loops its own non-interactive challenge for a browser that reports
+   the automation marker and clears it by itself without; the User-Agent, headers and
+   everything else stay Chrome's own (a User-Agent override made Cloudflare refuse).
 2. With an ``entry_url`` (``ConnectorCapabilities.browser_warm_up``: Kansas's Cloudflare
    refuses a direct file request but, in the survey, served it after the page that links it),
    open that page first and wait for its challenge to clear the same way; one that stays a
@@ -24,7 +32,9 @@ How one fetch works:
    opened with the entry page as its Referer, as following the page's link would. The page is
    only loaded and its cookies only looked at, never fetched, read, set or acted on. This is
    one extra page load per poll that reaches the browser.
-3. Navigate to the URL and wait, polling until ``challenge_timeout``, while the page is a
+3. Navigate to the URL and wait, polling until ``challenge_timeout`` (the fetcher's, or the
+   one a fetch passes: ``ConnectorCapabilities.browser_challenge_timeout``, for a site whose
+   challenge can take longer; it applies to the entry page too), while the page is a
    challenge (:func:`is_challenge`) and no download has arrived. Nothing is ever clicked, typed
    or submitted: a challenge that does not clear by itself (an interactive checkbox) is
    ``BLOCKED``.
@@ -44,8 +54,8 @@ How one fetch works:
 Change detection is by content hash only (no conditional requests). Every failure is an
 outcome, never raised: a launch failure (Chrome missing, Playwright error) is ``FAILED`` with
 "browser unavailable"; a refused answer after the challenge is ``BLOCKED``; a navigation that
-was aborted for a download that never arrived is ``FAILED``. Page content and downloaded file
-names are never logged.
+was aborted for a download that never arrived is ``FAILED``. Page content, cookie values and
+downloaded file names are never logged.
 
 What the profile keeps: after every fetch, success or failure (also when Chrome did not
 start), once the browser is closed, everything in the profile is deleted except
@@ -67,6 +77,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import partial
 from html import unescape
 from pathlib import Path
 from typing import Final
@@ -160,6 +171,11 @@ module docstring says why. Everything else in the profile is deleted once the br
 PROFILE_DOWNLOADS: Final = "downloads"
 """The profile's download folder: kept, emptied."""
 
+HIDE_WEBDRIVER_ARGS: Final = ("--disable-blink-features=AutomationControlled",)
+"""Chrome's launch argument that leaves ``navigator.webdriver`` false (``hide_webdriver``)."""
+
+_PROFILE_NAME: Final = re.compile(r"^[a-z0-9_]+$")
+
 _BLOCKING_STATUSES: Final = frozenset({401, 403, 429, 503})
 _TITLE: Final = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _DOWNLOAD_ERRORS: Final = ("download is starting", "net::err_aborted")
@@ -235,6 +251,20 @@ class _Body:
     challenge_note: str
 
 
+@dataclass(frozen=True, slots=True)
+class _Launch:
+    """How one fetch runs the browser: its profile folder, marker and challenge wait."""
+
+    profile_dir: Path
+    hide_webdriver: bool
+    challenge_polls: int
+
+
+def _polls(timeout: timedelta) -> int:
+    """The pauses of :data:`POLL_SECONDS` that make up ``timeout`` (at least one)."""
+    return max(1, int(timeout.total_seconds() / POLL_SECONDS))
+
+
 class ChromeFetcher:
     """Implements :class:`~credentialing.connectors.framework.http.Fetcher` in headed Chrome.
 
@@ -257,8 +287,8 @@ class ChromeFetcher:
         self._clock = clock
         self._profile_dir = profile_dir
         self._channel = channel
-        self._challenge_polls = max(1, int(challenge_timeout.total_seconds() / POLL_SECONDS))
-        self._warm_up_polls = max(1, int(warm_up_timeout.total_seconds() / POLL_SECONDS))
+        self._challenge_polls = _polls(challenge_timeout)
+        self._warm_up_polls = _polls(warm_up_timeout)
         self._timeout_ms = navigation_timeout.total_seconds() * 1000
         self._timeout = navigation_timeout.total_seconds()
         self._max_body_bytes = max_body_bytes
@@ -274,22 +304,43 @@ class ChromeFetcher:
         change_signal: ChangeSignal,
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
+        profile: str | None = None,
+        hide_webdriver: bool = False,
+        challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         """Read ``url`` in the browser after any challenge clears; unchanged by content hash.
 
         ``crawl_delay`` is waited once, before the browser starts, also when ``entry_url``
         (a page opened first in the same session, skipped when it is ``url``) adds a page load.
+        ``profile`` names the profile's folder under the profile directory (the directory
+        itself without one); ``hide_webdriver`` launches Chrome without its automation marker;
+        ``challenge_timeout`` replaces the fetcher's own for this fetch.
+
+        Raises:
+            ValueError: ``profile`` is not a plain name (lowercase letters, digits, ``_``).
         """
+        if profile is not None and not _PROFILE_NAME.match(profile):
+            raise ValueError(f"not a profile name: {profile!r}")
+        launch = _Launch(
+            profile_dir=self._profile_dir / profile if profile else self._profile_dir,
+            hide_webdriver=hide_webdriver,
+            challenge_polls=(
+                self._challenge_polls if challenge_timeout is None else _polls(challenge_timeout)
+            ),
+        )
         async with self._lock:
             started = time.perf_counter()
             fetched_at = self._clock.now()
             if crawl_delay > timedelta(0):
                 await self._sleep(crawl_delay.total_seconds())
             warm_up = entry_url if entry_url is not None and entry_url != url else None
-            result = await self._run(url, warm_up, previous, fetched_at)
+            result = await self._run(url, warm_up, previous, fetched_at, launch)
         logger.info(
-            "browser fetch url=%s signal=%s result=%s status=%s bytes=%s duration_ms=%d",
+            "browser fetch url=%s profile=%s hide_webdriver=%s signal=%s result=%s status=%s "
+            "bytes=%s duration_ms=%d",
             url,
+            profile or "-",
+            hide_webdriver,
             change_signal.value,
             _describe(result),
             result.status,
@@ -304,6 +355,7 @@ class ChromeFetcher:
         entry_url: str | None,
         previous: SourceSnapshot | None,
         fetched_at: datetime,
+        launch: _Launch,
     ) -> FetchOutcome:
         def failure(outcome: Outcome, note: str) -> FetchFailure:
             return FetchFailure(outcome=outcome, status=None, note=note, fetched_at=fetched_at)
@@ -312,22 +364,30 @@ class ChromeFetcher:
             async with AsyncExitStack() as stack:
                 try:
                     playwright = await stack.enter_async_context(self._playwright())
-                    context = await playwright.chromium.launch_persistent_context(
-                        user_data_dir=self._profile_dir,
+                    open_profile = partial(
+                        playwright.chromium.launch_persistent_context,
+                        user_data_dir=launch.profile_dir,
                         channel=self._channel,
                         headless=False,
                         accept_downloads=True,
-                        downloads_path=self._profile_dir / "downloads",
+                        downloads_path=launch.profile_dir / PROFILE_DOWNLOADS,
                         timeout=self._timeout_ms,
+                    )
+                    context = await (
+                        open_profile(args=list(HIDE_WEBDRIVER_ARGS))
+                        if launch.hide_webdriver
+                        else open_profile()
                     )
                 except Exception as error:  # any launch failure is this fetch's FAILED outcome
                     return failure(Outcome.FAILED, f"browser unavailable: {type(error).__name__}")
                 stack.push_async_callback(_close, context)
-                return await self._read(context, url, entry_url, previous, fetched_at)
+                return await self._read(
+                    context, url, entry_url, previous, fetched_at, launch.challenge_polls
+                )
         except Exception as error:  # a browser failing mid-fetch is FAILED, never raised
             return failure(Outcome.FAILED, f"browser fetch failed: {type(error).__name__}")
         finally:
-            await _trim(self._profile_dir)
+            await _trim(launch.profile_dir)
 
     async def _read(
         self,
@@ -336,6 +396,7 @@ class ChromeFetcher:
         entry_url: str | None,
         previous: SourceSnapshot | None,
         fetched_at: datetime,
+        polls: int,
     ) -> FetchOutcome:
         page = context.pages[0] if context.pages else await context.new_page()
         page.set_default_timeout(self._timeout_ms)
@@ -353,7 +414,7 @@ class ChromeFetcher:
         page.on("download", on_download)
         if entry_url is not None:
             await page.goto(entry_url, wait_until="domcontentloaded", timeout=self._timeout_ms)
-            if not await self._settle(page, statuses, downloads, read_page=True):
+            if not await self._settle(page, statuses, downloads, polls, read_page=True):
                 return _not_cleared(statuses, fetched_at, where=" on the entry page")
             await self._dwell(context, page, entry_url)
             for download in downloads:  # the entry page is not the document
@@ -369,7 +430,7 @@ class ChromeFetcher:
                 raise
             # A navigation that became a download left no page to read (about:blank), so
             # the in-page fetch is never tried: only the download can carry the document.
-            if not await self._settle(page, statuses, downloads, read_page=False):
+            if not await self._settle(page, statuses, downloads, polls, read_page=False):
                 return FetchFailure(
                     outcome=Outcome.FAILED,
                     status=None,
@@ -377,7 +438,7 @@ class ChromeFetcher:
                     fetched_at=fetched_at,
                 )
         else:
-            if not await self._settle(page, statuses, downloads, read_page=True):
+            if not await self._settle(page, statuses, downloads, polls, read_page=True):
                 return _not_cleared(statuses, fetched_at)
         if downloads:
             body = await self._downloaded(downloads[0], url, fetched_at)
@@ -414,11 +475,17 @@ class ChromeFetcher:
         await self._sleep(WARM_UP_SECONDS)
 
     async def _settle(
-        self, page: Page, statuses: list[int], downloads: list[Download], *, read_page: bool
+        self,
+        page: Page,
+        statuses: list[int],
+        downloads: list[Download],
+        polls: int,
+        *,
+        read_page: bool,
     ) -> bool:
         """Wait, never acting on the page, until a download arrives or (with ``read_page``)
-        the page is no longer a challenge; ``False`` when time is up."""
-        for poll in range(self._challenge_polls + 1):
+        the page is no longer a challenge; ``False`` after ``polls`` pauses."""
+        for poll in range(polls + 1):
             if downloads:
                 return True
             if read_page:
@@ -429,7 +496,7 @@ class ChromeFetcher:
                 status = statuses[-1] if statuses else None
                 if html is not None and not is_challenge(status=status, url=page.url, html=html):
                     return True
-            if poll < self._challenge_polls:
+            if poll < polls:
                 await self._sleep(POLL_SECONDS)
         return False
 
