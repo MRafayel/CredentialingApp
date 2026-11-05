@@ -364,7 +364,7 @@ async def test_the_crawl_delay_reaches_the_fetcher() -> None:
             crawl_delay: timedelta = timedelta(0),
             entry_url: str | None = None,
             profile: str | None = None,
-            hide_webdriver: bool = False,
+            webdriver_disabled: bool = False,
             challenge_timeout: timedelta | None = None,
         ) -> FetchOutcome:
             delays.append(crawl_delay)
@@ -839,7 +839,7 @@ class _TunedBrowserConnector(_Connector):
         return CAPABILITIES.model_copy(
             update={
                 "browser_fallback": True,
-                "browser_hide_webdriver": True,
+                "browser_webdriver_disabled": True,
                 "browser_challenge_timeout": timedelta(seconds=150),
             }
         )

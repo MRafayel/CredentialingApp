@@ -15,7 +15,7 @@ How one fetch works:
    passes the source id) the profile is that source's own folder under the profile directory,
    so each site's clearance cookie is kept apart and refreshed by each poll of that source.
    One exception, chosen per source for that website's specifics
-   (``ConnectorCapabilities.browser_hide_webdriver``, Alaska): Chrome is launched with
+   (``ConnectorCapabilities.browser_webdriver_disabled``, Alaska): Chrome is launched with
    ``--disable-blink-features=AutomationControlled``, so ``navigator.webdriver`` is false.
    Alaska's Cloudflare loops its own non-interactive challenge for a browser that reports
    the automation marker and clears it by itself without; the User-Agent, headers and
@@ -171,8 +171,8 @@ module docstring says why. Everything else in the profile is deleted once the br
 PROFILE_DOWNLOADS: Final = "downloads"
 """The profile's download folder: kept, emptied."""
 
-HIDE_WEBDRIVER_ARGS: Final = ("--disable-blink-features=AutomationControlled",)
-"""Chrome's launch argument that leaves ``navigator.webdriver`` false (``hide_webdriver``)."""
+WEBDRIVER_DISABLED_ARGS: Final = ("--disable-blink-features=AutomationControlled",)
+"""Chrome's launch argument that leaves ``navigator.webdriver`` false (``webdriver_disabled``)."""
 
 _PROFILE_NAME: Final = re.compile(r"^[a-z0-9_]+$")
 
@@ -256,7 +256,7 @@ class _Launch:
     """How one fetch runs the browser: its profile folder, marker and challenge wait."""
 
     profile_dir: Path
-    hide_webdriver: bool
+    webdriver_disabled: bool
     challenge_polls: int
 
 
@@ -305,7 +305,7 @@ class ChromeFetcher:
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
         profile: str | None = None,
-        hide_webdriver: bool = False,
+        webdriver_disabled: bool = False,
         challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         """Read ``url`` in the browser after any challenge clears; unchanged by content hash.
@@ -313,7 +313,7 @@ class ChromeFetcher:
         ``crawl_delay`` is waited once, before the browser starts, also when ``entry_url``
         (a page opened first in the same session, skipped when it is ``url``) adds a page load.
         ``profile`` names the profile's folder under the profile directory (the directory
-        itself without one); ``hide_webdriver`` launches Chrome without its automation marker;
+        itself without one); ``webdriver_disabled`` launches Chrome without its automation marker;
         ``challenge_timeout`` replaces the fetcher's own for this fetch.
 
         Raises:
@@ -323,7 +323,7 @@ class ChromeFetcher:
             raise ValueError(f"not a profile name: {profile!r}")
         launch = _Launch(
             profile_dir=self._profile_dir / profile if profile else self._profile_dir,
-            hide_webdriver=hide_webdriver,
+            webdriver_disabled=webdriver_disabled,
             challenge_polls=(
                 self._challenge_polls if challenge_timeout is None else _polls(challenge_timeout)
             ),
@@ -336,11 +336,11 @@ class ChromeFetcher:
             warm_up = entry_url if entry_url is not None and entry_url != url else None
             result = await self._run(url, warm_up, previous, fetched_at, launch)
         logger.info(
-            "browser fetch url=%s profile=%s hide_webdriver=%s signal=%s result=%s status=%s "
+            "browser fetch url=%s profile=%s webdriver_disabled=%s signal=%s result=%s status=%s "
             "bytes=%s duration_ms=%d",
             url,
             profile or "-",
-            hide_webdriver,
+            webdriver_disabled,
             change_signal.value,
             _describe(result),
             result.status,
@@ -374,8 +374,8 @@ class ChromeFetcher:
                         timeout=self._timeout_ms,
                     )
                     context = await (
-                        open_profile(args=list(HIDE_WEBDRIVER_ARGS))
-                        if launch.hide_webdriver
+                        open_profile(args=list(WEBDRIVER_DISABLED_ARGS))
+                        if launch.webdriver_disabled
                         else open_profile()
                     )
                 except Exception as error:  # any launch failure is this fetch's FAILED outcome

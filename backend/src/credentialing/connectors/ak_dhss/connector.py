@@ -14,7 +14,7 @@ Source facts (observed 2026-11-04):
   knock for a 403 each week; owner, 2026-11-04): the landing page first, then the file with
   it as Referer (``browser_warm_up``).
   Trials of 2026-11-04: Chrome reporting ``navigator.webdriver`` loops the challenge and stays
-  ``BLOCKED``; launched without its automation marker (``browser_hide_webdriver``) a blank
+  ``BLOCKED``; launched without its automation marker (``browser_webdriver_disabled``) a blank
   profile cleared in 3 s (once in 111 s, hence a 150 s challenge wait), and a kept profile
   with the clearance cookie gets the page at once. A User-Agent override makes Cloudflare
   refuse, so Chrome's own identity stays. Nothing is ever clicked.
@@ -129,7 +129,7 @@ CAPABILITIES: Final = ConnectorCapabilities(
     crawl_delay=timedelta(seconds=10),
     browser_fallback=True,
     browser_warm_up=True,
-    browser_hide_webdriver=True,
+    browser_webdriver_disabled=True,
     browser_challenge_timeout=timedelta(seconds=150),
 )
 

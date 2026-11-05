@@ -23,7 +23,7 @@ fetcher repeats a request answered ``BLOCKED``, or HTTP 404 (a block some firewa
 a missing page), in that browser (``framework/browser.py``); the browser's answer decides, and
 the snapshot note then starts with "browser fallback; ". With ``browser_warm_up`` the browser
 opens ``capabilities.source_url`` first, in the same session. Each source has its own browser
-profile; ``browser_hide_webdriver`` and ``browser_challenge_timeout`` adapt the browser to one
+profile; ``browser_webdriver_disabled`` and ``browser_challenge_timeout`` adapt the browser to one
 site. A source whose ``access_policy`` is ``BROWSER`` (Alaska: its firewall challenges every
 script request) sends every request straight to the browser, with no plain request first; it
 falls back to plain HTTP only when no browser was given.
@@ -300,7 +300,7 @@ class BulkListConnectorBase(ABC):
         ``FAILED`` with both notes. With ``browser_warm_up`` the browser opens the landing page
         (``source_url``) before ``url``; plain HTTP never gets an entry page. The browser runs
         in the source's own profile folder (named by ``source_id``), with the source's
-        ``browser_hide_webdriver`` and ``browser_challenge_timeout``.
+        ``browser_webdriver_disabled`` and ``browser_challenge_timeout``.
 
         A ``BROWSER`` access policy skips the plain request: the source is known to refuse
         every script request, so sending one each poll would only knock for a refusal.
@@ -349,7 +349,7 @@ class BulkListConnectorBase(ABC):
             crawl_delay=capabilities.crawl_delay,
             entry_url=capabilities.source_url if capabilities.browser_warm_up else None,
             profile=capabilities.source_id,
-            hide_webdriver=capabilities.browser_hide_webdriver,
+            webdriver_disabled=capabilities.browser_webdriver_disabled,
             challenge_timeout=capabilities.browser_challenge_timeout,
         )
 

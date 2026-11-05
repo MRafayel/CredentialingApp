@@ -123,7 +123,7 @@ class Fetcher(Protocol):
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
         profile: str | None = None,
-        hide_webdriver: bool = False,
+        webdriver_disabled: bool = False,
         challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         """Download ``url`` unless ``previous`` shows it unchanged, or report the failure.
@@ -133,7 +133,7 @@ class Fetcher(Protocol):
         ``ConnectorCapabilities.browser_warm_up``); a fetcher without sessions ignores it.
         The browser fallback's own options are ignored by a fetcher without a browser:
         ``profile`` (a folder of the browser profile kept for one source),
-        ``hide_webdriver`` (``ConnectorCapabilities.browser_hide_webdriver``) and
+        ``webdriver_disabled`` (``ConnectorCapabilities.browser_webdriver_disabled``) and
         ``challenge_timeout`` (``ConnectorCapabilities.browser_challenge_timeout``, ``None``
         for the fetcher's default).
         """
@@ -414,7 +414,7 @@ class HttpFetcher:
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
         profile: str | None = None,
-        hide_webdriver: bool = False,
+        webdriver_disabled: bool = False,
         challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         """Fetch ``url`` with the change detection ``change_signal`` names.
@@ -427,7 +427,7 @@ class HttpFetcher:
 
         After any GET, a body hashing equal to ``previous`` is reported as unchanged too, for
         servers that ignore conditional requests. ``crawl_delay`` is waited before every
-        request (HEAD, GET and the retry). ``entry_url``, ``profile``, ``hide_webdriver`` and
+        request (HEAD, GET and the retry). ``entry_url``, ``profile``, ``webdriver_disabled`` and
         ``challenge_timeout`` are accepted for the protocol and ignored: plain HTTP keeps no
         session to warm up and runs no browser, and the base never passes them here.
         """

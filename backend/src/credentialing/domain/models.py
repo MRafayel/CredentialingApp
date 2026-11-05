@@ -474,7 +474,7 @@ class ConnectorCapabilities(DomainModel):
     accept it after the page that links it. The browser stays on the landing page until it
     has loaded and the firewall's clearance cookie is set (bounded), dwells a few seconds
     more, and opens the URL with the landing page as its Referer; nothing is clicked."""
-    browser_hide_webdriver: bool = False
+    browser_webdriver_disabled: bool = False
     """In the browser fallback, launch Chrome without its automation marker
     (``navigator.webdriver`` false, the ``--disable-blink-features=AutomationControlled``
     argument). Used for sites whose bot manager loops its own non-interactive challenge for a

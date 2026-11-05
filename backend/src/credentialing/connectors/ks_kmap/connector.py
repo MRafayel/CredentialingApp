@@ -53,6 +53,14 @@ Source facts (survey of 2026-10-16 to 2026-10-24, re-checked 2026-11-02):
   45 s). So a blank profile is not enough: of the three runs that day, only the one with
   ``navigator.webdriver`` false was served the file. The 213 records of 08:30 stay current;
   the next poll is due 2026-11-10.
+- Owner decision 2026-11-04 (after Alaska proved the same thing on 2026-11-04): Kansas is the
+  second source for which Chrome is launched without its automation marker
+  (``browser_webdriver_disabled``, a per-source option chosen for this website's specifics), with
+  150 s for a challenge to clear (``browser_challenge_timeout``); everything else stays
+  Chrome's own identity, nothing is clicked, the source's own profile folder keeps the
+  clearance cookie between weekly polls. Since the same day the poll goes straight to the
+  browser (``access_policy`` BROWSER): the plain request carried no cookies and was refused
+  with the challenge every week, a knock on their server for nothing.
 - The xlsx is served ``inline`` with a file name carrying the upload time ("Termination list
   10212026..._202610220822197228.xlsx"), ``Cache-Control: public, max-age=30``, no ETag and a
   ``Last-Modified`` equal to the request time, so it says nothing: change signal
@@ -163,7 +171,7 @@ CAPABILITIES: Final = ConnectorCapabilities(
     source_id="ks_kmap",
     credential_type=CredentialType.EXCLUSION,
     jurisdictions=frozenset({_STATE}),
-    access_policy=AccessPolicy.HTTP,
+    access_policy=AccessPolicy.BROWSER,
     change_signal=ChangeSignal.CONTENT_HASH,
     method=VerificationMethod.BULK_DATASET,
     poll_interval=timedelta(days=7),
@@ -174,6 +182,8 @@ CAPABILITIES: Final = ConnectorCapabilities(
     crawl_delay=timedelta(seconds=10),
     browser_fallback=True,
     browser_warm_up=True,
+    browser_webdriver_disabled=True,
+    browser_challenge_timeout=timedelta(seconds=150),
     last_modified_is_meaningful=False,
 )
 

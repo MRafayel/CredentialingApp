@@ -138,7 +138,7 @@ class BrowserOptions(NamedTuple):
     """The browser options one :meth:`ScriptedFetcher.fetch` call received."""
 
     profile: str | None
-    hide_webdriver: bool
+    webdriver_disabled: bool
     challenge_timeout: timedelta | None
 
 
@@ -187,13 +187,13 @@ class ScriptedFetcher:
         crawl_delay: timedelta = timedelta(0),
         entry_url: str | None = None,
         profile: str | None = None,
-        hide_webdriver: bool = False,
+        webdriver_disabled: bool = False,
         challenge_timeout: timedelta | None = None,
     ) -> FetchOutcome:
         assert self.outcomes, "this fetcher has no scripted outcome"
         self.requests.append((url, change_signal))
         self.entry_urls.append(entry_url)
-        self.browser_options.append(BrowserOptions(profile, hide_webdriver, challenge_timeout))
+        self.browser_options.append(BrowserOptions(profile, webdriver_disabled, challenge_timeout))
         return self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
 
 

@@ -381,7 +381,7 @@ async def _fetch(
     entry_url: str | None = None,
     profile_dir: Path = Path("profile"),
     profile: str | None = None,
-    hide_webdriver: bool = False,
+    webdriver_disabled: bool = False,
     fetch_challenge_timeout: timedelta | None = None,
 ) -> object:
     return await browser.fetcher(challenge_timeout, warm_up_timeout, profile_dir).fetch(
@@ -391,7 +391,7 @@ async def _fetch(
         crawl_delay=crawl_delay,
         entry_url=entry_url,
         profile=profile,
-        hide_webdriver=hide_webdriver,
+        webdriver_disabled=webdriver_disabled,
         challenge_timeout=fetch_challenge_timeout,
     )
 
@@ -440,7 +440,7 @@ async def test_a_source_profile_is_its_own_folder_and_hiding_the_marker_adds_one
     browser = _Browser()
 
     with caplog.at_level(logging.INFO):
-        await _fetch(browser, profile="ak_dhss", hide_webdriver=True)
+        await _fetch(browser, profile="ak_dhss", webdriver_disabled=True)
 
     assert browser.chromium.launched == [
         {
@@ -453,7 +453,7 @@ async def test_a_source_profile_is_its_own_folder_and_hiding_the_marker_adds_one
             "args": ["--disable-blink-features=AutomationControlled"],
         }
     ]
-    assert "profile=ak_dhss hide_webdriver=True" in caplog.text
+    assert "profile=ak_dhss webdriver_disabled=True" in caplog.text
 
 
 async def test_a_source_profile_keeps_chrome_marker_unless_asked() -> None:

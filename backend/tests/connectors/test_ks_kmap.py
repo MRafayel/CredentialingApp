@@ -1,5 +1,5 @@
 import hashlib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -15,7 +15,13 @@ from credentialing.connectors.ks_kmap.connector import (
     parse_party,
     split_business_names,
 )
-from credentialing.domain.enums import ChangeSignal, EntityKind, ExclusionAction, Outcome
+from credentialing.domain.enums import (
+    AccessPolicy,
+    ChangeSignal,
+    EntityKind,
+    ExclusionAction,
+    Outcome,
+)
 from credentialing.domain.models import ExclusionRecord, PersonName, SourceSnapshot
 from tests.connectors.fixtures import ks_builders
 from tests.connectors.fixtures.builders import NPI_A, NPI_B, NPI_C, NPI_D, NPI_E, workbook
@@ -214,8 +220,11 @@ def test_capabilities_poll_a_stable_file_slowly_with_the_browser_fallback() -> N
     assert CAPABILITIES.source_url == "https://www.kdhe.ks.gov/172/Medicaid"
     assert CAPABILITIES.crawl_delay.total_seconds() == 10
     assert CAPABILITIES.poll_interval.days == 7
+    assert CAPABILITIES.access_policy is AccessPolicy.BROWSER
     assert CAPABILITIES.browser_fallback is True
     assert CAPABILITIES.browser_warm_up is True
+    assert CAPABILITIES.browser_webdriver_disabled is True
+    assert CAPABILITIES.browser_challenge_timeout == timedelta(seconds=150)
     assert CAPABILITIES.last_modified_is_meaningful is False
     assert CAPABILITIES.provider_type_fields == ("Provider Type:",)
     assert KsKmapConnector(ScriptedFetcher(), browser=ScriptedFetcher()).uses_browser
@@ -244,15 +253,13 @@ _CHALLENGE = FetchFailure(
 
 
 @pytest.mark.anyio
-async def test_a_file_served_to_a_script_needs_no_browser() -> None:
+async def test_a_file_served_to_a_script_needs_no_browser_when_none_is_given() -> None:
     http = ScriptedFetcher(_document(ks_builders.ks_kmap(), in_browser=False))
-    browser = ScriptedFetcher()
 
-    result = await KsKmapConnector(http, browser=browser).fetch(None)
+    result = await KsKmapConnector(http).fetch(None)
 
     assert http.requests == [(KsKmapConnector.download_url, ChangeSignal.CONTENT_HASH)]
     assert http.entry_urls == [None]
-    assert browser.requests == []
     assert result.snapshot.outcome is Outcome.COMPLETED
     assert result.snapshot.source_url == KsKmapConnector.download_url
     assert result.records is not None
@@ -260,11 +267,13 @@ async def test_a_file_served_to_a_script_needs_no_browser() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_cloudflare_challenge_is_repeated_in_the_browser() -> None:
+async def test_the_file_goes_straight_to_the_browser_without_a_plain_request() -> None:
+    http = ScriptedFetcher()  # fails if fetched
     browser = ScriptedFetcher(_document(ks_builders.ks_kmap(), in_browser=True))
 
-    result = await KsKmapConnector(ScriptedFetcher(_CHALLENGE), browser=browser).fetch(None)
+    result = await KsKmapConnector(http, browser=browser).fetch(None)
 
+    assert http.requests == []
     assert browser.requests == [(KsKmapConnector.download_url, ChangeSignal.CONTENT_HASH)]
     assert browser.entry_urls == ["https://www.kdhe.ks.gov/172/Medicaid"]
     assert result.snapshot.outcome is Outcome.COMPLETED
@@ -296,14 +305,13 @@ async def test_a_block_in_the_browser_stays_blocked() -> None:
         fetched_at=NOW,
     )
 
-    result = await KsKmapConnector(
-        ScriptedFetcher(_CHALLENGE), browser=ScriptedFetcher(attention)
-    ).fetch(None)
+    http = ScriptedFetcher()  # fails if fetched: a browser-policy source sends no plain request
 
+    result = await KsKmapConnector(http, browser=ScriptedFetcher(attention)).fetch(None)
+
+    assert http.requests == []
     assert result.snapshot.outcome is Outcome.BLOCKED
-    assert result.snapshot.note == (
-        "challenge page (HTTP 403); browser fallback: challenge page not cleared (HTTP 403)"
-    )
+    assert result.snapshot.note == "challenge page not cleared (HTTP 403)"
     assert result.records is None
 
 

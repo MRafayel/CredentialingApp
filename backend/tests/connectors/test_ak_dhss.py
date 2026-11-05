@@ -231,7 +231,7 @@ def test_capabilities_discover_the_link_through_the_tuned_browser() -> None:
     assert CAPABILITIES.provider_type_fields == ("PROVIDER TYPE",)
     assert CAPABILITIES.browser_fallback is True
     assert CAPABILITIES.browser_warm_up is True
-    assert CAPABILITIES.browser_hide_webdriver is True
+    assert CAPABILITIES.browser_webdriver_disabled is True
     assert CAPABILITIES.browser_challenge_timeout == timedelta(seconds=150)
     assert AkDhssConnector(ScriptedFetcher(), browser=ScriptedFetcher()).uses_browser
 
