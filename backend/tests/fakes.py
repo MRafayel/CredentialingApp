@@ -1,16 +1,23 @@
 """In-memory implementations of the domain ports, for fast tests of use cases and the API."""
 
+import asyncio
+import hashlib
 import re
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import NamedTuple
 from uuid import UUID
 
 from credentialing.connectors.framework.http import (
+    FetchedFile,
     FetchFailure,
     FetchOutcome,
+    FileOutcome,
+    NotModified,
     Response,
     Session,
 )
@@ -18,13 +25,18 @@ from credentialing.domain.enums import (
     AccessPolicy,
     ChangeSignal,
     CredentialType,
+    DatasetLoadMode,
+    NpiStatus,
     Outcome,
     VerificationMethod,
 )
+from credentialing.domain.errors import DatasetShrankError
 from credentialing.domain.models import (
     ConnectorCapabilities,
+    DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    NpiRecord,
     Provider,
     SnapshotDiff,
     SourceSnapshot,
@@ -37,6 +49,7 @@ from credentialing.domain.policies import (
     pair_rewritten_rows,
     party_key,
 )
+from credentialing.domain.ports import Dataset, DatasetFetch
 from credentialing.domain.types import Npi, SourceId, StateCode
 
 _WORDS = re.compile(r"[^\W_]+")
@@ -134,6 +147,23 @@ class ScriptedSession:
         return self._answers.pop(0)
 
 
+FILE_FETCHED_AT = datetime(2026, 1, 15, 12, 1, tzinfo=UTC)
+"""When every scripted file download happens."""
+
+FILE_LAST_MODIFIED = datetime(2026, 1, 14, 3, 0, tzinfo=UTC)
+"""The ``Last-Modified`` of every scripted file."""
+
+
+@dataclass(frozen=True, slots=True)
+class FileRequest:
+    """One file download a scripted fetcher received."""
+
+    url: str
+    change_signal: ChangeSignal
+    destination: Path
+    crawl_delay: timedelta
+
+
 class BrowserOptions(NamedTuple):
     """The browser options one :meth:`ScriptedFetcher.fetch` call received."""
 
@@ -154,12 +184,21 @@ class ScriptedFetcher:
 
     ``session_answers`` answer the requests of the sessions it opens, in order and each once;
     ``session_requests`` records them, ``sessions`` the sessions opened.
+
+    ``files`` answer :meth:`download` in order, the last one every further download: bytes
+    are written to the destination and returned as a :class:`FetchedFile`; ``downloads``
+    records each request.
     """
 
     def __init__(
-        self, *outcomes: FetchOutcome, session_answers: Sequence[Response | FetchFailure] = ()
+        self,
+        *outcomes: FetchOutcome,
+        session_answers: Sequence[Response | FetchFailure] = (),
+        files: Sequence[bytes | NotModified | FetchFailure] = (),
     ) -> None:
         self.outcomes = list(outcomes)
+        self.files = list(files)
+        self.downloads: list[FileRequest] = []
         self.requests: list[tuple[str, ChangeSignal]] = []
         self.entry_urls: list[str | None] = []
         self.browser_options: list[BrowserOptions] = []
@@ -196,6 +235,38 @@ class ScriptedFetcher:
         self.browser_options.append(BrowserOptions(profile, webdriver_disabled, challenge_timeout))
         return self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
 
+    async def download(
+        self,
+        url: str,
+        *,
+        destination: Path,
+        previous: SourceSnapshot | None,
+        change_signal: ChangeSignal,
+        crawl_delay: timedelta = timedelta(0),
+    ) -> FileOutcome:
+        assert self.files, "this fetcher has no scripted file"
+        self.downloads.append(FileRequest(url, change_signal, destination, crawl_delay))
+        answer = self.files.pop(0) if len(self.files) > 1 else self.files[0]
+        if not isinstance(answer, bytes):
+            return answer
+        await asyncio.to_thread(_write, destination, answer)
+        return FetchedFile(
+            path=destination,
+            content_hash=hashlib.sha256(answer).hexdigest(),
+            etag='"file-v1"',
+            last_modified=FILE_LAST_MODIFIED,
+            content_type="application/zip",
+            final_url=url,
+            byte_size=len(answer),
+            fetched_at=FILE_FETCHED_AT,
+            status=200,
+        )
+
+
+def _write(destination: Path, body: bytes) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(body)
+
 
 class InMemorySnapshots:
     def __init__(self) -> None:
@@ -213,6 +284,135 @@ class InMemorySnapshots:
             s for s in self.stored if s.source_id == source_id and s.outcome is Outcome.COMPLETED
         ]
         return max(own, key=lambda s: s.fetched_at) if own else None
+
+    async def latest_loaded(self, source_id: SourceId) -> SourceSnapshot | None:
+        own = [s for s in self.stored if s.source_id == source_id and s.load is not None]
+        return max(own, key=lambda s: s.fetched_at) if own else None
+
+    async def set_load(self, snapshot_id: UUID, load: DatasetLoad) -> None:
+        self.stored = [
+            s.model_copy(update={"load": load, "row_count": load.scanned})
+            if s.id == snapshot_id
+            else s
+            for s in self.stored
+        ]
+
+
+class ListDataset:
+    """A :class:`~credentialing.domain.ports.Dataset` over records in memory.
+
+    ``fail_reading`` raises in the second pass, as a file that breaks mid-way would;
+    ``closed`` says whether the loader released it; ``asked`` records each second pass's
+    NPI set.
+    """
+
+    def __init__(self, *records: NpiRecord, fail_reading: Exception | None = None) -> None:
+        self._records = records
+        self._fail_reading = fail_reading
+        self.closed = False
+        self.asked: list[AbstractSet[str] | None] = []
+
+    def scan(self) -> Iterator[tuple[str, str]]:
+        for record in self._records:
+            yield record.npi, record.line_hash
+
+    def records(self, npis: AbstractSet[str] | None) -> Iterator[NpiRecord]:
+        self.asked.append(npis)
+        for record in self._records:
+            if self._fail_reading is not None:
+                raise self._fail_reading
+            if npis is None or record.npi in npis:
+                yield record
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class ScriptedDatasetConnector:
+    """A dataset connector that returns prepared fetches in order."""
+
+    def __init__(self, capabilities: ConnectorCapabilities, *fetches: DatasetFetch) -> None:
+        self._capabilities = capabilities
+        self._fetches = list(fetches)
+        self.previous_seen: list[SourceSnapshot | None] = []
+
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return self._capabilities
+
+    async def fetch_dataset(self, previous: SourceSnapshot | None) -> DatasetFetch:
+        self.previous_seen.append(previous)
+        return self._fetches.pop(0)
+
+
+def dataset_capabilities(source_id: str = "fake_dataset") -> ConnectorCapabilities:
+    """Made-up capabilities of a dataset source."""
+    return ConnectorCapabilities(
+        source_id=source_id,
+        credential_type=CredentialType.NPI,
+        jurisdictions=frozenset({"US"}),
+        access_policy=AccessPolicy.HTTP,
+        change_signal=ChangeSignal.LINK_DISCOVERY,
+        method=VerificationMethod.BULK_DATASET,
+        poll_interval=timedelta(days=1),
+        source_url=f"https://example.test/{source_id}",
+        display_name=f"Fake {source_id} file",
+    )
+
+
+class InMemoryNpiRegistry:
+    """The NPI mirror in a dict: enough to exercise the use cases.
+
+    Rows are compared by line hash as the real loader does; ``fail`` raises from ``load``.
+    ``loads`` records each load's mode, snapshot and ``min_rows``.
+    """
+
+    def __init__(self, *records: NpiRecord, fail: Exception | None = None) -> None:
+        self.rows = {record.npi: record for record in records}
+        self.fail = fail
+        self.loads: list[tuple[DatasetLoadMode, UUID, int | None]] = []
+
+    async def load(
+        self,
+        dataset: Dataset,
+        *,
+        mode: DatasetLoadMode,
+        snapshot_id: UUID,
+        now: datetime,
+        min_rows: int | None = None,
+    ) -> DatasetLoad:
+        self.loads.append((mode, snapshot_id, min_rows))
+        if self.fail is not None:
+            raise self.fail
+        hashes = dict(dataset.scan())
+        if min_rows is not None and len(hashes) < min_rows:
+            raise DatasetShrankError(len(hashes), min_rows)
+        needed = {
+            npi
+            for npi, line_hash in hashes.items()
+            if npi not in self.rows or self.rows[npi].line_hash != line_hash
+        }
+        added = len(needed - self.rows.keys())
+        for record in dataset.records(needed):
+            self.rows[record.npi] = record
+        return DatasetLoad(
+            mode=mode,
+            scanned=len(hashes),
+            added=added,
+            changed=len(needed) - added,
+            unchanged=len(hashes) - len(needed),
+            phases={"scan": timedelta(seconds=2), "apply": timedelta(seconds=1)},
+        )
+
+    async def get(self, npi: Npi) -> NpiRecord | None:
+        return self.rows.get(npi)
+
+    async def count(self, *, status: NpiStatus | None = None) -> int:
+        return sum(
+            1
+            for record in self.rows.values()
+            if record.in_file and (status is None or record.status is status)
+        )
 
 
 class InMemoryRecords:

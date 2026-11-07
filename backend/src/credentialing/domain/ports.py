@@ -1,15 +1,19 @@
 """Ports: the interfaces outer layers implement and the application depends on."""
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from credentialing.domain.enums import CredentialType
+from credentialing.domain.enums import CredentialType, DatasetLoadMode, NpiStatus, Outcome
 from credentialing.domain.models import (
     ConnectorCapabilities,
+    DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    NpiRecord,
     Provider,
     SnapshotDiff,
     SourceSnapshot,
@@ -65,6 +69,18 @@ class SnapshotRepository(Protocol):
 
     async def latest_completed(self, source_id: SourceId) -> SourceSnapshot | None:
         """Return the source's most recent ``COMPLETED`` snapshot: the list checks rely on."""
+        ...
+
+    async def latest_loaded(self, source_id: SourceId) -> SourceSnapshot | None:
+        """Return the source's most recent snapshot whose dataset was loaded (``load`` set).
+
+        Unchanged polls load nothing, so this is usually older than ``latest_completed``.
+        """
+        ...
+
+    async def set_load(self, snapshot_id: UUID, load: DatasetLoad) -> None:
+        """Record what loading the snapshot's dataset did; its ``row_count`` becomes
+        ``load.scanned``."""
         ...
 
 
@@ -244,6 +260,112 @@ class BulkListConnector(Protocol):
         ...
 
 
+class Dataset(Protocol):
+    """A downloaded dataset file, read in two passes so a load parses only the rows it needs.
+
+    Both passes are synchronous and stream the file (the loader drives them from a worker
+    thread); neither keeps the rows in memory.
+
+    Raises (from either pass):
+        DatasetFormatError: A row is malformed; the message names its line, never its content.
+    """
+
+    def scan(self) -> Iterator[tuple[Npi, str]]:
+        """Every row's NPI and ``line_hash``, in file order, without parsing the fields."""
+        ...
+
+    def records(self, npis: AbstractSet[Npi] | None) -> Iterator[NpiRecord]:
+        """The records of the rows whose NPI is in ``npis`` (``None``: every row), in file
+        order. Only those rows are parsed; each record's ``line_hash`` equals the scan's."""
+        ...
+
+    def close(self) -> None:
+        """Release the file, and delete it when the connector downloaded it for this load."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetFetch:
+    """A dataset fetch: the snapshot always, the opened file only when a new one arrived.
+
+    A plain dataclass, not a model: it carries an open file. It lives here rather than in
+    ``models`` because it refers to the :class:`Dataset` port.
+
+    Raises:
+        ValueError: A dataset accompanies a snapshot that did not complete.
+    """
+
+    snapshot: SourceSnapshot
+    mode: DatasetLoadMode
+    dataset: Dataset | None = None
+
+    def __post_init__(self) -> None:
+        if self.dataset is not None and self.snapshot.outcome is not Outcome.COMPLETED:
+            raise ValueError("a dataset can only accompany a completed snapshot")
+
+
+class NpiRegistryRepository(Protocol):
+    """The local mirror of the NPPES NPI registry (shared reference data).
+
+    One row per NPI, its newest version; replaced versions are kept in a history. Rows are
+    never deleted: an NPI a full file no longer lists is flagged (``in_file`` false).
+    """
+
+    async def load(
+        self,
+        dataset: Dataset,
+        *,
+        mode: DatasetLoadMode,
+        snapshot_id: UUID,
+        now: datetime,
+        min_rows: int | None = None,
+    ) -> DatasetLoad:
+        """Apply ``dataset`` to the mirror atomically and report what changed.
+
+        Two passes: the scan's line hashes are compared with the mirror's, then only the rows
+        that differ are read and written, under ``snapshot_id`` as of ``now``. A ``FULL`` file
+        also flags the mirrored NPIs it no longer lists, an ``INCREMENTAL`` one never does,
+        and a ``DEACTIVATIONS`` file sets only status and deactivation date. Phase timings of
+        ``scan``, ``compare``, ``read`` and ``apply`` are returned; nothing is written when
+        any step fails.
+
+        Raises:
+            DatasetShrankError: ``min_rows`` is given and the file has fewer distinct NPIs;
+                nothing was written.
+            DatasetFormatError: A row of the file is malformed; nothing was written.
+        """
+        ...
+
+    async def get(self, npi: Npi) -> NpiRecord | None:
+        """Return the mirrored record of this NPI, listed in the latest full file or not."""
+        ...
+
+    async def count(self, *, status: NpiStatus | None = None) -> int:
+        """Return how many mirrored NPIs the latest file lists (``in_file``), optionally only
+        those with ``status``."""
+        ...
+
+
+@runtime_checkable
+class DatasetConnector(Protocol):
+    """A source published as a large dataset file that is downloaded to disk and loaded in a
+    mirror by difference.
+
+    Its fetch is named ``fetch_dataset``, not ``fetch``: runtime protocol checks compare
+    member names only, so a shared name would let a dataset connector pass as a
+    :class:`BulkListConnector` (and reach the exclusion checks).
+    """
+
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        """What the connector covers and how it reaches its source."""
+        ...
+
+    async def fetch_dataset(self, previous: SourceSnapshot | None) -> DatasetFetch:
+        """Fetch the file, using ``previous`` to skip the download when nothing changed."""
+        ...
+
+
 @runtime_checkable
 class LookupConnector(Protocol):
     """A source queried one provider at a time."""
@@ -261,12 +383,22 @@ class LookupConnector(Protocol):
 class ConnectorDirectory(Protocol):
     """Where use cases find connectors: by source id or by capability, never by branching."""
 
-    def get(self, source_id: SourceId) -> BulkListConnector | LookupConnector | None:
+    def get(
+        self, source_id: SourceId
+    ) -> BulkListConnector | DatasetConnector | LookupConnector | None:
         """Return the connector for ``source_id``, if one is registered."""
         ...
 
     def bulk_connectors(self) -> Sequence[BulkListConnector]:
         """Every registered bulk-list connector, ordered by source id."""
+        ...
+
+    def dataset_connectors(self) -> Sequence[DatasetConnector]:
+        """Every registered dataset connector, ordered by source id."""
+        ...
+
+    def polled_connectors(self) -> Sequence[BulkListConnector | DatasetConnector]:
+        """Every connector a sync polls (bulk lists and datasets), ordered by source id."""
         ...
 
     def bulk_connectors_for(

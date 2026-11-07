@@ -17,6 +17,8 @@ _SCHEMA_TABLES = (
     "source_snapshots",
     "exclusion_records",
     "verifications",
+    "npi_registry",
+    "npi_registry_history",
 )
 
 

@@ -1,6 +1,14 @@
-"""Use case: fetch one public source, store the snapshot and update its current records."""
+"""Use case: fetch one public source, store the snapshot and update its current records.
+
+A bulk list replaces the source's exclusion records; a dataset (NPPES) is loaded into the
+NPI mirror by difference, and the load's counts, phase timings and CPU time are stored on the
+snapshot.
+"""
 
 import logging
+import math
+import resource
+import time
 from datetime import datetime, timedelta
 from typing import Final
 from uuid import uuid4
@@ -8,14 +16,22 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from credentialing.application.errors import UnknownSourceError
-from credentialing.domain.enums import Outcome
-from credentialing.domain.models import ExclusionRecord, SnapshotDiff, SourceSnapshot
+from credentialing.domain.enums import DatasetLoadMode, Outcome
+from credentialing.domain.errors import DatasetShrankError
+from credentialing.domain.models import (
+    DatasetLoad,
+    ExclusionRecord,
+    SnapshotDiff,
+    SourceSnapshot,
+)
 from credentialing.domain.policies import poll_anchor
 from credentialing.domain.ports import (
     BulkListConnector,
     Clock,
     ConnectorDirectory,
+    DatasetConnector,
     ExclusionRecordRepository,
+    NpiRegistryRepository,
     SnapshotRepository,
 )
 from credentialing.domain.types import SourceId
@@ -27,6 +43,9 @@ SHRINK_GUARD_RATIO: Final = 0.5
 
 SHRINK_GUARD_MIN_ROWS: Final = 100
 """Lists smaller than this are too small for the ratio to mean anything; no guard."""
+
+DATASET_SHRINK_GUARD_MIN_ROWS: Final = 100_000
+"""Full dataset files whose last load had fewer rows than this get no shrink guard."""
 
 DUE_TOLERANCE: Final = timedelta(hours=1)
 """How early a source counts as due, so a daily cron job is not skipped because yesterday's
@@ -49,16 +68,22 @@ def source_changed(applied: SourceSnapshot | None, snapshot: SourceSnapshot) -> 
 
 
 class SyncReport(BaseModel):
-    """What one sync did: the stored snapshot and, when a new list was loaded, its diff."""
+    """What one sync did: the stored snapshot and, when a new list was loaded, its diff, or,
+    when a new dataset file was loaded, what the load did."""
 
     model_config = ConfigDict(frozen=True)
 
     snapshot: SourceSnapshot
     diff: SnapshotDiff | None = None
+    load: DatasetLoad | None = None
 
 
 class SyncSource:
-    """Polls a bulk-list source and keeps its current records in step with it."""
+    """Polls a bulk-list or dataset source and keeps its records in step with it.
+
+    ``npi_registry`` is the mirror dataset sources load into; a sync of a dataset source
+    without it is a wiring error (``TypeError``).
+    """
 
     def __init__(
         self,
@@ -66,11 +91,14 @@ class SyncSource:
         snapshots: SnapshotRepository,
         records: ExclusionRecordRepository,
         clock: Clock,
+        *,
+        npi_registry: NpiRegistryRepository | None = None,
     ) -> None:
         self._connectors = connectors
         self._snapshots = snapshots
         self._records = records
         self._clock = clock
+        self._npi_registry = npi_registry
 
     async def run(self, source_id: SourceId, *, force: bool = False) -> SyncReport:
         """Fetch ``source_id`` once, store the snapshot, and load the records if new.
@@ -92,10 +120,15 @@ class SyncSource:
         added after it, so the next poll does not trust the stored validators and downloads
         the list again.
 
+        A dataset source is loaded as :meth:`_run_dataset` describes.
+
         Raises:
-            UnknownSourceError: No bulk-list connector is registered as ``source_id``.
+            UnknownSourceError: No bulk-list or dataset connector is registered as
+                ``source_id``.
         """
         connector = self._connectors.get(source_id)
+        if isinstance(connector, DatasetConnector):
+            return await self._run_dataset(connector, force=force)
         if not isinstance(connector, BulkListConnector):
             raise UnknownSourceError(source_id)
         previous = None if force else await self._snapshots.latest(source_id)
@@ -121,6 +154,82 @@ class SyncSource:
             raise
         return SyncReport(snapshot=snapshot, diff=diff)
 
+    async def _run_dataset(self, connector: DatasetConnector, *, force: bool) -> SyncReport:
+        """Fetch a dataset source, store the snapshot and load a new file into the mirror.
+
+        The snapshot is stored before the load (the mirror's rows refer to it); the load's
+        counts, phase timings (the fetch as ``download``, then the loader's phases) and the
+        process's CPU time over fetch and load are stored on it afterwards, and the file is
+        closed (deleted) whatever happens.
+
+        A full file with fewer than half the distinct NPIs of the last full file loaded (when
+        that one had at least :data:`DATASET_SHRINK_GUARD_MIN_ROWS`) is not applied, the
+        same guard as for lists: the loader refuses before writing, and a ``FAILED``
+        snapshot with the counts follows, so the next poll downloads the file again.
+        ``force`` applies it anyway. A load that fails is followed by a ``FAILED`` snapshot
+        too, and re-raised.
+        """
+        registry = self._npi_registry
+        if registry is None:
+            raise TypeError("SyncSource needs an npi_registry to load dataset sources")
+        source_id = connector.capabilities.source_id
+        previous = None if force else await self._snapshots.latest(source_id)
+        cpu_started, started = _cpu_seconds(), time.perf_counter()
+        fetched = await connector.fetch_dataset(previous)
+        download = timedelta(seconds=time.perf_counter() - started)
+        snapshot, dataset = fetched.snapshot, fetched.dataset
+        if dataset is None:
+            await self._snapshots.add(snapshot)
+            return SyncReport(snapshot=snapshot)
+        try:
+            await self._snapshots.add(snapshot)
+            before = None if force else await self._last_full_rows(source_id, fetched.mode)
+            try:
+                load = await registry.load(
+                    dataset,
+                    mode=fetched.mode,
+                    snapshot_id=snapshot.id,
+                    now=self._clock.now(),
+                    min_rows=math.ceil(before * SHRINK_GUARD_RATIO) if before else None,
+                )
+            except DatasetShrankError as error:
+                logger.warning(
+                    "row count drop source_id=%s before=%s after=%d", source_id, before, error.rows
+                )
+                refused = self._failed_after(
+                    snapshot,
+                    f"row count dropped from {before} to {error.rows}; "
+                    "refusing to apply without --force",
+                )
+                await self._snapshots.add(refused)
+                return SyncReport(snapshot=refused)
+            except Exception:
+                logger.exception("loading the dataset failed source_id=%s", source_id)
+                await self._snapshots.add(self._storage_failed(snapshot))
+                raise
+        finally:
+            dataset.close()
+        load = load.model_copy(
+            update={
+                "phases": {"download": download, **load.phases},
+                "cpu_time": timedelta(seconds=_cpu_seconds() - cpu_started),
+            }
+        )
+        await self._snapshots.set_load(snapshot.id, load)
+        stored = snapshot.model_copy(update={"load": load, "row_count": load.scanned})
+        return SyncReport(snapshot=stored, load=load)
+
+    async def _last_full_rows(self, source_id: SourceId, mode: DatasetLoadMode) -> int | None:
+        """The distinct NPIs of the source's last full load, when the guard applies to it."""
+        if mode is not DatasetLoadMode.FULL:
+            return None
+        loaded = await self._snapshots.latest_loaded(source_id)
+        last = loaded.load if loaded else None
+        if last is None or last.mode is not DatasetLoadMode.FULL:
+            return None
+        rows = last.scanned - last.duplicates
+        return rows if rows >= DATASET_SHRINK_GUARD_MIN_ROWS else None
+
     async def next_due(self, source_id: SourceId) -> datetime | None:
         """When ``source_id`` is next due: its latest completed fetch plus its poll interval,
         less :data:`DUE_TOLERANCE`. ``None`` when it never completed, so it is due now.
@@ -131,10 +240,11 @@ class SyncSource:
         every run until a fetch completes.
 
         Raises:
-            UnknownSourceError: No bulk-list connector is registered as ``source_id``.
+            UnknownSourceError: No bulk-list or dataset connector is registered as
+                ``source_id``.
         """
         connector = self._connectors.get(source_id)
-        if not isinstance(connector, BulkListConnector):
+        if not isinstance(connector, BulkListConnector | DatasetConnector):
             raise UnknownSourceError(source_id)
         anchor = poll_anchor(
             await self._snapshots.latest(source_id),
@@ -178,11 +288,24 @@ class SyncSource:
         return refused, None
 
     def _storage_failed(self, snapshot: SourceSnapshot) -> SourceSnapshot:
+        return self._failed_after(
+            snapshot, f"records of snapshot {snapshot.id} could not be stored"
+        )
+
+    def _failed_after(self, snapshot: SourceSnapshot, note: str) -> SourceSnapshot:
+        """A ``FAILED`` snapshot just after ``snapshot``, so the next poll trusts none of its
+        validators and downloads again."""
         return SourceSnapshot(
             id=uuid4(),
             source_id=snapshot.source_id,
             fetched_at=max(self._clock.now(), snapshot.fetched_at + timedelta(microseconds=1)),
             outcome=Outcome.FAILED,
             source_url=snapshot.source_url,
-            note=f"records of snapshot {snapshot.id} could not be stored",
+            note=note,
         )
+
+
+def _cpu_seconds() -> float:
+    """User plus system CPU time of this process (every thread) so far."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime

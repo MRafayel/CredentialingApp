@@ -115,6 +115,10 @@ DEFAULT_FRESHNESS: Final = FreshnessPolicyTable(
     policies={
         (CredentialType.EXCLUSION, None): FreshnessPolicy(max_age=timedelta(days=7)),
         (CredentialType.NPI, None): FreshnessPolicy(max_age=timedelta(days=30)),
+        # The NPPES files are monthly (full, deactivations) and weekly; a week of slack each.
+        (CredentialType.NPI, "nppes_monthly"): FreshnessPolicy(max_age=timedelta(days=35)),
+        (CredentialType.NPI, "nppes_weekly"): FreshnessPolicy(max_age=timedelta(days=10)),
+        (CredentialType.NPI, "nppes_deactivations"): FreshnessPolicy(max_age=timedelta(days=35)),
         (CredentialType.STATE_LICENSE, None): FreshnessPolicy(max_age=timedelta(days=1)),
         (CredentialType.BOARD_CERTIFICATION, None): FreshnessPolicy(max_age=timedelta(days=30)),
     }

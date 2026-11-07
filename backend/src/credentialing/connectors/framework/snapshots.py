@@ -4,8 +4,10 @@ from uuid import uuid4
 
 from credentialing.connectors.framework.http import (
     FetchedDocument,
+    FetchedFile,
     FetchFailure,
     FetchOutcome,
+    FileOutcome,
     NotModified,
 )
 from credentialing.domain.enums import Outcome
@@ -13,17 +15,22 @@ from credentialing.domain.models import SourceSnapshot
 
 
 def snapshot_from(
-    result: FetchOutcome, *, source_id: str, url: str, previous: SourceSnapshot | None
+    result: FetchOutcome | FileOutcome,
+    *,
+    source_id: str,
+    url: str,
+    previous: SourceSnapshot | None,
 ) -> SourceSnapshot:
     """Build the snapshot of one fetch.
 
-    A new document is ``COMPLETED`` with its hash and validators (the row count is added after
-    parsing). An unchanged source is ``COMPLETED`` with the note "unchanged" and keeps the
-    previous hash, validators, size and row count, so the next poll stays a single request.
+    A new document (or a new file written to disk) is ``COMPLETED`` with its hash and
+    validators (the row count is added after parsing or loading). An unchanged source is
+    ``COMPLETED`` with the note "unchanged" and keeps the previous hash, validators, size and
+    row count, so the next poll stays a single request.
     A failure keeps no hash or validators, so the next poll downloads the source again.
     """
     match result:
-        case FetchedDocument():
+        case FetchedDocument() | FetchedFile():
             return SourceSnapshot(
                 id=uuid4(),
                 source_id=source_id,

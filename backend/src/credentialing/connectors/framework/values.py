@@ -76,6 +76,33 @@ def parse_date(text: str | None, formats: Sequence[str]) -> date | None:
     raise ParseError(f"not a date in {', '.join(formats)}")
 
 
+def parse_us_date(text: str) -> date | None:
+    """A ``MM/DD/YYYY`` date as written, or ``None`` when the cell is empty.
+
+    Read by slicing rather than ``strptime``, which costs several times more: a dataset
+    (NPPES) has tens of millions of dates per load. Only exactly two, two and four ASCII
+    digits between slashes are accepted.
+
+    Raises:
+        ParseError: The text is neither empty nor a valid ``MM/DD/YYYY`` date.
+    """
+    if not text:
+        return None
+    month, day, year = text[:2], text[3:5], text[6:]
+    if not (
+        len(text) == 10
+        and text[2] == "/"
+        and text[5] == "/"
+        and text.isascii()
+        and (month + day + year).isdigit()
+    ):
+        raise ParseError("not a date in MM/DD/YYYY")
+    try:
+        return date(int(year), int(month), int(day))
+    except ValueError:
+        raise ParseError("not a date in MM/DD/YYYY") from None
+
+
 def parse_npi(text: str | None) -> str | None:
     """Return the NPI when the cell holds exactly ten digits with a valid check digit.
 

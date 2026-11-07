@@ -1,9 +1,10 @@
 """Composition root of the command line: ``python -m credentialing.cli sync oig_leie``.
 
-``sync`` fetches public sources, stores a snapshot per fetch and updates their records. It
-prints one line per source and exits with 1 when any source could not be read. With ``--due``
-it skips the sources whose poll interval has not elapsed since their last completed fetch,
-which is what a cron job runs.
+``sync`` fetches public sources, stores a snapshot per fetch and updates their records (a
+dataset source, NPPES, loads its mirror and prints the load's counts, phase timings and CPU
+time). It prints one line per source and exits with 1 when any source could not be read.
+With ``--due`` it skips the sources whose poll interval has not elapsed since their last
+completed fetch, which is what a cron job runs.
 
 ``sources`` shows every registered source: its links, its last fetch, how many records are
 current, how old the data is and when the next fetch is due. ``--json`` prints the same as
@@ -27,7 +28,8 @@ from credentialing.application.sync_source import SyncReport
 from credentialing.bootstrap import runtime
 from credentialing.cli.relative_time import until
 from credentialing.cli.sources import show
-from credentialing.domain.enums import Outcome
+from credentialing.domain.enums import DatasetLoadMode, Outcome
+from credentialing.domain.models import DatasetLoad
 from credentialing.infrastructure.config import Settings, get_settings
 from credentialing.infrastructure.logging import configure_logging
 
@@ -39,7 +41,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sync = commands.add_parser("sync", help="fetch public sources and update their records")
     which = sync.add_mutually_exclusive_group(required=True)
     which.add_argument("source_id", nargs="?", help="a registered source id, such as oig_leie")
-    which.add_argument("--all", action="store_true", help="every registered bulk-list source")
+    which.add_argument(
+        "--all", action="store_true", help="every registered bulk-list and dataset source"
+    )
     sync.add_argument(
         "--force", action="store_true", help="download and parse even if the source is unchanged"
     )
@@ -93,7 +97,7 @@ async def _sync(
 ) -> int:
     async with runtime(settings) as services:
         if every:
-            source_ids = [c.capabilities.source_id for c in services.registry.bulk_connectors()]
+            source_ids = [c.capabilities.source_id for c in services.registry.polled_connectors()]
         else:
             source_ids = [source_id] if source_id else []
         failed = False
@@ -121,6 +125,9 @@ def skipped_line(source_id: str, due_at: datetime, now: datetime) -> str:
 def _line(source_id: str, report: SyncReport, seconds: float) -> str:
     snapshot = report.snapshot
     diff = report.diff
+    note = f" ({snapshot.note})" if snapshot.note else ""
+    if report.load is not None:
+        return f"{source_id} {snapshot.outcome.value} {load_summary(report.load)}{note}"
     counts = (
         f"added={diff.added} readded={diff.readded} changed={diff.changed} "
         f"rewritten={diff.rewritten} removed={diff.removed} reparsed={diff.reparsed} "
@@ -128,8 +135,30 @@ def _line(source_id: str, report: SyncReport, seconds: float) -> str:
         if diff
         else "no new list"
     )
-    note = f" ({snapshot.note})" if snapshot.note else ""
     return f"{source_id} {snapshot.outcome.value} {counts} duration={seconds:.1f}s{note}"
+
+
+def load_summary(load: DatasetLoad) -> str:
+    """A dataset load on one line: counts, total and CPU time, then each phase."""
+    counts = [
+        f"scanned={load.scanned:,}",
+        f"added={load.added:,}",
+        f"changed={load.changed:,}",
+        f"unchanged={load.unchanged:,}",
+    ]
+    if load.mode is DatasetLoadMode.FULL:
+        counts.append(f"missing={load.missing:,}")
+    if load.mode is DatasetLoadMode.DEACTIVATIONS:
+        counts.append(f"deactivated={load.deactivated:,}")
+    if load.outdated:
+        counts.append(f"outdated={load.outdated:,}")
+    if load.duplicates:
+        counts.append(f"duplicates={load.duplicates:,}")
+    counts.append(f"duration={load.duration.total_seconds():.1f}s")
+    if load.cpu_time is not None:
+        counts.append(f"cpu={load.cpu_time.total_seconds():.1f}s")
+    phases = " ".join(f"{name} {spent.total_seconds():.0f}s" for name, spent in load.phases.items())
+    return " ".join(counts) + (f" phases: {phases}" if phases else "")
 
 
 if __name__ == "__main__":

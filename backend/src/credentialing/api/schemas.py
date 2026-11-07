@@ -22,6 +22,7 @@ from credentialing.domain.enums import (
     AccessPolicy,
     ChangeSignal,
     CredentialType,
+    DatasetLoadMode,
     EntityKind,
     ExclusionAction,
     Finding,
@@ -129,7 +130,9 @@ class ProviderResponse(Schema):
             has_date_of_birth=provider.date_of_birth is not None,
             licenses=[LicenseBody.model_validate(item.model_dump()) for item in provider.licenses],
             addresses=[
-                AddressBody.model_validate(item.model_dump()) for item in provider.addresses
+                # A roster address never has a country (customers enter U.S. addresses).
+                AddressBody.model_validate(item.model_dump(exclude={"country"}))
+                for item in provider.addresses
             ],
             taxonomy_codes=list(provider.taxonomy_codes),
             created_at=provider.created_at,
@@ -496,8 +499,25 @@ class VerdictResponse(Schema):
         )
 
 
+class DatasetLoadResponse(Schema):
+    """What loading one dataset file did: counts, phase durations (ISO 8601, in the order they
+    ran) and CPU time."""
+
+    mode: DatasetLoadMode
+    scanned: int
+    added: int
+    changed: int
+    unchanged: int
+    outdated: int
+    missing: int
+    deactivated: int
+    duplicates: int
+    phases: dict[str, timedelta]
+    cpu_time: timedelta | None
+
+
 class SnapshotResponse(Schema):
-    """One fetch of a public source."""
+    """One fetch of a public source; ``load`` when the fetch loaded a dataset file."""
 
     id: UUID
     source_id: str
@@ -510,6 +530,7 @@ class SnapshotResponse(Schema):
     byte_size: int | None
     row_count: int | None
     note: str | None
+    load: DatasetLoadResponse | None
 
     @classmethod
     def from_domain(cls, snapshot: SourceSnapshot) -> SnapshotResponse:
@@ -538,6 +559,8 @@ class SourceStatusResponse(Schema):
     data_as_of: datetime | None
     next_due: datetime | None
     problem: str | None
+    last_load: DatasetLoadResponse | None
+    """A dataset source's most recent load; null for a list and before any file loaded."""
 
     @classmethod
     def from_status(cls, status: SourceStatus) -> SourceStatusResponse:
@@ -562,4 +585,9 @@ class SourceStatusResponse(Schema):
             data_as_of=status.data_as_of,
             next_due=status.next_due,
             problem=status.problem,
+            last_load=(
+                DatasetLoadResponse.model_validate(status.last_load.model_dump())
+                if status.last_load
+                else None
+            ),
         )

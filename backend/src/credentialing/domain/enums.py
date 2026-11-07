@@ -176,3 +176,23 @@ class RecordLink(StrEnum):
     SAME_NAME = "same_name"
     LISTED_AS = "listed_as"
     NAMED_ALONGSIDE = "named_alongside"
+
+
+class NpiStatus(StrEnum):
+    """Whether an NPI is in use, as the NPPES registry publishes it."""
+
+    ACTIVE = "active"
+    DEACTIVATED = "deactivated"
+
+
+class DatasetLoadMode(StrEnum):
+    """What a downloaded dataset file says about the mirror it is loaded into.
+
+    ``FULL`` is the complete picture: a mirrored row the file no longer has is flagged.
+    ``INCREMENTAL`` carries new and changed rows only. ``DEACTIVATIONS`` carries a status and
+    a deactivation date per NPI, nothing else.
+    """
+
+    FULL = "full"
+    INCREMENTAL = "incremental"
+    DEACTIVATIONS = "deactivations"

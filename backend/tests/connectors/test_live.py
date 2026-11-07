@@ -66,6 +66,12 @@ from credentialing.connectors.nh_dhhs.connector import NhDhhsConnector
 from credentialing.connectors.nj_treasury.connector import ACTIONS as NJ_ACTIONS
 from credentialing.connectors.nj_treasury.connector import COLUMNS as NJ_COLUMNS
 from credentialing.connectors.nj_treasury.connector import NjTreasuryConnector
+from credentialing.connectors.nppes import (
+    NppesDeactivationsConnector,
+    NppesMonthlyConnector,
+    NppesWeeklyConnector,
+)
+from credentialing.connectors.nppes.connector import FILES_PAGE
 from credentialing.connectors.nv_omig.connector import COLUMNS as NV_COLUMNS
 from credentialing.connectors.nv_omig.connector import NvOmigConnector
 from credentialing.connectors.ny_omig.connector import COLUMNS as NY_COLUMNS
@@ -438,3 +444,24 @@ async def test_il_page_stamp_count_and_export_configuration() -> None:
     assert int(count) > 0
     assert metadata.last_modified is not None
     assert metadata.url.startswith("https://ilhfspartner3.dynamics365portals.us/_services/")
+
+
+async def test_nppes_files_page_links_each_file() -> None:
+    # The files themselves (up to a gigabyte) are never downloaded here: each link is checked
+    # with a HEAD. The weekly link answered 404 on 2026-11-06 while the page listed it.
+    async with create_http_client(get_settings()) as client:
+        page = await client.get(FILES_PAGE)
+        assert page.status_code == 200
+        for connector_class in (
+            NppesMonthlyConnector,
+            NppesWeeklyConnector,
+            NppesDeactivationsConnector,
+        ):
+            connector = connector_class(ScriptedFetcher())
+            link = str(page.url.join(connector.find_link(page.text)))
+            head = await client.head(link)
+            if connector_class is NppesWeeklyConnector and head.status_code == 404:
+                continue
+            assert head.status_code == 200, link
+            assert int(head.headers["content-length"]) > 1_000_000
+            assert head.headers.get("last-modified")

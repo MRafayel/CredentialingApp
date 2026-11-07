@@ -3,8 +3,8 @@ from uuid import uuid4
 
 import pytest
 
-from credentialing.domain.enums import Outcome
-from credentialing.domain.models import SourceSnapshot
+from credentialing.domain.enums import DatasetLoadMode, Outcome
+from credentialing.domain.models import DatasetLoad, SourceSnapshot
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.snapshots import PostgresSnapshotRepository
 from tests.synthetic import NOW
@@ -54,3 +54,35 @@ async def test_latest_completed_skips_later_failures(database: ConnectionSource)
 
     assert await repository.latest_completed("test_exclusions") == completed
     assert await repository.latest_completed("test_never_fetched") is None
+
+
+async def test_a_load_is_stored_on_its_snapshot_and_read_back(database: ConnectionSource) -> None:
+    repository = PostgresSnapshotRepository(database)
+    loaded = _snapshot("test_dataset", 30, Outcome.COMPLETED)
+    unchanged = _snapshot("test_dataset", 2, Outcome.COMPLETED)
+    await repository.add(loaded)
+    await repository.add(unchanged)
+    load = DatasetLoad(
+        mode=DatasetLoadMode.FULL,
+        scanned=9,
+        added=4,
+        changed=1,
+        unchanged=4,
+        missing=2,
+        phases={"download": timedelta(seconds=31.5), "scan": timedelta(seconds=2)},
+        cpu_time=timedelta(seconds=12.25),
+    )
+
+    await repository.set_load(loaded.id, load)
+
+    found = await repository.latest_loaded("test_dataset")
+    assert found is not None
+    assert found.id == loaded.id
+    assert found.load == load
+    assert list(found.load.phases) == ["download", "scan"]
+    assert found.row_count == 9
+    latest = await repository.latest_completed("test_dataset")
+    assert latest is not None
+    assert latest.id == unchanged.id
+    assert latest.load is None
+    assert await repository.latest_loaded("test_never_loaded") is None

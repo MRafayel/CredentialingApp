@@ -240,6 +240,46 @@ export interface components {
      */
     CredentialType: 'exclusion' | 'npi' | 'state_license' | 'board_certification'
     /**
+     * DatasetLoadMode
+     * @description What a downloaded dataset file says about the mirror it is loaded into.
+     *
+     *     ``FULL`` is the complete picture: a mirrored row the file no longer has is flagged.
+     *     ``INCREMENTAL`` carries new and changed rows only. ``DEACTIVATIONS`` carries a status and
+     *     a deactivation date per NPI, nothing else.
+     * @enum {string}
+     */
+    DatasetLoadMode: 'full' | 'incremental' | 'deactivations'
+    /**
+     * DatasetLoadResponse
+     * @description What loading one dataset file did: counts, phase durations (ISO 8601, in the order they
+     *     ran) and CPU time.
+     */
+    DatasetLoadResponse: {
+      mode: components['schemas']['DatasetLoadMode']
+      /** Scanned */
+      scanned: number
+      /** Added */
+      added: number
+      /** Changed */
+      changed: number
+      /** Unchanged */
+      unchanged: number
+      /** Outdated */
+      outdated: number
+      /** Missing */
+      missing: number
+      /** Deactivated */
+      deactivated: number
+      /** Duplicates */
+      duplicates: number
+      /** Phases */
+      phases: {
+        [key: string]: string
+      }
+      /** Cpu Time */
+      cpu_time: string | null
+    }
+    /**
      * EntityKind
      * @description Whether a party is a person or an organization; ``UNKNOWN`` when a source does not say.
      * @enum {string}
@@ -806,7 +846,7 @@ export interface components {
     }
     /**
      * SnapshotResponse
-     * @description One fetch of a public source.
+     * @description One fetch of a public source; ``load`` when the fetch loaded a dataset file.
      */
     SnapshotResponse: {
       /**
@@ -836,6 +876,7 @@ export interface components {
       row_count: number | null
       /** Note */
       note: string | null
+      load: components['schemas']['DatasetLoadResponse'] | null
     }
     /**
      * SourceHealth
@@ -883,6 +924,7 @@ export interface components {
       next_due: string | null
       /** Problem */
       problem: string | null
+      last_load: components['schemas']['DatasetLoadResponse'] | null
     }
     /** ValidationError */
     ValidationError: {

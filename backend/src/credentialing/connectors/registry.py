@@ -4,10 +4,10 @@ Adding a source means registering its connector; nothing branches on a state or 
 """
 
 from credentialing.domain.enums import CredentialType
-from credentialing.domain.ports import BulkListConnector, LookupConnector
+from credentialing.domain.ports import BulkListConnector, DatasetConnector, LookupConnector
 from credentialing.domain.types import FEDERAL, SourceId, StateCode
 
-type Connector = BulkListConnector | LookupConnector
+type Connector = BulkListConnector | DatasetConnector | LookupConnector
 
 
 class DuplicateSourceError(ValueError):
@@ -40,6 +40,22 @@ class ConnectorRegistry:
             connector
             for _, connector in sorted(self._connectors.items())
             if isinstance(connector, BulkListConnector)
+        ]
+
+    def dataset_connectors(self) -> list[DatasetConnector]:
+        """Every registered dataset connector, ordered by source id."""
+        return [
+            connector
+            for _, connector in sorted(self._connectors.items())
+            if isinstance(connector, DatasetConnector)
+        ]
+
+    def polled_connectors(self) -> list[BulkListConnector | DatasetConnector]:
+        """Every connector a sync polls (bulk lists and datasets), ordered by source id."""
+        return [
+            connector
+            for _, connector in sorted(self._connectors.items())
+            if isinstance(connector, BulkListConnector | DatasetConnector)
         ]
 
     def bulk_connectors_for(

@@ -11,7 +11,8 @@ from typing import Final, TextIO
 
 from credentialing.application.source_status import SourceHealth, SourceStatus
 from credentialing.cli.relative_time import ago, span, until
-from credentialing.domain.enums import CredentialType, Freshness, Outcome
+from credentialing.domain.enums import CredentialType, DatasetLoadMode, Freshness, Outcome
+from credentialing.domain.models import DatasetLoad
 
 WIDTH: Final = 100
 """The table never gets wider than this; the source name column gives way."""
@@ -73,7 +74,8 @@ def render_json(statuses: Sequence[SourceStatus]) -> str:
 def render_table(
     statuses: Sequence[SourceStatus], now: datetime, *, color: bool, width: int = WIDTH
 ) -> str:
-    """One row per source, a note line under each failed fetch, and a summary."""
+    """One row per source, a note line under each failed fetch and under each dataset source's
+    last load, and a summary."""
     headers = (
         "Source",
         "Jur.",
@@ -114,6 +116,8 @@ def render_table(
         if latest is not None and latest.outcome is not Outcome.COMPLETED:
             note = f"{latest.outcome.value}: {_one_line(status.problem)}" if status.problem else ""
             lines.append(_paint(f"  ↳ {note or latest.outcome.value}", _RED, color))
+        if status.last_load is not None:
+            lines.append(_paint(f"  ↳ last load: {load_note(status.last_load)}", _DIM, color))
     lines += ["", _summary(statuses)]
     policy = _policy(statuses)
     if policy:
@@ -136,6 +140,19 @@ def _row(status: SourceStatus, now: datetime) -> list[_Cell]:
         (status.freshness.value if status.freshness else _EMPTY, _YELLOW if stale else None),
         (until(status.next_due, now) if status.next_due else _EMPTY, _YELLOW if overdue else None),
     ]
+
+
+def load_note(load: DatasetLoad) -> str:
+    """A dataset load in a few words: added (+), changed (~), for a full file the missing rows
+    (minus sign), then the wall-clock and CPU time: "+31,204 ~142,560 \N{MINUS SIGN}12 missing ·
+    14 min · cpu 10 min"."""
+    counts = [f"+{load.added:,}", f"~{load.changed:,}"]
+    if load.mode is DatasetLoadMode.FULL:
+        counts.append(f"\N{MINUS SIGN}{load.missing:,} missing")
+    parts = [" ".join(counts), span(load.duration)]
+    if load.cpu_time is not None:
+        parts.append(f"cpu {span(load.cpu_time)}")
+    return " · ".join(parts)
 
 
 def _list_date(status: SourceStatus, *, loaded: bool) -> str:

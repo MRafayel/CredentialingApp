@@ -13,7 +13,7 @@ pytestmark = pytest.mark.integration
 
 def test_sources_json_lists_every_registered_source(capsys: pytest.CaptureFixture[str]) -> None:
     registered = [
-        c.capabilities.source_id for c in build_registry(ScriptedFetcher()).bulk_connectors()
+        c.capabilities.source_id for c in build_registry(ScriptedFetcher()).polled_connectors()
     ]
 
     code = main(["sources", "--json"])

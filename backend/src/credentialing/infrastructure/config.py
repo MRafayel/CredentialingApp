@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     """Playwright browser channel: ``chrome`` runs the installed Google Chrome."""
     browser_profile_dir: Path = Path("data/browser-profile")
     """The fallback browser's persistent profile (cookies), under the gitignored ``data/``."""
+    dataset_dir: Path = Path("data/datasets")
+    """Where dataset files (the NPPES registry) are downloaded, one folder per source, under the
+    gitignored ``data/``; each file is deleted once loaded."""
     no_color: Annotated[bool, BeforeValidator(_set_and_not_empty)] = Field(
         default=False, validation_alias="NO_COLOR"
     )

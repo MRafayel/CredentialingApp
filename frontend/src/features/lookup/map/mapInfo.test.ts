@@ -23,6 +23,7 @@ const FETCHED: SourceStatus['latest_completed'] = {
   byte_size: null,
   row_count: null,
   note: null,
+  load: null,
 }
 
 const SOURCES = [

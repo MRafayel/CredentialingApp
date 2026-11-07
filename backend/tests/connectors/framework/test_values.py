@@ -14,6 +14,7 @@ from credentialing.connectors.framework.values import (
     parse_npi,
     parse_npi_list,
     parse_state,
+    parse_us_date,
     parse_us_zip,
     split_identifiers,
 )
@@ -176,3 +177,26 @@ def test_entity_kind_from_name_columns() -> None:
     assert entity_kind_from("Sample Clinic LLC", None) is EntityKind.ORGANIZATION
     assert entity_kind_from(None, "Testperson") is EntityKind.INDIVIDUAL
     assert entity_kind_from(None, None) is EntityKind.UNKNOWN
+
+
+def test_parse_us_date_reads_month_day_year_and_blank_as_none() -> None:
+    assert parse_us_date("05/23/2007") == date(2007, 5, 23)
+    assert parse_us_date("12/31/1999") == date(1999, 12, 31)
+    assert parse_us_date("") is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2007-05-23",
+        "5/23/2007",
+        "05/23/07",
+        "13/01/2020",
+        "02/30/2020",
+        "0+/01/2020",
+        " 05/23/2007",
+    ],
+)
+def test_parse_us_date_rejects_anything_but_a_valid_mm_dd_yyyy(text: str) -> None:
+    with pytest.raises(ParseError, match="not a date in MM/DD/YYYY"):
+        parse_us_date(text)

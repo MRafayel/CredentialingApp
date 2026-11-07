@@ -70,7 +70,8 @@ function Loaded({ provider }: { provider: Provider }) {
   const sourceName = (sourceId: string) => byId.get(sourceId)?.display_name ?? sourceId
   const latest = verdict.data?.results ?? []
   const shown = latest.filter(needsAttention)
-  const expected = sources.data ?? []
+  // A check consults the exclusion lists; the NPI registry files are listed too but not checked.
+  const expected = (sources.data ?? []).filter((source) => source.credential_type === 'exclusion')
   const running = run.isPending
 
   return (

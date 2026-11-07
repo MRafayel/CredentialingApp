@@ -1,4 +1,8 @@
-"""The base class every bulk-list connector extends: fetch, snapshot, parse, instrument.
+"""The base classes of downloading connectors: fetch, snapshot, parse, instrument.
+
+:class:`SourceConnectorBase` holds what every downloading connector shares (locating the file,
+each request with its browser fallback, the snapshot); :class:`BulkListConnectorBase` adds
+parsing a list in memory, and ``framework/dataset.py`` streaming a dataset file to disk.
 
 A subclass declares its ``capabilities`` and implements ``parse``, plus where its file is:
 
@@ -51,6 +55,7 @@ from credentialing.connectors.framework.http import (
     Fetcher,
     FetchFailure,
     FetchOutcome,
+    FileOutcome,
     NotModified,
 )
 from credentialing.connectors.framework.rows import ParsedList
@@ -133,13 +138,13 @@ class Located:
 type Location = Located | NotModified | FetchFailure
 
 
-class BulkListConnectorBase(ABC):
-    """Implements :class:`~credentialing.domain.ports.BulkListConnector` for downloaded lists.
+class SourceConnectorBase(ABC):
+    """What every downloading connector shares: where its file is and how each request goes.
 
-    ``fetch`` resolves the file's URL when the source needs it, downloads through the shared
-    fetcher, builds the snapshot and, only when the source sent a new document, parses it off
-    the event loop. A parse error of any kind turns the snapshot into ``FAILED`` with no
-    records, so a broken file never replaces the list.
+    Locating a file whose URL changes (:meth:`locate`, :meth:`metadata`), the request that is
+    repeated in the browser when refused (``_get``) and the snapshot of a fetch
+    (``_snapshot_of``). :class:`BulkListConnectorBase` adds parsing a list in memory;
+    ``framework/dataset.py``'s ``DatasetConnectorBase`` adds streaming a dataset file to disk.
     """
 
     download_url: ClassVar[str]
@@ -165,10 +170,6 @@ class BulkListConnectorBase(ABC):
     @abstractmethod
     def capabilities(self) -> ConnectorCapabilities:
         """What the connector covers and how it reaches its source."""
-
-    @abstractmethod
-    def parse(self, body: bytes, snapshot: SourceSnapshot) -> ParsedList:
-        """Map the document into records belonging to ``snapshot``."""
 
     def find_link(self, html: str) -> str:
         """``LINK_DISCOVERY``: the current file's link on the landing page (may be relative).
@@ -245,50 +246,51 @@ class BulkListConnectorBase(ABC):
             fetched_in_browser=answer.fetched_in_browser,
         )
 
-    async def fetch(self, previous: SourceSnapshot | None) -> FetchResult:
-        """Fetch the list, using ``previous`` to skip the download when nothing changed."""
-        started = time.perf_counter()
-        capabilities = self.capabilities
-        source_id = capabilities.source_id
-        match capabilities.change_signal:
+    async def _resolve(self, previous: SourceSnapshot | None) -> tuple[Location, str]:
+        """The file to download on this poll (or why there is none), and the URL a snapshot
+        names when no file is located: the landing page, the API request or the stable file."""
+        match self.capabilities.change_signal:
             case ChangeSignal.LINK_DISCOVERY:
-                location = await self.locate(previous)
-                fallback_url = _required(self.landing_url, "landing_url", self)
+                return await self.locate(previous), _required(self.landing_url, "landing_url", self)
             case ChangeSignal.API_METADATA:
-                location = await self.metadata(previous)
-                fallback_url = _required(self.metadata_url, "metadata_url", self)
+                return await self.metadata(previous), _required(
+                    self.metadata_url, "metadata_url", self
+                )
             case _:
-                location = Located(url=self.download_url)
-                fallback_url = self.download_url
+                return Located(url=self.download_url), self.download_url
+
+    def _signal_for(self, location: Located, previous: SourceSnapshot | None) -> ChangeSignal:
+        """The change signal of the file request: a located file is fetched conditionally only
+        when its URL is the previous fetch's (another URL is another file)."""
+        signal = self.capabilities.change_signal
+        if signal in (ChangeSignal.LINK_DISCOVERY, ChangeSignal.API_METADATA):
+            same = previous is not None and previous.source_url == location.url
+            signal = ChangeSignal.CONDITIONAL_GET if same else ChangeSignal.CONTENT_HASH
+        return signal
+
+    def _snapshot_of(
+        self,
+        result: FetchOutcome | FileOutcome,
+        location: Location,
+        previous: SourceSnapshot | None,
+        fallback_url: str,
+    ) -> SourceSnapshot:
+        """The snapshot of one fetch: the located URL (or the previous one when unchanged),
+        no serving-timestamp ``Last-Modified``, and the API's validators."""
+        capabilities = self.capabilities
         if isinstance(location, Located):
-            result = await self._download(location, previous)
             url = location.url
         else:
-            result = location
             unchanged = isinstance(result, NotModified) and previous is not None
             url = previous.source_url if unchanged and previous else fallback_url
-        snapshot = snapshot_from(result, source_id=source_id, url=url, previous=previous)
+        snapshot = snapshot_from(
+            result, source_id=capabilities.source_id, url=url, previous=previous
+        )
         if not capabilities.last_modified_is_meaningful and snapshot.last_modified is not None:
             snapshot = snapshot.model_copy(update={"last_modified": None})
         if isinstance(location, Located) and snapshot.outcome is Outcome.COMPLETED:
             snapshot = _stamp(snapshot, location, resolved=url != fallback_url)
-        records: tuple[ExclusionRecord, ...] | None = None
-        if isinstance(result, FetchedDocument):
-            snapshot, records = await asyncio.to_thread(self._parse, result.body, snapshot)
-        if _in_browser(location) or _in_browser(result):
-            snapshot = snapshot.model_copy(update={"note": _browser_note(snapshot.note)})
-        logger.info(
-            "source fetch source_id=%s outcome=%s status=%s bytes=%s rows=%s note=%r "
-            "duration_ms=%d",
-            source_id,
-            snapshot.outcome.value,
-            result.status,
-            snapshot.byte_size,
-            snapshot.row_count,
-            snapshot.note,
-            (time.perf_counter() - started) * 1000,
-        )
-        return FetchResult(snapshot=snapshot, records=records)
+        return snapshot
 
     async def _get(
         self, url: str, *, previous: SourceSnapshot | None, change_signal: ChangeSignal
@@ -353,6 +355,47 @@ class BulkListConnectorBase(ABC):
             challenge_timeout=capabilities.browser_challenge_timeout,
         )
 
+
+class BulkListConnectorBase(SourceConnectorBase):
+    """Implements :class:`~credentialing.domain.ports.BulkListConnector` for downloaded lists.
+
+    ``fetch`` resolves the file's URL when the source needs it, downloads through the shared
+    fetcher, builds the snapshot and, only when the source sent a new document, parses it off
+    the event loop. A parse error of any kind turns the snapshot into ``FAILED`` with no
+    records, so a broken file never replaces the list.
+    """
+
+    @abstractmethod
+    def parse(self, body: bytes, snapshot: SourceSnapshot) -> ParsedList:
+        """Map the document into records belonging to ``snapshot``."""
+
+    async def fetch(self, previous: SourceSnapshot | None) -> FetchResult:
+        """Fetch the list, using ``previous`` to skip the download when nothing changed."""
+        started = time.perf_counter()
+        source_id = self.capabilities.source_id
+        location, fallback_url = await self._resolve(previous)
+        result = (
+            await self._download(location, previous) if isinstance(location, Located) else location
+        )
+        snapshot = self._snapshot_of(result, location, previous, fallback_url)
+        records: tuple[ExclusionRecord, ...] | None = None
+        if isinstance(result, FetchedDocument):
+            snapshot, records = await asyncio.to_thread(self._parse, result.body, snapshot)
+        if _in_browser(location) or _in_browser(result):
+            snapshot = snapshot.model_copy(update={"note": _browser_note(snapshot.note)})
+        logger.info(
+            "source fetch source_id=%s outcome=%s status=%s bytes=%s rows=%s note=%r "
+            "duration_ms=%d",
+            source_id,
+            snapshot.outcome.value,
+            result.status,
+            snapshot.byte_size,
+            snapshot.row_count,
+            snapshot.note,
+            (time.perf_counter() - started) * 1000,
+        )
+        return FetchResult(snapshot=snapshot, records=records)
+
     async def download(
         self, location: Located, previous: SourceSnapshot | None, *, change_signal: ChangeSignal
     ) -> FetchOutcome:
@@ -366,10 +409,7 @@ class BulkListConnectorBase(ABC):
 
     async def _download(self, location: Located, previous: SourceSnapshot | None) -> FetchOutcome:
         """Download the located file and check it against the API's MD5, when there is one."""
-        signal = self.capabilities.change_signal
-        if signal in (ChangeSignal.LINK_DISCOVERY, ChangeSignal.API_METADATA):
-            same = previous is not None and previous.source_url == location.url
-            signal = ChangeSignal.CONDITIONAL_GET if same else ChangeSignal.CONTENT_HASH
+        signal = self._signal_for(location, previous)
         result = await self.download(location, previous, change_signal=signal)
         if (
             location.md5 is not None
@@ -402,7 +442,7 @@ class BulkListConnectorBase(ABC):
         return updated, parsed.records
 
 
-def _required(value: str | None, name: str, connector: BulkListConnectorBase) -> str:
+def _required(value: str | None, name: str, connector: SourceConnectorBase) -> str:
     if value is None:
         raise TypeError(f"{type(connector).__name__} declares no {name}")
     return value

@@ -17,6 +17,7 @@ from credentialing.domain.enums import (
     AccessPolicy,
     ChangeSignal,
     CredentialType,
+    DatasetLoadMode,
     EntityKind,
     ExclusionAction,
     Finding,
@@ -24,6 +25,7 @@ from credentialing.domain.enums import (
     MatchField,
     MatchLevel,
     MatchRelation,
+    NpiStatus,
     Outcome,
     Verdict,
     VerificationMethod,
@@ -56,6 +58,9 @@ class Address(DomainModel):
     city: str | None = None
     state: StateCode | None = None
     postal_code: str | None = None
+    country: str | None = None
+    """The country code as the source publishes it (NPPES: ``US`` or a foreign code); None
+    when the source gives none."""
 
 
 class License(DomainModel):
@@ -207,7 +212,7 @@ def compute_content_hash(
         "action_raw": text(action_raw),
         "aliases": sorted({alias.strip() for alias in aliases} - {""}),
         "date_of_birth": date_of_birth.isoformat() if date_of_birth else None,
-        "address": address.model_dump(mode="json") if address else None,
+        "address": _address_content(address),
         "state_provider_id": text(state_provider_id),
         "license_kind": text(license.kind) if license else None,
         "raw": dict(raw),
@@ -218,6 +223,14 @@ def compute_content_hash(
     if parties:
         content["related_parties"] = parties
     return _digest(content)
+
+
+def _address_content(address: Address | None) -> dict[str, object] | None:
+    """An address as hashed: ``country`` only when set, so rows stored before the field existed
+    keep their content hash."""
+    if address is None:
+        return None
+    return address.model_dump(mode="json", exclude={"country"} if address.country is None else None)
 
 
 def _digest(payload: Mapping[str, object]) -> str:
@@ -358,8 +371,48 @@ class ExclusionRecord(DomainModel):
         )
 
 
+class DatasetLoad(DomainModel):
+    """What loading one dataset file into its mirror did: counts, phase timings and CPU time.
+
+    ``scanned`` counts the file's rows and ``duplicates`` the rows repeating an NPI already
+    seen in the file (the last one wins). ``added`` rows were new to the mirror, ``changed``
+    rows replaced a stored version (or came back after a full file had dropped them), and
+    ``unchanged`` rows were already stored as they are. ``outdated`` rows were older than the
+    mirror's version (an incremental file published before the full file already loaded, or a
+    deactivation the mirror shows reactivated since) and were left alone. ``missing`` (full
+    files only) counts mirrored rows the file no longer has, now flagged; ``deactivated``
+    (deactivation files only) counts rows whose status or deactivation date this load set.
+
+    ``phases`` are wall-clock durations in the order they ran (``download``, ``scan``,
+    ``compare``, ``read``, ``apply``), ``cpu_time`` the process's user plus system time over
+    the fetch and the load. The owner reads them to judge what each file costs.
+    """
+
+    mode: DatasetLoadMode
+    scanned: int = Field(ge=0)
+    added: int = Field(default=0, ge=0)
+    changed: int = Field(default=0, ge=0)
+    unchanged: int = Field(default=0, ge=0)
+    outdated: int = Field(default=0, ge=0)
+    missing: int = Field(default=0, ge=0)
+    deactivated: int = Field(default=0, ge=0)
+    duplicates: int = Field(default=0, ge=0)
+    phases: Mapping[str, timedelta] = Field(default_factory=dict)
+    cpu_time: timedelta | None = None
+
+    @property
+    def duration(self) -> timedelta:
+        """The wall-clock time of every phase measured."""
+        return sum(self.phases.values(), timedelta(0))
+
+
 class SourceSnapshot(DomainModel):
-    """One fetch of a source: when, what came back, and the validators for the next poll."""
+    """One fetch of a source: when, what came back, and the validators for the next poll.
+
+    ``load`` is set once a dataset file this fetch downloaded was loaded into its mirror
+    (``SnapshotRepository.set_load``); a fetch that loaded nothing, and every bulk-list fetch,
+    has none.
+    """
 
     id: UUID
     source_id: SourceId
@@ -372,6 +425,7 @@ class SourceSnapshot(DomainModel):
     byte_size: int | None = Field(default=None, ge=0)
     row_count: int | None = Field(default=None, ge=0)
     note: str | None = None
+    load: DatasetLoad | None = None
 
 
 class SnapshotDiff(DomainModel):
@@ -499,4 +553,86 @@ class FetchResult(DomainModel):
     def _records_only_when_completed(self) -> Self:
         if self.records is not None and self.snapshot.outcome is not Outcome.COMPLETED:
             raise ValueError("records can only accompany a completed snapshot")
+        return self
+
+
+class NpiTaxonomy(DomainModel):
+    """One of a provider's taxonomies (specialties) in the NPI registry, with the licence the
+    provider reported for it."""
+
+    code: str
+    primary: bool
+    license_number: str | None = None
+    license_state: StateCode | None = None
+    group: str | None = None
+
+
+class AuthorizedOfficial(DomainModel):
+    """The person an organization named as authorized to act for it in the NPI registry."""
+
+    name: PersonName
+    prefix: str | None = None
+    title: str | None = None
+    credential: str | None = None
+
+
+class NpiRecord(DomainModel):
+    """One NPI as the NPPES registry publishes it: a row of the mirror (shared reference data).
+
+    ``other_names`` are the other names the registry publishes for the same party (another
+    organization name, the parent organization's legal name, a person's other name as "Last,
+    First Middle"), type codes dropped, without repeats, in file order. ``line_hash`` is the
+    SHA-256 of the file row the record was read from: a load compares it to tell an unchanged
+    row without parsing it. ``snapshot_id`` is the file that last wrote the row; ``in_file``
+    turns false once a full file no longer lists the NPI (rows are never deleted).
+
+    A deactivated NPI may carry nothing but its number, status and deactivation date (the
+    registry blanks the rest), so its entity kind is then ``UNKNOWN``; an active one has a
+    known entity kind. An active individual has a person name. An active organization may
+    lack its legal name: the November 2026 file publishes 31 such rows, so the mirror keeps
+    them as published rather than refuse the file. Names never cross kinds: no person name on
+    an organization, no organization name on an individual.
+    """
+
+    npi: Npi
+    entity_kind: EntityKind
+    status: NpiStatus
+    replacement_npi: Npi | None = None
+    person_name: PersonName | None = None
+    name_prefix: str | None = None
+    credential: str | None = None
+    organization_name: str | None = None
+    other_names: tuple[str, ...] = ()
+    sole_proprietor: bool | None = None
+    organization_subpart: bool | None = None
+    enumeration_date: date | None = None
+    last_updated: date | None = None
+    certification_date: date | None = None
+    deactivation_date: date | None = None
+    deactivation_reason: str | None = None
+    reactivation_date: date | None = None
+    mailing_address: Address | None = None
+    practice_address: Address | None = None
+    taxonomies: tuple[NpiTaxonomy, ...] = ()
+    authorized_official: AuthorizedOfficial | None = None
+    line_hash: str = Field(min_length=1)
+    snapshot_id: UUID
+    first_seen_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+    in_file: bool = True
+
+    @model_validator(mode="after")
+    def _names_fit_entity_kind(self) -> Self:
+        match self.entity_kind:
+            case EntityKind.UNKNOWN:
+                if self.status is not NpiStatus.DEACTIVATED:
+                    raise ValueError("only a deactivated NPI may have an unknown entity kind")
+            case EntityKind.INDIVIDUAL:
+                if self.organization_name is not None:
+                    raise ValueError("an individual's record cannot have an organization name")
+                if self.status is NpiStatus.ACTIVE and self.person_name is None:
+                    raise ValueError("an active individual's record needs a person name")
+            case EntityKind.ORGANIZATION:
+                if self.person_name is not None:
+                    raise ValueError("an organization's record cannot have a person name")
         return self

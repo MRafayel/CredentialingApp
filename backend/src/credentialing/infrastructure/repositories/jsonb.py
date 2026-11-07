@@ -1,14 +1,20 @@
-"""Conversion of domain values into ``jsonb`` parameters, written once for every repository."""
+"""Conversion of domain values into ``jsonb`` (and ``json``) parameters, written once for every
+repository."""
 
 from collections.abc import Iterable, Mapping
 
-from psycopg.types.json import Jsonb
+from psycopg.types.json import Json, Jsonb
 from pydantic import BaseModel
 
 
 def model_jsonb(model: BaseModel) -> Jsonb:
     """A model as a JSON object, in the same shape pydantic reads back."""
     return Jsonb(model.model_dump(mode="json"))
+
+
+def model_json(model: BaseModel) -> Json:
+    """A model as a ``json`` (not ``jsonb``) object, for a column that keeps key order."""
+    return Json(model.model_dump(mode="json"))
 
 
 def models_jsonb(models: Iterable[BaseModel]) -> Jsonb:

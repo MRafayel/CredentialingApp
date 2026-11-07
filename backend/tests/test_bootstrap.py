@@ -3,6 +3,7 @@ from pathlib import Path
 from credentialing.bootstrap import build_registry, create_browser_fetcher
 from credentialing.connectors.framework.base import BulkListConnectorBase
 from credentialing.connectors.framework.browser import ChromeFetcher
+from credentialing.connectors.framework.dataset import DatasetConnectorBase
 from credentialing.infrastructure.config import Settings
 from tests.fakes import FixedClock, ScriptedFetcher
 from tests.synthetic import NOW
@@ -42,6 +43,24 @@ def test_without_a_browser_no_connector_uses_one() -> None:
     connectors = build_registry(ScriptedFetcher()).bulk_connectors()
 
     assert not any(isinstance(c, BulkListConnectorBase) and c.uses_browser for c in connectors)
+
+
+def test_the_nppes_files_are_dataset_connectors_writing_under_the_dataset_dir() -> None:
+    registry = build_registry(ScriptedFetcher(), dataset_dir=Path("data/test-datasets"))
+
+    datasets = registry.dataset_connectors()
+
+    assert [c.capabilities.source_id for c in datasets] == [
+        "nppes_deactivations",
+        "nppes_monthly",
+        "nppes_weekly",
+    ]
+    for connector in datasets:
+        assert isinstance(connector, DatasetConnectorBase)
+        assert connector.destination("https://example.test/files/x.zip") == Path(
+            f"data/test-datasets/{connector.capabilities.source_id}/x.zip"
+        )
+    assert not set(datasets) & set(registry.bulk_connectors())
 
 
 def test_the_browser_fallback_follows_the_settings() -> None:

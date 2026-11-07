@@ -16,6 +16,7 @@ from credentialing.domain.models import (
     SourceSnapshot,
     VerificationResult,
 )
+from tests.fakes import ScriptedDatasetConnector, dataset_capabilities
 
 
 def _capabilities(
@@ -97,3 +98,13 @@ def test_a_source_id_can_be_registered_once(registry: ConnectorRegistry) -> None
 
     with pytest.raises(DuplicateSourceError, match="fake_ny_list"):
         registry.register(duplicate)
+
+
+def test_dataset_connectors_are_polled_but_never_bulk_lists(registry: ConnectorRegistry) -> None:
+    dataset = ScriptedDatasetConnector(dataset_capabilities("fake_a_dataset"))
+    registry.register(dataset)
+
+    assert registry.dataset_connectors() == [dataset]
+    assert registry.polled_connectors() == [dataset, FEDERAL_LIST, STATE_LIST]
+    assert "fake_a_dataset" not in [c.capabilities.source_id for c in registry.bulk_connectors()]
+    assert registry.bulk_connectors_for(CredentialType.NPI, "NY") == []

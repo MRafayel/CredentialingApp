@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Final
 
 import httpx2
@@ -29,7 +30,8 @@ from credentialing.connectors.ca_dhcs import CaDhcsConnector
 from credentialing.connectors.co_hcpf import CoHcpfConnector
 from credentialing.connectors.de_dmap import DeDmapConnector
 from credentialing.connectors.framework.browser import ChromeFetcher
-from credentialing.connectors.framework.http import Fetcher, HttpFetcher, SessionFetcher
+from credentialing.connectors.framework.dataset import DEFAULT_DATASET_DIR
+from credentialing.connectors.framework.http import Fetcher, HttpFetcher, SourceFetcher
 from credentialing.connectors.ga_dch import GaDchConnector
 from credentialing.connectors.ia_medicaid import IaMedicaidConnector
 from credentialing.connectors.il_hfs import IlHfsConnector
@@ -46,6 +48,11 @@ from credentialing.connectors.nc_medicaid import NcMedicaidConnector
 from credentialing.connectors.nd_medicaid import NdMedicaidConnector
 from credentialing.connectors.nh_dhhs import NhDhhsConnector
 from credentialing.connectors.nj_treasury import NjTreasuryConnector
+from credentialing.connectors.nppes import (
+    NppesDeactivationsConnector,
+    NppesMonthlyConnector,
+    NppesWeeklyConnector,
+)
 from credentialing.connectors.nv_omig import NvOmigConnector
 from credentialing.connectors.ny_omig import NyOmigConnector
 from credentialing.connectors.oh_medicaid import OhMedicaidConnector
@@ -64,6 +71,9 @@ from credentialing.infrastructure.database import ConnectionSource, create_pool
 from credentialing.infrastructure.logging import configure_logging
 from credentialing.infrastructure.repositories.exclusion_records import (
     PostgresExclusionRecordRepository,
+)
+from credentialing.infrastructure.repositories.npi_registry import (
+    PostgresNpiRegistryRepository,
 )
 from credentialing.infrastructure.repositories.providers import PostgresProviderRepository
 from credentialing.infrastructure.repositories.snapshots import PostgresSnapshotRepository
@@ -88,6 +98,7 @@ class Services:
     providers: PostgresProviderRepository
     snapshots: PostgresSnapshotRepository
     records: PostgresExclusionRecordRepository
+    npi_registry: PostgresNpiRegistryRepository
     verifications: PostgresVerificationRepository
     sync_source: SyncSource
     source_status: SourceStatusReport
@@ -125,11 +136,17 @@ def create_browser_fetcher(settings: Settings, clock: Clock) -> Fetcher | None:
     )
 
 
-def build_registry(fetcher: SessionFetcher, browser: Fetcher | None = None) -> ConnectorRegistry:
+def build_registry(
+    fetcher: SourceFetcher,
+    browser: Fetcher | None = None,
+    *,
+    dataset_dir: Path = DEFAULT_DATASET_DIR,
+) -> ConnectorRegistry:
     """Register every connector. A new source is one more line here, nothing else.
 
     ``browser`` goes only to connectors whose source needs the browser fallback; sessions
-    (``fetcher.session``) only to those whose file is behind a token flow.
+    (``fetcher.session``) only to those whose file is behind a token flow; streaming
+    downloads (``fetcher.download``) and ``dataset_dir`` to the dataset connectors.
     """
     registry = ConnectorRegistry()
     registry.register(OigLeieConnector(fetcher))
@@ -161,6 +178,9 @@ def build_registry(fetcher: SessionFetcher, browser: Fetcher | None = None) -> C
     registry.register(OhMedicaidConnector(fetcher, browser=browser))
     registry.register(IlHfsConnector(fetcher))
     registry.register(AkDhssConnector(fetcher, browser=browser))
+    registry.register(NppesMonthlyConnector(fetcher, data_dir=dataset_dir))
+    registry.register(NppesWeeklyConnector(fetcher, data_dir=dataset_dir))
+    registry.register(NppesDeactivationsConnector(fetcher, data_dir=dataset_dir))
     return registry
 
 
@@ -171,6 +191,7 @@ def build_services(
     providers = PostgresProviderRepository(database)
     snapshots = PostgresSnapshotRepository(database)
     records = PostgresExclusionRecordRepository(database)
+    npi_registry = PostgresNpiRegistryRepository(database)
     verifications = PostgresVerificationRepository(database)
     return Services(
         registry=registry,
@@ -178,9 +199,12 @@ def build_services(
         providers=providers,
         snapshots=snapshots,
         records=records,
+        npi_registry=npi_registry,
         verifications=verifications,
-        sync_source=SyncSource(registry, snapshots, records, clock),
-        source_status=SourceStatusReport(registry, snapshots, records, DEFAULT_FRESHNESS, clock),
+        sync_source=SyncSource(registry, snapshots, records, clock, npi_registry=npi_registry),
+        source_status=SourceStatusReport(
+            registry, snapshots, records, DEFAULT_FRESHNESS, clock, npi_registry=npi_registry
+        ),
         check_exclusions=CheckExclusions(
             registry, providers, records, snapshots, verifications, DEFAULT_FRESHNESS, clock
         ),
@@ -220,7 +244,11 @@ async def runtime(settings: Settings) -> AsyncIterator[Services]:
             fetcher = HttpFetcher(
                 client, clock, session_client=partial(create_http_client, settings)
             )
-            registry = build_registry(fetcher, browser=create_browser_fetcher(settings, clock))
+            registry = build_registry(
+                fetcher,
+                browser=create_browser_fetcher(settings, clock),
+                dataset_dir=settings.dataset_dir,
+            )
             yield build_services(pool, registry, clock)
     finally:
         await pool.close()
