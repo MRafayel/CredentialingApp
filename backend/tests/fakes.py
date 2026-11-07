@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from credentialing.connectors.framework.http import (
     FetchedFile,
@@ -26,6 +26,8 @@ from credentialing.domain.enums import (
     ChangeSignal,
     CredentialType,
     DatasetLoadMode,
+    EntityKind,
+    MatchLevel,
     NpiStatus,
     Outcome,
     VerificationMethod,
@@ -36,6 +38,9 @@ from credentialing.domain.models import (
     DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    NpiLink,
+    NpiLinkRun,
+    NpiLinkSummary,
     NpiRecord,
     Provider,
     SnapshotDiff,
@@ -44,12 +49,14 @@ from credentialing.domain.models import (
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
 from credentialing.domain.policies import (
+    CANDIDATE_CAP,
     candidate_keys,
+    level_rank,
     license_key,
     pair_rewritten_rows,
     party_key,
 )
-from credentialing.domain.ports import Dataset, DatasetFetch
+from credentialing.domain.ports import Dataset, DatasetFetch, LinkCandidates
 from credentialing.domain.types import Npi, SourceId, StateCode
 
 _WORDS = re.compile(r"[^\W_]+")
@@ -412,6 +419,166 @@ class InMemoryNpiRegistry:
             1
             for record in self.rows.values()
             if record.in_file and (status is None or record.status is status)
+        )
+
+    async def get_many(self, npis: Sequence[Npi]) -> Sequence[NpiRecord]:
+        return [self.rows[npi] for npi in sorted(set(npis)) if npi in self.rows]
+
+    async def search(self, query: str, *, limit: int) -> Sequence[NpiRecord]:
+        """Exact NPI, or every word of the query in the row's names (enough for use cases)."""
+        words = set(normalize_name(query).split())
+        found = [
+            record
+            for record in self.rows.values()
+            if record.in_file
+            and (
+                record.npi == query.strip()
+                or (words and words <= set(normalize_name(_npi_names(record)).split()))
+            )
+        ]
+        found.sort(key=lambda r: (r.status is not NpiStatus.ACTIVE, r.npi))
+        return found[: min(limit, 50)]
+
+
+def _npi_names(record: NpiRecord) -> str:
+    name = record.person_name
+    return " ".join(
+        part
+        for part in (
+            name.last if name else None,
+            name.first if name else None,
+            record.organization_name,
+        )
+        if part
+    )
+
+
+class InMemoryNpiLinks:
+    """Links in a dict over the in-memory records and mirror; enough for the use cases.
+
+    Discovery is a plain stand-in for the SQL one: a record's published NPI, else mirror rows
+    with the same normalized last and first name (or organization name). ``fail`` raises from
+    ``replace_links``; ``asked`` records each ``candidates`` batch.
+    """
+
+    def __init__(self, records: InMemoryRecords, registry: InMemoryNpiRegistry) -> None:
+        self._records = records
+        self._registry = registry
+        self.links: dict[UUID, list[NpiLink]] = {}
+        self.runs: list[NpiLinkRun] = []
+        self.fail: Exception | None = None
+        self.asked: list[list[UUID]] = []
+
+    async def stale_records(
+        self,
+        *,
+        source_id: SourceId | None,
+        mirror_snapshot_id: UUID | None,
+        limit: int | None = None,
+    ) -> Sequence[UUID]:
+        stale = sorted(
+            record.id
+            for record in self._records.latest.values()
+            if (source_id is None or record.source_id == source_id)
+            and not any(
+                link.mirror_snapshot_id == mirror_snapshot_id
+                for link in self.links.get(record.id, [])
+            )
+        )
+        return stale[:limit] if limit is not None else stale
+
+    async def candidates(self, record_ids: Sequence[UUID]) -> Sequence[LinkCandidates]:
+        self.asked.append(list(record_ids))
+        found: list[LinkCandidates] = []
+        for record_id in sorted(set(record_ids)):
+            record = self._records.all.get(record_id)
+            if record is None:
+                continue
+            if record.npi:
+                own = self._registry.rows.get(record.npi)
+                rows = [own] if own else []
+            else:
+                rows = [row for row in self._registry.rows.values() if _same_name(record, row)]
+            rows.sort(key=lambda row: row.npi)
+            found.append(
+                LinkCandidates(record, rows[:CANDIDATE_CAP], min(len(rows), CANDIDATE_CAP + 1))
+            )
+        return found
+
+    async def replace_links(self, links: Sequence[NpiLink]) -> None:
+        if self.fail is not None:
+            raise self.fail
+        grouped: dict[UUID, list[NpiLink]] = {}
+        for link in links:
+            grouped.setdefault(link.record_id, []).append(link)
+        self.links.update(grouped)
+
+    async def links_for(self, record_ids: Sequence[UUID]) -> Mapping[UUID, Sequence[NpiLink]]:
+        return {
+            record_id: sorted(
+                self.links[record_id], key=lambda link: (level_rank(link.level), link.npi or "")
+            )
+            for record_id in record_ids
+            if record_id in self.links
+        }
+
+    async def summary(self) -> NpiLinkSummary:
+        latest = list(self._records.latest.values())
+        best: dict[MatchLevel, int] = {}
+        never = 0
+        for record in latest:
+            links = self.links.get(record.id)
+            if not links:
+                never += 1
+                continue
+            level = min((link.level for link in links), key=level_rank)
+            best[level] = best.get(level, 0) + 1
+        return NpiLinkSummary(
+            records=len(latest),
+            by_best_level=best,
+            never_checked=never,
+            last_run=await self.last_run(),
+        )
+
+    async def add_run(self, run: NpiLinkRun) -> None:
+        self.runs.append(run)
+
+    async def last_run(self) -> NpiLinkRun | None:
+        return max(self.runs, key=lambda run: run.finished_at) if self.runs else None
+
+
+def _same_name(record: ExclusionRecord, row: NpiRecord) -> bool:
+    if record.person_name and row.person_name and row.entity_kind is EntityKind.INDIVIDUAL:
+        return normalize_name(record.person_name.last) == normalize_name(
+            row.person_name.last
+        ) and normalize_name(record.person_name.first) == normalize_name(row.person_name.first)
+    if record.organization_name and row.organization_name:
+        return normalize_organization_name(record.organization_name) == (
+            normalize_organization_name(row.organization_name)
+        )
+    return False
+
+
+class FakeLinker:
+    """Stands in for :class:`~credentialing.application.link_npis.LinkNpis` in a sync: records
+    each call and returns a fixed run, or raises ``fail``."""
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.calls: list[tuple[SourceId | None, str]] = []
+        self.fail = fail
+
+    async def run(self, *, source_id: SourceId | None, trigger: str) -> NpiLinkRun:
+        self.calls.append((source_id, trigger))
+        if self.fail is not None:
+            raise self.fail
+        return NpiLinkRun(
+            id=uuid4(),
+            started_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 1, 15, 12, 1, tzinfo=UTC),
+            trigger=trigger,
+            records=1,
+            linked=1,
+            by_level={MatchLevel.HIGH: 1},
         )
 
 

@@ -200,6 +200,52 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/npi/search': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Search Npis
+     * @description NPIs of the mirror matching ``q`` exactly: ten digits as an NPI, otherwise a person's
+     *     "last first" or "first last" name, one word as a last name, or an organization's name
+     *     without legal designators. Active NPIs first. Prefix and fuzzy search are not offered yet.
+     *
+     *     Every answer carries the NPPES load the mirror is as of. Fewer than two letters or digits
+     *     search nothing.
+     */
+    get: operations['search_npis_npi_search_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/npi/{npi}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Npi
+     * @description One NPI as the mirror holds it, with the NPPES load the mirror is as of; 404 when the
+     *     mirror has no record of it. Addresses are never returned (practice city and state only).
+     */
+    get: operations['get_npi_npi__npi__get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -225,6 +271,15 @@ export interface components {
       state?: string | null
       /** Postal Code */
       postal_code?: string | null
+    }
+    /**
+     * AuthorizedOfficialResponse
+     * @description The person an organization named as authorized to act for it.
+     */
+    AuthorizedOfficialResponse: {
+      name: components['schemas']['PersonNameResponse']
+      /** Title */
+      title: string | null
     }
     /**
      * ChangeSignal
@@ -534,6 +589,163 @@ export interface components {
       end_date: string | null
     }
     /**
+     * MirrorResponse
+     * @description Which NPPES load the mirror is as of: ``provenance.verified_at`` is when the file was
+     *     fetched, ``source_updated_at`` the date CMS gave it; ``freshness`` by the central policy.
+     *     The mirror is a cached copy, never a live registry answer.
+     */
+    MirrorResponse: {
+      provenance: components['schemas']['ProvenanceResponse']
+      freshness: components['schemas']['Freshness']
+    }
+    /**
+     * NpiLinkResponse
+     * @description An inferred link from an exclusion record to an NPI of the mirror, for a person to weigh;
+     *     never the record's published NPI. ``npi`` and ``registry`` are null on the row of a record
+     *     checked and linked to nothing (level ``none``, the explanation says why). ``candidates``
+     *     is how many mirror rows the search found (51: more than 50).
+     */
+    NpiLinkResponse: {
+      /** Npi */
+      npi: string | null
+      level: components['schemas']['MatchLevel']
+      /** Evidence */
+      evidence: components['schemas']['MatchEvidenceResponse'][]
+      /** Explanation */
+      explanation: string
+      /** Candidates */
+      candidates: number
+      /**
+       * Linked At
+       * Format: date-time
+       */
+      linked_at: string
+      registry: components['schemas']['NpiSummaryResponse'] | null
+    }
+    /**
+     * NpiRecordResponse
+     * @description One mirrored NPI in full, without addresses (practice city and state only).
+     *
+     *     ``updated_at`` is when the mirror last changed the row.
+     */
+    NpiRecordResponse: {
+      /** Npi */
+      npi: string
+      entity_kind: components['schemas']['EntityKind']
+      status: components['schemas']['NpiStatus']
+      person_name: components['schemas']['PersonNameResponse'] | null
+      /** Organization Name */
+      organization_name: string | null
+      /** Credential */
+      credential: string | null
+      /** Primary Taxonomy */
+      primary_taxonomy: string | null
+      /** Practice City */
+      practice_city: string | null
+      /** Practice State */
+      practice_state: string | null
+      /** Enumeration Date */
+      enumeration_date: string | null
+      /** Deactivation Date */
+      deactivation_date: string | null
+      /** In File */
+      in_file: boolean
+      /** Replacement Npi */
+      replacement_npi: string | null
+      /** Name Prefix */
+      name_prefix: string | null
+      /** Other Names */
+      other_names: string[]
+      /** Sole Proprietor */
+      sole_proprietor: boolean | null
+      /** Organization Subpart */
+      organization_subpart: boolean | null
+      /** Last Updated */
+      last_updated: string | null
+      /** Certification Date */
+      certification_date: string | null
+      /** Reactivation Date */
+      reactivation_date: string | null
+      /** Taxonomies */
+      taxonomies: components['schemas']['NpiTaxonomyResponse'][]
+      authorized_official: components['schemas']['AuthorizedOfficialResponse'] | null
+      /** Updated At */
+      updated_at: string | null
+    }
+    /**
+     * NpiResponse
+     * @description Body of ``GET /npi/{npi}``: the mirrored record and the load the mirror is as of.
+     */
+    NpiResponse: {
+      record: components['schemas']['NpiRecordResponse']
+      mirror: components['schemas']['MirrorResponse'] | null
+    }
+    /**
+     * NpiSearchResponse
+     * @description Body of ``GET /npi/search``: the NPIs found, active first, and the load the mirror is
+     *     as of (null when it was never loaded).
+     */
+    NpiSearchResponse: {
+      /** Query */
+      query: string
+      /** Records */
+      records: components['schemas']['NpiSummaryResponse'][]
+      mirror: components['schemas']['MirrorResponse'] | null
+    }
+    /**
+     * NpiStatus
+     * @description Whether an NPI is in use, as the NPPES registry publishes it.
+     * @enum {string}
+     */
+    NpiStatus: 'active' | 'deactivated'
+    /**
+     * NpiSummaryResponse
+     * @description A compact view of one mirrored NPI. Never a street or mailing address: the practice
+     *     city and state only, and addresses otherwise only as match evidence ("same ZIP").
+     *
+     *     ``primary_taxonomy`` is the code of the primary taxonomy (no description table is kept);
+     *     ``in_file`` is false once the latest full file no longer lists the NPI.
+     */
+    NpiSummaryResponse: {
+      /** Npi */
+      npi: string
+      entity_kind: components['schemas']['EntityKind']
+      status: components['schemas']['NpiStatus']
+      person_name: components['schemas']['PersonNameResponse'] | null
+      /** Organization Name */
+      organization_name: string | null
+      /** Credential */
+      credential: string | null
+      /** Primary Taxonomy */
+      primary_taxonomy: string | null
+      /** Practice City */
+      practice_city: string | null
+      /** Practice State */
+      practice_state: string | null
+      /** Enumeration Date */
+      enumeration_date: string | null
+      /** Deactivation Date */
+      deactivation_date: string | null
+      /** In File */
+      in_file: boolean
+    }
+    /**
+     * NpiTaxonomyResponse
+     * @description One taxonomy of an NPI, with the licence the provider reported for it.
+     */
+    NpiTaxonomyResponse: {
+      /** Code */
+      code: string
+      /** Primary */
+      primary: boolean
+      /** License Number */
+      license_number: string | null
+      /** License State */
+      license_state: string | null
+      /** Group */
+      group: string | null
+    }
+    /**
      * Outcome
      * @description What happened when a source was consulted.
      *
@@ -741,8 +953,9 @@ export interface components {
      *     ``same_party`` lists records by NPI, then by licence; ``related`` the records tied through
      *     the row's other NPIs; ``same_name`` records that only share the name, for a person to
      *     weigh. ``rewritten_by`` is the id of the record that replaced this one when the list
-     *     rewrote it, null otherwise. Dates of birth, street addresses and raw rows are never
-     *     included.
+     *     rewrote it, null otherwise. ``npi_links`` are the record's inferred links to NPIs of the
+     *     registry mirror, best level first (empty when never linked). Dates of birth, street
+     *     addresses and raw rows are never included.
      */
     RecordProfileResponse: {
       record: components['schemas']['ProfileRecordResponse']
@@ -762,6 +975,8 @@ export interface components {
       same_name: components['schemas']['LinkedRecordResponse'][]
       /** Rewritten By */
       rewritten_by: string | null
+      /** Npi Links */
+      npi_links: components['schemas']['NpiLinkResponse'][]
     }
     /**
      * RecordSourceResponse
@@ -1337,6 +1552,73 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['RecordProfileResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  search_npis_npi_search_get: {
+    parameters: {
+      query?: {
+        q?: string
+        limit?: number
+      }
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NpiSearchResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_npi_npi__npi__get: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        npi: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NpiResponse']
         }
       }
       /** @description Validation Error */

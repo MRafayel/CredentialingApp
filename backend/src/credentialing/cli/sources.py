@@ -1,7 +1,8 @@
 """Rendering of ``sources``: the source monitoring dashboard, as a table or as JSON.
 
 A result is always a symbol and a word, so colour only ever repeats what the text says.
-Colour is the caller's decision (a terminal, and ``NO_COLOR`` unset).
+Colour is the caller's decision (a terminal, and ``NO_COLOR`` unset). Under the table, one
+line says where linking exclusion records to NPIs stands.
 """
 
 import json
@@ -11,8 +12,14 @@ from typing import Final, TextIO
 
 from credentialing.application.source_status import SourceHealth, SourceStatus
 from credentialing.cli.relative_time import ago, span, until
-from credentialing.domain.enums import CredentialType, DatasetLoadMode, Freshness, Outcome
-from credentialing.domain.models import DatasetLoad
+from credentialing.domain.enums import (
+    CredentialType,
+    DatasetLoadMode,
+    Freshness,
+    MatchLevel,
+    Outcome,
+)
+from credentialing.domain.models import DatasetLoad, NpiLinkSummary
 
 WIDTH: Final = 100
 """The table never gets wider than this; the source name column gives way."""
@@ -54,9 +61,14 @@ def show(
     as_json: bool,
     strict: bool,
     color: bool,
+    links: NpiLinkSummary | None = None,
 ) -> int:
     """Write the dashboard (or its JSON) to ``out`` and return the process exit code."""
-    out.write(render_json(statuses) if as_json else render_table(statuses, now, color=color))
+    out.write(
+        render_json(statuses, links)
+        if as_json
+        else render_table(statuses, now, color=color, links=links)
+    )
     return exit_code(statuses, strict=strict)
 
 
@@ -65,17 +77,26 @@ def exit_code(statuses: Sequence[SourceStatus], *, strict: bool) -> int:
     return 1 if strict and any(s.health is not SourceHealth.OK for s in statuses) else 0
 
 
-def render_json(statuses: Sequence[SourceStatus]) -> str:
-    """Every status with all its fields; timestamps and durations in ISO 8601."""
-    payload = [status.model_dump(mode="json") for status in statuses]
+def render_json(statuses: Sequence[SourceStatus], links: NpiLinkSummary | None = None) -> str:
+    """``{"sources": [...], "npi_links": {...}}``: every status with all its fields, and the
+    NPI linking summary (null when not given); timestamps and durations in ISO 8601."""
+    payload = {
+        "sources": [status.model_dump(mode="json") for status in statuses],
+        "npi_links": links.model_dump(mode="json") if links else None,
+    }
     return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
 
 def render_table(
-    statuses: Sequence[SourceStatus], now: datetime, *, color: bool, width: int = WIDTH
+    statuses: Sequence[SourceStatus],
+    now: datetime,
+    *,
+    color: bool,
+    width: int = WIDTH,
+    links: NpiLinkSummary | None = None,
 ) -> str:
     """One row per source, a note line under each failed fetch and under each dataset source's
-    last load, and a summary."""
+    last load, a summary, the freshness policy, and the NPI links line when given."""
     headers = (
         "Source",
         "Jur.",
@@ -122,7 +143,24 @@ def render_table(
     policy = _policy(statuses)
     if policy:
         lines.append(f"Data freshness policy: {policy}")
+    if links is not None:
+        lines.append(links_line(links, now))
     return "\n".join(lines) + "\n"
+
+
+def links_line(links: NpiLinkSummary, now: datetime) -> str:
+    """Where NPI linking stands: "NPI links: last run 3 h ago · 148,361 records · exact 23,100
+    · high 4,210 · potential 19,870 · ambiguous 51,300 · none 49,881", and the records never
+    checked when there are any."""
+    run = links.last_run
+    parts = [
+        f"last run {ago(run.finished_at, now)}" if run else "never run",
+        f"{links.records:,} records",
+        *(f"{level.value} {links.by_best_level.get(level, 0):,}" for level in MatchLevel),
+    ]
+    if links.never_checked:
+        parts.append(f"never checked {links.never_checked:,}")
+    return "NPI links: " + " · ".join(parts)
 
 
 def _row(status: SourceStatus, now: datetime) -> list[_Cell]:

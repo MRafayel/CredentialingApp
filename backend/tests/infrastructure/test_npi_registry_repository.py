@@ -91,10 +91,11 @@ async def mirror(database: ConnectionSource, tmp_path: Path) -> _Mirror:
     rolled-back transaction the tables are truncated first: a full-file load would otherwise
     flag every real row as missing, which takes minutes and leaves millions of dead tuples
     behind when the transaction rolls back. Truncation is transactional and O(1) in Postgres,
-    so the real rows are back untouched once the test ends.
+    so the real rows are back untouched once the test ends. The NPI links refer to the
+    mirror, so they are truncated with it.
     """
     async with database.connection() as connection:
-        await connection.execute("truncate npi_registry, npi_registry_history")
+        await connection.execute("truncate npi_registry, npi_registry_history, exclusion_npi_links")
     return _Mirror(database, tmp_path)
 
 

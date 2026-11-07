@@ -33,3 +33,11 @@ class RecordNotFoundError(ApplicationError):
     def __init__(self, record_id: UUID) -> None:
         super().__init__(f"exclusion record {record_id} not found")
         self.record_id = record_id
+
+
+class NpiNotFoundError(ApplicationError):
+    """The NPI registry mirror has no record of this NPI."""
+
+    def __init__(self, npi: str) -> None:
+        super().__init__(f"NPI {npi} is not in the registry mirror")
+        self.npi = npi

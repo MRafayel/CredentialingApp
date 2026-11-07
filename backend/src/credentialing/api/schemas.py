@@ -8,9 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from credentialing.application.list_providers import ProviderPage
 from credentialing.application.lookup_exclusions import LookupRecord, LookupResult, SearchedSource
+from credentialing.application.npi_lookup import MirrorSource, NpiSearchResult, NpiView
 from credentialing.application.record_profile import (
     LinkedRecord,
     ProfileRecord,
+    RecordNpiLink,
     RecordProfile,
     RecordSource,
     RecordVersion,
@@ -30,6 +32,7 @@ from credentialing.domain.enums import (
     MatchField,
     MatchLevel,
     MatchRelation,
+    NpiStatus,
     Outcome,
     RecordLink,
     RecordStatus,
@@ -38,6 +41,7 @@ from credentialing.domain.enums import (
 )
 from credentialing.domain.models import (
     ExclusionRecord,
+    NpiRecord,
     Provider,
     ProviderVerdict,
     SourceSnapshot,
@@ -390,6 +394,83 @@ class RecordVersionResponse(Schema):
         return cls.model_validate(version.model_dump())
 
 
+class NpiSummaryResponse(Schema):
+    """A compact view of one mirrored NPI. Never a street or mailing address: the practice
+    city and state only, and addresses otherwise only as match evidence ("same ZIP").
+
+    ``primary_taxonomy`` is the code of the primary taxonomy (no description table is kept);
+    ``in_file`` is false once the latest full file no longer lists the NPI.
+    """
+
+    npi: str
+    entity_kind: EntityKind
+    status: NpiStatus
+    person_name: PersonNameResponse | None
+    organization_name: str | None
+    credential: str | None
+    primary_taxonomy: str | None
+    practice_city: str | None
+    practice_state: str | None
+    enumeration_date: date | None
+    deactivation_date: date | None
+    in_file: bool
+
+    @classmethod
+    def from_domain(cls, record: NpiRecord) -> NpiSummaryResponse:
+        """Map a mirrored record into its compact HTTP shape."""
+        return cls(**_npi_summary(record))
+
+
+def _npi_summary(record: NpiRecord) -> dict[str, object]:
+    name, place = record.person_name, record.practice_address
+    primary = next((t.code for t in record.taxonomies if t.primary), None)
+    return {
+        "npi": record.npi,
+        "entity_kind": record.entity_kind,
+        "status": record.status,
+        "person_name": PersonNameResponse.model_validate(name.model_dump()) if name else None,
+        "organization_name": record.organization_name,
+        "credential": record.credential,
+        "primary_taxonomy": primary,
+        "practice_city": place.city if place else None,
+        "practice_state": place.state if place else None,
+        "enumeration_date": record.enumeration_date,
+        "deactivation_date": record.deactivation_date,
+        "in_file": record.in_file,
+    }
+
+
+class NpiLinkResponse(Schema):
+    """An inferred link from an exclusion record to an NPI of the mirror, for a person to weigh;
+    never the record's published NPI. ``npi`` and ``registry`` are null on the row of a record
+    checked and linked to nothing (level ``none``, the explanation says why). ``candidates``
+    is how many mirror rows the search found (51: more than 50)."""
+
+    npi: str | None
+    level: MatchLevel
+    evidence: list[MatchEvidenceResponse]
+    explanation: str
+    candidates: int
+    linked_at: datetime
+    registry: NpiSummaryResponse | None
+
+    @classmethod
+    def from_link(cls, found: RecordNpiLink) -> NpiLinkResponse:
+        """Map a record's NPI link into its HTTP shape."""
+        link = found.link
+        return cls(
+            npi=link.npi,
+            level=link.level,
+            evidence=[
+                MatchEvidenceResponse.model_validate(e.model_dump()) for e in link.match.evidence
+            ],
+            explanation=link.match.explanation,
+            candidates=link.candidates,
+            linked_at=link.linked_at,
+            registry=NpiSummaryResponse.from_domain(found.registry) if found.registry else None,
+        )
+
+
 class RecordProfileResponse(Schema):
     """Body of ``GET /exclusions/records/{id}``: one record and what the lists hold around it.
 
@@ -397,8 +478,9 @@ class RecordProfileResponse(Schema):
     ``same_party`` lists records by NPI, then by licence; ``related`` the records tied through
     the row's other NPIs; ``same_name`` records that only share the name, for a person to
     weigh. ``rewritten_by`` is the id of the record that replaced this one when the list
-    rewrote it, null otherwise. Dates of birth, street addresses and raw rows are never
-    included.
+    rewrote it, null otherwise. ``npi_links`` are the record's inferred links to NPIs of the
+    registry mirror, best level first (empty when never linked). Dates of birth, street
+    addresses and raw rows are never included.
     """
 
     record: ProfileRecordResponse
@@ -409,6 +491,7 @@ class RecordProfileResponse(Schema):
     related: list[LinkedRecordResponse]
     same_name: list[LinkedRecordResponse]
     rewritten_by: UUID | None
+    npi_links: list[NpiLinkResponse]
 
     @classmethod
     def from_profile(cls, profile: RecordProfile) -> RecordProfileResponse:
@@ -422,6 +505,7 @@ class RecordProfileResponse(Schema):
             related=[LinkedRecordResponse.from_linked(r) for r in profile.related],
             same_name=[LinkedRecordResponse.from_linked(r) for r in profile.same_name],
             rewritten_by=profile.rewritten_by,
+            npi_links=[NpiLinkResponse.from_link(link) for link in profile.npi_links],
         )
 
 
@@ -590,4 +674,115 @@ class SourceStatusResponse(Schema):
                 if status.last_load
                 else None
             ),
+        )
+
+
+class MirrorResponse(Schema):
+    """Which NPPES load the mirror is as of: ``provenance.verified_at`` is when the file was
+    fetched, ``source_updated_at`` the date CMS gave it; ``freshness`` by the central policy.
+    The mirror is a cached copy, never a live registry answer."""
+
+    provenance: ProvenanceResponse
+    freshness: Freshness
+
+    @classmethod
+    def from_mirror(cls, mirror: MirrorSource) -> MirrorResponse:
+        """Map the mirror's source into its HTTP shape."""
+        return cls.model_validate(mirror.model_dump())
+
+
+class NpiTaxonomyResponse(Schema):
+    """One taxonomy of an NPI, with the licence the provider reported for it."""
+
+    code: str
+    primary: bool
+    license_number: str | None
+    license_state: str | None
+    group: str | None
+
+
+class AuthorizedOfficialResponse(Schema):
+    """The person an organization named as authorized to act for it."""
+
+    name: PersonNameResponse
+    title: str | None
+
+
+class NpiRecordResponse(NpiSummaryResponse):
+    """One mirrored NPI in full, without addresses (practice city and state only).
+
+    ``updated_at`` is when the mirror last changed the row.
+    """
+
+    replacement_npi: str | None
+    name_prefix: str | None
+    other_names: list[str]
+    sole_proprietor: bool | None
+    organization_subpart: bool | None
+    last_updated: date | None
+    certification_date: date | None
+    reactivation_date: date | None
+    taxonomies: list[NpiTaxonomyResponse]
+    authorized_official: AuthorizedOfficialResponse | None
+    updated_at: datetime | None
+
+    @classmethod
+    def from_record(cls, record: NpiRecord) -> NpiRecordResponse:
+        """Map a mirrored record into its full HTTP shape."""
+        official = record.authorized_official
+        return cls(
+            **_npi_summary(record),
+            replacement_npi=record.replacement_npi,
+            name_prefix=record.name_prefix,
+            other_names=list(record.other_names),
+            sole_proprietor=record.sole_proprietor,
+            organization_subpart=record.organization_subpart,
+            last_updated=record.last_updated,
+            certification_date=record.certification_date,
+            reactivation_date=record.reactivation_date,
+            taxonomies=[
+                NpiTaxonomyResponse.model_validate(t.model_dump()) for t in record.taxonomies
+            ],
+            authorized_official=(
+                AuthorizedOfficialResponse(
+                    name=PersonNameResponse.model_validate(official.name.model_dump()),
+                    title=official.title,
+                )
+                if official
+                else None
+            ),
+            updated_at=record.updated_at,
+        )
+
+
+class NpiResponse(Schema):
+    """Body of ``GET /npi/{npi}``: the mirrored record and the load the mirror is as of."""
+
+    record: NpiRecordResponse
+    mirror: MirrorResponse | None
+
+    @classmethod
+    def from_view(cls, view: NpiView) -> NpiResponse:
+        """Map a mirrored NPI into its HTTP shape."""
+        return cls(
+            record=NpiRecordResponse.from_record(view.record),
+            mirror=MirrorResponse.from_mirror(view.mirror) if view.mirror else None,
+        )
+
+
+class NpiSearchResponse(Schema):
+    """Body of ``GET /npi/search``: the NPIs found, active first, and the load the mirror is
+    as of (null when it was never loaded)."""
+
+    query: str
+    records: list[NpiSummaryResponse]
+    mirror: MirrorResponse | None
+
+    @classmethod
+    def from_result(cls, result: NpiSearchResult) -> NpiSearchResponse:
+        """Map a mirror search into its HTTP shape."""
+        return cls(
+            query=result.query,
+            records=[NpiSummaryResponse.from_domain(record) for record in result.records],
+            mirror=MirrorResponse.from_mirror(result.mirror) if result.mirror else None,
         )

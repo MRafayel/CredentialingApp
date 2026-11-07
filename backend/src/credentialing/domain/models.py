@@ -636,3 +636,76 @@ class NpiRecord(DomainModel):
                 if self.person_name is not None:
                     raise ValueError("an organization's record cannot have a person name")
         return self
+
+
+class NpiLink(DomainModel):
+    """An inferred tie from an exclusion record to an NPI of the registry mirror, with its match.
+
+    Never the record's published NPI (``ExclusionRecord.npi``), which only the list sets: this
+    is evidence for a person to weigh. ``npi`` is None on the one row of a record that was
+    checked and linked to nothing; ``match`` then says why ("no candidate with this name").
+    ``candidates`` is how many mirror rows the discovery found for the record (``CANDIDATE_CAP
+    + 1`` meaning more than the cap); ``mirror_snapshot_id`` the NPPES load the link was made
+    against, so a newer load makes it stale. The level is the match's, held once.
+    """
+
+    id: UUID
+    record_id: UUID
+    npi: Npi | None
+    match: MatchResult
+    candidates: int = Field(ge=0)
+    mirror_snapshot_id: UUID
+    linked_at: AwareDatetime
+
+    @property
+    def level(self) -> MatchLevel:
+        """How strongly the record points at the NPI; ``NONE`` on a record's no-link row."""
+        return self.match.level
+
+    @model_validator(mode="after")
+    def _no_npi_only_without_a_match(self) -> Self:
+        if (self.npi is None) != (self.match.level is MatchLevel.NONE):
+            raise ValueError("a link has an NPI exactly when its level is not none")
+        return self
+
+
+class NpiLinkRun(DomainModel):
+    """One linking run: what triggered it, what it linked, and what it cost.
+
+    ``records`` counts the exclusion records it (re)linked, ``linked`` those with at least one
+    link above ``NONE``, and ``by_level`` the records by their best link's level. ``phases``
+    are wall-clock durations summed over the batches (``candidates``, ``scoring``,
+    ``writing``), ``cpu_time`` the process's user plus system time over the run. ``trigger``
+    is ``list_sync:<source_id>``, ``nppes_load`` or ``cli``; ``note`` says why a run linked
+    nothing when it could not (the mirror never loaded).
+    """
+
+    id: UUID
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    trigger: str = Field(min_length=1)
+    mirror_snapshot_id: UUID | None = None
+    records: int = Field(ge=0)
+    linked: int = Field(ge=0)
+    by_level: Mapping[MatchLevel, int] = Field(default_factory=dict)
+    phases: Mapping[str, timedelta] = Field(default_factory=dict)
+    cpu_time: timedelta | None = None
+    note: str | None = None
+
+    @property
+    def duration(self) -> timedelta:
+        """Wall-clock time from start to finish."""
+        return self.finished_at - self.started_at
+
+
+class NpiLinkSummary(DomainModel):
+    """Where linking stands over the latest exclusion records, for the sources dashboard.
+
+    ``by_best_level`` counts the checked records by their best link's level (``NONE``: checked,
+    nothing linked); ``never_checked`` the latest records with no link row at all.
+    """
+
+    records: int = Field(ge=0)
+    by_best_level: Mapping[MatchLevel, int] = Field(default_factory=dict)
+    never_checked: int = Field(ge=0)
+    last_run: NpiLinkRun | None = None

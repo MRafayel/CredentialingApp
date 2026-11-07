@@ -18,7 +18,7 @@ API_TYPES_TMP := $(CURDIR)/frontend/node_modules/.tmp
 # Pinned Supabase CLI, kept in .tools/ (downloaded on first use).
 SUPABASE := ./scripts/supabase
 
-.PHONY: help setup setup-backend setup-frontend api web fmt lint typecheck test test-integration test-live test-web check build backend-add sync sync-due sources api-types api-types-check
+.PHONY: help setup setup-backend setup-frontend api web fmt lint typecheck test test-integration test-live test-web check build backend-add sync sync-due sources link-npis api-types api-types-check
 .PHONY: db-start db-stop db-status db-reset db-migrate db-new
 
 help: ## List available commands
@@ -113,6 +113,9 @@ sync-due: ## Fetch only the sources whose poll interval has elapsed (for cron)
 
 sources: ## Source monitoring dashboard (make sources ARGS="--json")
 	@$(BIN)/python -m credentialing.cli sources $(ARGS)
+
+link-npis: ## Link exclusion records to NPIs of the mirror (make link-npis [SOURCE=ny_omig])
+	$(BIN)/python -m credentialing.cli link-npis $(if $(SOURCE),--source $(SOURCE))
 
 backend-add: ## Add a backend dependency: make backend-add PKG=name [DEV=1]
 	@test -n "$(PKG)" || (echo "Usage: make backend-add PKG=name [DEV=1]" && exit 1)

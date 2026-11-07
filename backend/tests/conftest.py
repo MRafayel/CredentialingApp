@@ -19,6 +19,8 @@ _SCHEMA_TABLES = (
     "verifications",
     "npi_registry",
     "npi_registry_history",
+    "exclusion_npi_links",
+    "npi_link_runs",
 )
 
 

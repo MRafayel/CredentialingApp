@@ -70,7 +70,7 @@ WORK_MEM: Final = "256MB"
 """``work_mem`` for the load's transaction: the joins and the duplicate count over ten
 million rows then run in memory instead of spilling to disk."""
 
-_COLUMNS: Final = (
+MIRROR_COLUMNS: Final = (
     "npi",
     "entity_kind",
     "status",
@@ -103,15 +103,20 @@ _COLUMNS: Final = (
 )
 """The mirror's columns, in the order rows are copied."""
 
-_COLUMN_LIST: Final = sql.SQL(", ").join(sql.Identifier(name) for name in _COLUMNS)
-_REGISTRY_COLUMNS: Final = sql.SQL(", ").join(sql.Identifier("r", name) for name in _COLUMNS)
-_INCOMING_COLUMNS: Final = sql.SQL(", ").join(sql.Identifier("i", name) for name in _COLUMNS)
+_COLUMN_LIST: Final = sql.SQL(", ").join(sql.Identifier(name) for name in MIRROR_COLUMNS)
+_REGISTRY_COLUMNS: Final = sql.SQL(", ").join(sql.Identifier("r", name) for name in MIRROR_COLUMNS)
+_INCOMING_COLUMNS: Final = sql.SQL(", ").join(sql.Identifier("i", name) for name in MIRROR_COLUMNS)
 _UPSERT_SET: Final = sql.SQL(", ").join(
     sql.SQL("{column} = excluded.{column}").format(column=sql.Identifier(name))
-    for name in _COLUMNS
+    for name in MIRROR_COLUMNS
     if name not in ("npi", "first_seen_at")
 )
 _SELECT: Final = sql.SQL("select {columns} from npi_registry").format(columns=_COLUMN_LIST)
+
+MAX_SEARCH_RESULTS: Final = 50
+"""The most rows one search of the mirror returns."""
+
+_NPI_QUERY: Final = re.compile(r"[0-9]{10}")
 
 _COPY_SPECIAL: Final = re.compile(r"[\\\t\n\r]")
 _COPY_ESCAPES: Final = str.maketrans({"\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r"})
@@ -196,7 +201,7 @@ class PostgresNpiRegistryRepository:
         """Return the mirrored record of this NPI, listed in the latest full file or not."""
         async with (
             self._database.connection() as connection,
-            connection.cursor(row_factory=class_row(_NpiRow)) as cursor,
+            connection.cursor(row_factory=class_row(NpiRow)) as cursor,
         ):
             await cursor.execute(t"{_SELECT:q} where npi = {npi}")
             row = await cursor.fetchone()
@@ -214,6 +219,100 @@ class PostgresNpiRegistryRepository:
             )
             row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+    async def get_many(self, npis: Sequence[Npi]) -> Sequence[NpiRecord]:
+        """Return the mirrored records of these NPIs that exist, in no particular order."""
+        wanted = sorted(set(npis))
+        if not wanted:
+            return []
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(NpiRow)) as cursor,
+        ):
+            await cursor.execute(t"{_SELECT:q} where npi = any({wanted}::bpchar[])")
+            rows = await cursor.fetchall()
+        return [row.to_domain() for row in rows]
+
+    async def search(self, query: str, *, limit: int) -> Sequence[NpiRecord]:
+        """NPIs the latest file lists matching ``query`` exactly by key, active rows first.
+
+        Ten digits look up that NPI. Otherwise the keys are computed in SQL (``name_key``,
+        ``organization_key``) and each candidate shape is one index lookup, at most
+        ``limit`` NPIs each: the whole query as an organization's name or other name; one
+        word as a last name; several words as "last first", "first last" and "first ...
+        last". The NPIs found are then ordered active first, then by name and NPI. A very
+        common surname returns the first ``limit`` namesakes in key order (first name, then
+        NPI), so "active first" orders those. Prefix and fuzzy search are not in stage 2.
+        """
+        size = min(max(limit, 1), MAX_SEARCH_RESULTS)
+        term = query.strip()
+        async with self._database.connection() as connection:
+            if _NPI_QUERY.fullmatch(term):
+                wanted = [term]
+            else:
+                cursor = await connection.execute(
+                    t"select name_key({term}), organization_key({term})"
+                )
+                keys = await cursor.fetchone()
+                wanted = await _search_npis(connection, keys, size) if keys else []
+            if not wanted:
+                return []
+            async with connection.cursor(row_factory=class_row(NpiRow)) as found:
+                await found.execute(
+                    t"""
+                    {_SELECT:q}
+                    where in_file and npi = any({wanted}::bpchar[])
+                    order by status = 'active' desc,
+                        coalesce(organization_name, last_name), first_name, npi
+                    limit {size}
+                    """
+                )
+                rows = await found.fetchall()
+        return [row.to_domain() for row in rows]
+
+
+async def _search_npis(
+    connection: AsyncConnection[TupleRow], keys: tuple[str | None, str | None], size: int
+) -> list[str]:
+    """The NPIs whose keys equal the query's, one index lookup per shape, ``size`` each."""
+    name, organization = keys
+    words = name.split() if name else []
+    people: list[tuple[str, str]] = []
+    if len(words) >= 2:
+        people = list(
+            dict.fromkeys([(words[0], words[1]), (words[1], words[0]), (words[-1], words[0])])
+        )
+    found: list[str] = []
+    for last, first in people:
+        cursor = await connection.execute(
+            t"""
+            select npi from npi_registry
+            where in_file and last_name_key = {last} and first_name_key = {first}
+            order by npi limit {size}
+            """
+        )
+        found += [row[0] for row in await cursor.fetchall()]
+    if len(words) == 1:
+        cursor = await connection.execute(
+            t"""
+            select npi from npi_registry where in_file and last_name_key = {words[0]}
+            order by first_name_key, npi limit {size}
+            """
+        )
+        found += [row[0] for row in await cursor.fetchall()]
+    if organization:
+        cursor = await connection.execute(
+            t"""
+            (select npi from npi_registry where in_file and organization_key = {organization}
+             order by npi limit {size})
+            union
+            (select npi from npi_registry
+             where in_file and other_name_keys @> array[{organization}]::text[]
+             order by npi limit {size})
+            """
+        )
+        found += [row[0] for row in await cursor.fetchall()]
+    return list(dict.fromkeys(found))
 
 
 @dataclass(frozen=True, slots=True)
@@ -601,7 +700,7 @@ async def _needed_npis(connection: AsyncConnection[TupleRow]) -> set[str]:
 
 
 def _values(record: NpiRecord, snapshot_id: str, now: str) -> list[str | None]:
-    """A record as the mirror's columns (:data:`_COLUMNS`), as ``COPY`` text values."""
+    """A record as the mirror's columns (:data:`MIRROR_COLUMNS`), as ``COPY`` text values."""
     name = record.person_name
     return [
         record.npi,
@@ -650,7 +749,7 @@ def _json(model: BaseModel | None) -> str | None:
     return model.model_dump_json() if model is not None else None
 
 
-class _NpiRow(BaseModel):
+class NpiRow(BaseModel):
     """One ``npi_registry`` row, mapped into an :class:`NpiRecord` by ``to_domain``."""
 
     model_config = ConfigDict(frozen=True)

@@ -18,7 +18,8 @@ recognized by their path, as for the other link-discovery sources:
 - deactivations: ``NPPES_Deactivated_NPI_Report_110226_V2.zip``, 2,690,499 bytes; see
   ``deactivations.py``.
 
-Every poll is one GET of the files page (polled daily: a tiny static page); a file is
+Every poll is one GET of the files page (polled weekly, as every list is: owner decision
+2026-11-07, after a day of daily polls); a file is
 downloaded only when its link changed since the last completed fetch, streamed to
 ``<dataset dir>/<source_id>/`` and deleted once loaded. No crawl delay: there is no
 robots.txt. Records are counted in the mirror, which all three feed.
@@ -47,8 +48,9 @@ from credentialing.domain.types import FEDERAL
 FILES_PAGE: Final = "https://download.cms.gov/nppes/NPI_Files.html"
 """The page that links the current NPPES files."""
 
-POLL_INTERVAL: Final = timedelta(days=1)
-"""The files page is one small static request; a file is downloaded only when its link moves."""
+POLL_INTERVAL: Final = timedelta(days=7)
+"""Weekly, like the exclusion lists (owner, 2026-11-07); a new monthly file is noticed up to six
+days later than a daily check would, and a file is downloaded only when its link moves."""
 
 
 def _capabilities(source_id: str, display_name: str) -> ConnectorCapabilities:

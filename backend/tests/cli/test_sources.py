@@ -7,15 +7,16 @@ from uuid import uuid4
 import pytest
 
 from credentialing.application.source_status import SourceHealth, SourceStatus
-from credentialing.cli.sources import WIDTH, render_json, render_table, show
+from credentialing.cli.sources import WIDTH, links_line, render_json, render_table, show
 from credentialing.domain.enums import (
     AccessPolicy,
     ChangeSignal,
     CredentialType,
     Freshness,
+    MatchLevel,
     Outcome,
 )
-from credentialing.domain.models import SourceSnapshot
+from credentialing.domain.models import NpiLinkRun, NpiLinkSummary, SourceSnapshot
 from tests.synthetic import NOW
 
 _ANSI = re.compile(r"\033\[[0-9;]*m")
@@ -176,7 +177,7 @@ def test_an_empty_registry_renders_a_summary() -> None:
 
 
 def test_json_round_trips_with_every_field() -> None:
-    payload = json.loads(render_json(STATUSES))
+    payload = json.loads(render_json(STATUSES))["sources"]
 
     assert [item["source_id"] for item in payload] == [s.source_id for s in STATUSES]
     assert set(payload[0]) == set(SourceStatus.model_fields)
@@ -218,5 +219,53 @@ def test_show_writes_json_when_asked() -> None:
 
     show(STATUSES, NOW, out=out, as_json=True, strict=False, color=True)
 
-    assert len(json.loads(out.getvalue())) == len(STATUSES)
+    assert len(json.loads(out.getvalue())["sources"]) == len(STATUSES)
     assert "\033[" not in out.getvalue()
+
+
+LINKS = NpiLinkSummary(
+    records=148_361,
+    by_best_level={
+        MatchLevel.EXACT: 23_100,
+        MatchLevel.HIGH: 4_210,
+        MatchLevel.POTENTIAL: 19_870,
+        MatchLevel.AMBIGUOUS: 51_300,
+        MatchLevel.NONE: 49_871,
+    },
+    never_checked=10,
+    last_run=NpiLinkRun(
+        id=uuid4(),
+        started_at=NOW - timedelta(hours=3, minutes=3),
+        finished_at=NOW - timedelta(hours=3),
+        trigger="cli",
+        records=148_361,
+        linked=98_480,
+    ),
+)
+
+
+def test_the_table_ends_with_the_npi_links_line() -> None:
+    lines = render_table(STATUSES, NOW, color=False, links=LINKS).splitlines()
+
+    assert lines[-1] == (
+        "NPI links: last run 3 h ago · 148,361 records · exact 23,100 · high 4,210 · "
+        "potential 19,870 · ambiguous 51,300 · none 49,871 · never checked 10"
+    )
+
+
+def test_links_never_run_say_so() -> None:
+    never = NpiLinkSummary(records=12, never_checked=12)
+
+    assert links_line(never, NOW) == (
+        "NPI links: never run · 12 records · exact 0 · high 0 · potential 0 · ambiguous 0 · "
+        "none 0 · never checked 12"
+    )
+
+
+def test_json_carries_the_npi_links_summary() -> None:
+    payload = json.loads(render_json(STATUSES, LINKS))
+
+    assert payload["npi_links"]["records"] == 148_361
+    assert payload["npi_links"]["by_best_level"]["ambiguous"] == 51_300
+    assert payload["npi_links"]["last_run"]["trigger"] == "cli"
+    assert json.loads(render_json(STATUSES))["npi_links"] is None

@@ -2,12 +2,13 @@
 
 A bulk list replaces the source's exclusion records; a dataset (NPPES) is loaded into the
 NPI mirror by difference, and the load's counts, phase timings and CPU time are stored on the
-snapshot.
+snapshot. A sync that changed rows then relinks exclusion records to NPIs (the list's own
+records after a list sync, every record after a mirror load); a linking failure is reported,
+never undoes the sync.
 """
 
 import logging
 import math
-import resource
 import time
 from datetime import datetime, timedelta
 from typing import Final
@@ -16,11 +17,18 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from credentialing.application.errors import UnknownSourceError
+from credentialing.application.link_npis import (
+    NPPES_LOAD_TRIGGER,
+    NpiLinking,
+    list_sync_trigger,
+)
+from credentialing.application.measure import cpu_seconds
 from credentialing.domain.enums import DatasetLoadMode, Outcome
 from credentialing.domain.errors import DatasetShrankError
 from credentialing.domain.models import (
     DatasetLoad,
     ExclusionRecord,
+    NpiLinkRun,
     SnapshotDiff,
     SourceSnapshot,
 )
@@ -69,20 +77,27 @@ def source_changed(applied: SourceSnapshot | None, snapshot: SourceSnapshot) -> 
 
 class SyncReport(BaseModel):
     """What one sync did: the stored snapshot and, when a new list was loaded, its diff, or,
-    when a new dataset file was loaded, what the load did."""
+    when a new dataset file was loaded, what the load did.
+
+    ``linking`` is the NPI linking run the sync triggered (rows changed); ``linking_failed``
+    says, by error class, why that run failed. The sync itself stands either way.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     snapshot: SourceSnapshot
     diff: SnapshotDiff | None = None
     load: DatasetLoad | None = None
+    linking: NpiLinkRun | None = None
+    linking_failed: str | None = None
 
 
 class SyncSource:
     """Polls a bulk-list or dataset source and keeps its records in step with it.
 
     ``npi_registry`` is the mirror dataset sources load into; a sync of a dataset source
-    without it is a wiring error (``TypeError``).
+    without it is a wiring error (``TypeError``). ``link_npis`` relinks exclusion records to
+    NPIs after a sync that changed rows; without it no linking runs.
     """
 
     def __init__(
@@ -93,12 +108,14 @@ class SyncSource:
         clock: Clock,
         *,
         npi_registry: NpiRegistryRepository | None = None,
+        link_npis: NpiLinking | None = None,
     ) -> None:
         self._connectors = connectors
         self._snapshots = snapshots
         self._records = records
         self._clock = clock
         self._npi_registry = npi_registry
+        self._link_npis = link_npis
 
     async def run(self, source_id: SourceId, *, force: bool = False) -> SyncReport:
         """Fetch ``source_id`` once, store the snapshot, and load the records if new.
@@ -121,6 +138,9 @@ class SyncSource:
         the list again.
 
         A dataset source is loaded as :meth:`_run_dataset` describes.
+
+        A new list that added, changed, re-added or rewritten rows relinks that list's records
+        to NPIs (``list_sync:<source_id>``); see :meth:`_relink`.
 
         Raises:
             UnknownSourceError: No bulk-list or dataset connector is registered as
@@ -152,7 +172,10 @@ class SyncSource:
             logger.exception("storing records failed source_id=%s", source_id)
             await self._snapshots.add(self._storage_failed(snapshot))
             raise
-        return SyncReport(snapshot=snapshot, diff=diff)
+        report = SyncReport(snapshot=snapshot, diff=diff)
+        if diff.added + diff.changed + diff.readded + diff.rewritten:
+            return await self._relink(report, source_id, list_sync_trigger(source_id))
+        return report
 
     async def _run_dataset(self, connector: DatasetConnector, *, force: bool) -> SyncReport:
         """Fetch a dataset source, store the snapshot and load a new file into the mirror.
@@ -168,13 +191,16 @@ class SyncSource:
         snapshot with the counts follows, so the next poll downloads the file again.
         ``force`` applies it anyway. A load that fails is followed by a ``FAILED`` snapshot
         too, and re-raised.
+
+        A load that added, changed, deactivated or flagged rows relinks every exclusion record
+        (``nppes_load``): the mirror changed under every link.
         """
         registry = self._npi_registry
         if registry is None:
             raise TypeError("SyncSource needs an npi_registry to load dataset sources")
         source_id = connector.capabilities.source_id
         previous = None if force else await self._snapshots.latest(source_id)
-        cpu_started, started = _cpu_seconds(), time.perf_counter()
+        cpu_started, started = cpu_seconds(), time.perf_counter()
         fetched = await connector.fetch_dataset(previous)
         download = timedelta(seconds=time.perf_counter() - started)
         snapshot, dataset = fetched.snapshot, fetched.dataset
@@ -212,12 +238,33 @@ class SyncSource:
         load = load.model_copy(
             update={
                 "phases": {"download": download, **load.phases},
-                "cpu_time": timedelta(seconds=_cpu_seconds() - cpu_started),
+                "cpu_time": timedelta(seconds=cpu_seconds() - cpu_started),
             }
         )
         await self._snapshots.set_load(snapshot.id, load)
         stored = snapshot.model_copy(update={"load": load, "row_count": load.scanned})
-        return SyncReport(snapshot=stored, load=load)
+        report = SyncReport(snapshot=stored, load=load)
+        if load.added + load.changed + load.deactivated + load.missing:
+            return await self._relink(report, None, NPPES_LOAD_TRIGGER)
+        return report
+
+    async def _relink(
+        self, report: SyncReport, source_id: SourceId | None, trigger: str
+    ) -> SyncReport:
+        """Run the NPI linking a changed sync triggers and add it to the report.
+
+        A failure is logged and reported by error class (``linking_failed``); the sync's
+        snapshot and records stay as stored, and the next triggered run relinks what is stale.
+        """
+        if self._link_npis is None:
+            return report
+        try:
+            run = await self._link_npis.run(source_id=source_id, trigger=trigger)
+        except Exception as error:
+            logger.exception("npi linking failed trigger=%s", trigger)
+            failed = f"NPI linking failed ({type(error).__name__})"
+            return report.model_copy(update={"linking_failed": failed})
+        return report.model_copy(update={"linking": run})
 
     async def _last_full_rows(self, source_id: SourceId, mode: DatasetLoadMode) -> int | None:
         """The distinct NPIs of the source's last full load, when the guard applies to it."""
@@ -303,9 +350,3 @@ class SyncSource:
             source_url=snapshot.source_url,
             note=note,
         )
-
-
-def _cpu_seconds() -> float:
-    """User plus system CPU time of this process (every thread) so far."""
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    return usage.ru_utime + usage.ru_stime

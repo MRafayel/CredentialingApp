@@ -17,8 +17,10 @@ from fastapi import FastAPI
 from credentialing.api.app import create_app
 from credentialing.api.container import AppContainer
 from credentialing.application.check_exclusions import CheckExclusions
+from credentialing.application.link_npis import LinkNpis
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
+from credentialing.application.npi_lookup import NpiLookup
 from credentialing.application.provider_verdict import ProviderVerdictQuery
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
@@ -72,6 +74,7 @@ from credentialing.infrastructure.logging import configure_logging
 from credentialing.infrastructure.repositories.exclusion_records import (
     PostgresExclusionRecordRepository,
 )
+from credentialing.infrastructure.repositories.npi_links import PostgresNpiLinkRepository
 from credentialing.infrastructure.repositories.npi_registry import (
     PostgresNpiRegistryRepository,
 )
@@ -99,7 +102,10 @@ class Services:
     snapshots: PostgresSnapshotRepository
     records: PostgresExclusionRecordRepository
     npi_registry: PostgresNpiRegistryRepository
+    npi_links: PostgresNpiLinkRepository
     verifications: PostgresVerificationRepository
+    link_npis: LinkNpis
+    npi_lookup: NpiLookup
     sync_source: SyncSource
     source_status: SourceStatusReport
     check_exclusions: CheckExclusions
@@ -192,7 +198,9 @@ def build_services(
     snapshots = PostgresSnapshotRepository(database)
     records = PostgresExclusionRecordRepository(database)
     npi_registry = PostgresNpiRegistryRepository(database)
+    npi_links = PostgresNpiLinkRepository(database)
     verifications = PostgresVerificationRepository(database)
+    link_npis = LinkNpis(registry, snapshots, npi_links, clock)
     return Services(
         registry=registry,
         clock=clock,
@@ -200,8 +208,18 @@ def build_services(
         snapshots=snapshots,
         records=records,
         npi_registry=npi_registry,
+        npi_links=npi_links,
         verifications=verifications,
-        sync_source=SyncSource(registry, snapshots, records, clock, npi_registry=npi_registry),
+        link_npis=link_npis,
+        npi_lookup=NpiLookup(npi_registry, registry, snapshots, DEFAULT_FRESHNESS, clock),
+        sync_source=SyncSource(
+            registry,
+            snapshots,
+            records,
+            clock,
+            npi_registry=npi_registry,
+            link_npis=link_npis,
+        ),
         source_status=SourceStatusReport(
             registry, snapshots, records, DEFAULT_FRESHNESS, clock, npi_registry=npi_registry
         ),
@@ -209,7 +227,15 @@ def build_services(
             registry, providers, records, snapshots, verifications, DEFAULT_FRESHNESS, clock
         ),
         lookup_exclusions=LookupExclusions(records, snapshots, registry, clock),
-        record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
+        record_profile=RecordProfileQuery(
+            records,
+            snapshots,
+            registry,
+            DEFAULT_FRESHNESS,
+            clock,
+            npi_links=npi_links,
+            npi_registry=npi_registry,
+        ),
         register_provider=RegisterProvider(providers, clock),
         list_providers=ListProviders(providers),
         verification_history=VerificationHistory(providers, verifications, records),
@@ -228,6 +254,7 @@ def api_container(services: Services, settings: Settings) -> AppContainer:
         record_profile=services.record_profile,
         verification_history=services.verification_history,
         provider_verdict=services.provider_verdict,
+        npi_lookup=services.npi_lookup,
         providers=services.providers,
         organization_header_enabled=settings.environment == "local",
     )

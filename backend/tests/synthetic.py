@@ -4,8 +4,16 @@ from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
-from credentialing.domain.enums import EntityKind, ExclusionAction
-from credentialing.domain.models import ExclusionRecord, License, PersonName, Provider
+from credentialing.domain.enums import EntityKind, ExclusionAction, NpiStatus
+from credentialing.domain.models import (
+    Address,
+    ExclusionRecord,
+    License,
+    NpiRecord,
+    NpiTaxonomy,
+    PersonName,
+    Provider,
+)
 
 NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
 
@@ -99,4 +107,64 @@ def exclusion(
         action=action,
         raw=raw if raw is not None else {"LASTNAME": last or "", "FIRSTNAME": first},
         valid_from=valid_from,
+    )
+
+
+def npi_person(
+    npi: str,
+    *,
+    last: str = "TESTPERSON",
+    first: str = "AVERY",
+    middle: str | None = None,
+    practice: Address | None = None,
+    mailing: Address | None = None,
+    licenses: tuple[tuple[str, str], ...] = (),
+    status: NpiStatus = NpiStatus.ACTIVE,
+) -> NpiRecord:
+    """A made-up individual NPI as the mirror holds it (upper case, as NPPES publishes);
+    ``licenses`` are (number, state) pairs, one taxonomy each."""
+    return NpiRecord(
+        npi=npi,
+        entity_kind=EntityKind.INDIVIDUAL,
+        status=status,
+        person_name=PersonName(last=last, first=first, middle=middle),
+        practice_address=practice,
+        mailing_address=mailing,
+        taxonomies=tuple(
+            NpiTaxonomy(code="207Q00000X", primary=index == 0, license_number=n, license_state=s)
+            for index, (n, s) in enumerate(licenses)
+        ),
+        line_hash=f"{npi}a".ljust(64, "0"),
+        snapshot_id=uuid4(),
+    )
+
+
+def npi_organization(
+    npi: str,
+    name: str | None = "SAMPLEVILLE CARE GROUP LLC",
+    *,
+    other_names: tuple[str, ...] = (),
+    practice: Address | None = None,
+) -> NpiRecord:
+    """A made-up organization NPI."""
+    return NpiRecord(
+        npi=npi,
+        entity_kind=EntityKind.ORGANIZATION,
+        status=NpiStatus.ACTIVE,
+        organization_name=name,
+        other_names=other_names,
+        practice_address=practice,
+        line_hash=f"{npi}b".ljust(64, "0"),
+        snapshot_id=uuid4(),
+    )
+
+
+def npi_stub(npi: str) -> NpiRecord:
+    """A deactivated NPI the registry blanked: number, status and nothing else."""
+    return NpiRecord(
+        npi=npi,
+        entity_kind=EntityKind.UNKNOWN,
+        status=NpiStatus.DEACTIVATED,
+        line_hash=f"{npi}c".ljust(64, "0"),
+        snapshot_id=uuid4(),
     )

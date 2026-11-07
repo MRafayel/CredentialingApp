@@ -4,23 +4,42 @@ from uuid import uuid4
 import pytest
 
 from credentialing.application.errors import RecordNotFoundError
+from credentialing.application.link_npis import LinkNpis
 from credentialing.application.record_profile import (
     MAX_SAME_NAME,
     SAME_NAME_CANDIDATES,
     RecordProfileQuery,
 )
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import EntityKind, Freshness, Outcome, RecordLink, RecordStatus
-from credentialing.domain.models import ExclusionRecord, License, SourceSnapshot
+from credentialing.domain.enums import (
+    DatasetLoadMode,
+    EntityKind,
+    Freshness,
+    MatchLevel,
+    Outcome,
+    RecordLink,
+    RecordStatus,
+)
+from credentialing.domain.models import (
+    Address,
+    DatasetLoad,
+    ExclusionRecord,
+    License,
+    SourceSnapshot,
+)
 from credentialing.domain.policies import DEFAULT_FRESHNESS
 from tests.fakes import (
     FixedClock,
+    InMemoryNpiLinks,
+    InMemoryNpiRegistry,
     InMemoryRecords,
     InMemorySnapshots,
     ScriptedConnector,
+    ScriptedDatasetConnector,
     capabilities,
+    dataset_capabilities,
 )
-from tests.synthetic import NOW, exclusion, make_npi
+from tests.synthetic import NOW, exclusion, make_npi, npi_person
 
 pytestmark = pytest.mark.anyio
 
@@ -40,6 +59,7 @@ class _World:
             )
         )
         registry.register(ScriptedConnector(capabilities(FEDERAL, display_name="Fake Federal")))
+        self.directory = registry
         self.records = InMemoryRecords()
         self.snapshots = InMemorySnapshots()
         self.use_case = RecordProfileQuery(
@@ -298,3 +318,58 @@ async def test_a_rewrite_needs_a_single_match_on_npi_and_date() -> None:
     assert profile.rewritten_by is None
     assert profile.record.status is RecordStatus.REMOVED
     assert [v.rewritten for v in profile.versions] == [False]
+
+
+async def test_the_profile_carries_its_npi_links_best_first_with_their_mirror_rows() -> None:
+    world = _World()
+    near = Address(city="Sampleville", state="NY", postal_code="99901")
+    registry = InMemoryNpiRegistry(
+        npi_person(OWNER_NPI, practice=near), npi_person(make_npi("100000005"))
+    )
+    links = InMemoryNpiLinks(world.records, registry)
+    snapshots = InMemorySnapshots()
+    use_case = RecordProfileQuery(
+        world.records,
+        snapshots,
+        world.directory,
+        DEFAULT_FRESHNESS,
+        FixedClock(NOW),
+        npi_links=links,
+        npi_registry=registry,
+    )
+    subject = exclusion(source_id=STATE).model_copy(update={"address": near})
+    alone = exclusion(source_id=STATE, last="Nobody")
+    await world.load(STATE, subject, alone)
+    mirror = SourceSnapshot(
+        id=uuid4(),
+        source_id="fake_dataset",
+        fetched_at=NOW,
+        outcome=Outcome.COMPLETED,
+        source_url="https://example.test/nppes.zip",
+        load=DatasetLoad(mode=DatasetLoadMode.FULL, scanned=2, added=2),
+    )
+    await snapshots.add(mirror)
+    directory = ConnectorRegistry()
+    directory.register(ScriptedDatasetConnector(dataset_capabilities("fake_dataset")))
+    await LinkNpis(directory, snapshots, links, FixedClock(NOW)).run(source_id=None, trigger="cli")
+
+    profile = await use_case.run(subject.id)
+    lonely = await use_case.run(alone.id)
+
+    assert [(item.link.npi, item.link.level) for item in profile.npi_links] == [
+        (OWNER_NPI, MatchLevel.HIGH),
+        (make_npi("100000005"), MatchLevel.AMBIGUOUS),
+    ]
+    assert profile.npi_links[0].registry == registry.rows[OWNER_NPI]
+    ((none,),) = [lonely.npi_links]
+    assert none.link.npi is None
+    assert none.registry is None
+    assert none.link.match.explanation == "No match: no candidate with this name."
+
+
+async def test_without_the_link_repository_a_profile_has_no_npi_links() -> None:
+    world = _World()
+    record = exclusion(source_id=STATE)
+    await world.load(STATE, record)
+
+    assert (await world.use_case.run(record.id)).npi_links == ()

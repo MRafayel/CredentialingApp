@@ -1,10 +1,10 @@
 """Ports: the interfaces outer layers implement and the application depends on."""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 from uuid import UUID
 
 from credentialing.domain.enums import CredentialType, DatasetLoadMode, NpiStatus, Outcome
@@ -13,6 +13,9 @@ from credentialing.domain.models import (
     DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    NpiLink,
+    NpiLinkRun,
+    NpiLinkSummary,
     NpiRecord,
     Provider,
     SnapshotDiff,
@@ -343,6 +346,83 @@ class NpiRegistryRepository(Protocol):
     async def count(self, *, status: NpiStatus | None = None) -> int:
         """Return how many mirrored NPIs the latest file lists (``in_file``), optionally only
         those with ``status``."""
+        ...
+
+    async def get_many(self, npis: Sequence[Npi]) -> Sequence[NpiRecord]:
+        """Return the mirrored records of these NPIs that exist, in no particular order."""
+        ...
+
+    async def search(self, query: str, *, limit: int) -> Sequence[NpiRecord]:
+        """NPIs the latest file lists matching ``query`` exactly by key, active rows first.
+
+        Ten digits: that NPI. Otherwise the query's name key (the SQL ``name_key``, as
+        :func:`~credentialing.domain.names.normalize_name`) as a person's last and first name
+        in either order (and "first ... last"), one word as a last name, and the whole query as
+        an organization's name or other name without legal designators. At most ``limit``
+        rows, never more than 50. No prefix or fuzzy search.
+        """
+        ...
+
+
+class LinkCandidates(NamedTuple):
+    """One exclusion record and the mirror rows its discovery found: at most
+    :data:`~credentialing.domain.policies.CANDIDATE_CAP` of them, strongest evidence first,
+    and ``found``, the number found (capped at the cap plus one, meaning "more")."""
+
+    record: ExclusionRecord
+    candidates: Sequence[NpiRecord]
+    found: int
+
+
+class NpiLinkRepository(Protocol):
+    """Inferred links from exclusion records to NPIs of the mirror (shared reference data).
+
+    A record's links are rewritten whole by each linking run, never updated in place, and
+    never touch the record's published NPI.
+    """
+
+    async def stale_records(
+        self,
+        *,
+        source_id: SourceId | None,
+        mirror_snapshot_id: UUID | None,
+        limit: int | None = None,
+    ) -> Sequence[UUID]:
+        """Latest exclusion records with no link row, or whose links were made against
+        another mirror snapshot (or none); with ``source_id``, only that list's. Ordered by
+        id, at most ``limit``."""
+        ...
+
+    async def candidates(self, record_ids: Sequence[UUID]) -> Sequence[LinkCandidates]:
+        """For each record that exists, the mirror rows that could be its NPI.
+
+        A record with a published NPI: that NPI's row only. Otherwise, by name key: a person
+        by last and first name (or initial), through its own name and its aliases; an
+        organization by its name or an alias against the mirror's names and other names. Only
+        NPIs the latest file lists. One query for the whole batch.
+        """
+        ...
+
+    async def replace_links(self, links: Sequence[NpiLink]) -> None:
+        """Make ``links`` the only links of their records, atomically: each record's
+        earlier links are deleted and these inserted."""
+        ...
+
+    async def links_for(self, record_ids: Sequence[UUID]) -> Mapping[UUID, Sequence[NpiLink]]:
+        """Every stored link of these records, best level first, by record id; records
+        never linked are absent."""
+        ...
+
+    async def summary(self) -> NpiLinkSummary:
+        """Latest records by their best link's level, records never checked, the last run."""
+        ...
+
+    async def add_run(self, run: NpiLinkRun) -> None:
+        """Store a finished linking run."""
+        ...
+
+    async def last_run(self) -> NpiLinkRun | None:
+        """The most recently finished linking run, if any."""
         ...
 
 

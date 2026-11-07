@@ -12,6 +12,7 @@ from credentialing.api.container import AppContainer
 from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
+from credentialing.application.npi_lookup import NpiLookup
 from credentialing.application.provider_verdict import ProviderVerdictQuery
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
@@ -23,6 +24,7 @@ from credentialing.domain.models import SourceSnapshot
 from credentialing.domain.policies import DEFAULT_FRESHNESS
 from tests.fakes import (
     FixedClock,
+    InMemoryNpiRegistry,
     InMemoryProviders,
     InMemoryRecords,
     InMemorySnapshots,
@@ -76,6 +78,7 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
         record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),
+        npi_lookup=NpiLookup(InMemoryNpiRegistry(), registry, snapshots, DEFAULT_FRESHNESS, clock),
         providers=providers,
         organization_header_enabled=header_enabled,
     )

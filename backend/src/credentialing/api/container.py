@@ -8,6 +8,7 @@ from fastapi import Depends, Request
 from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
+from credentialing.application.npi_lookup import NpiLookup
 from credentialing.application.provider_verdict import ProviderVerdictQuery
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
@@ -32,6 +33,7 @@ class AppContainer:
     record_profile: RecordProfileQuery
     verification_history: VerificationHistory
     provider_verdict: ProviderVerdictQuery
+    npi_lookup: NpiLookup
     providers: ProviderRepository
     organization_header_enabled: bool
 

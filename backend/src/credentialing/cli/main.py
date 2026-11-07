@@ -10,6 +10,12 @@ completed fetch, which is what a cron job runs.
 current, how old the data is and when the next fetch is due. ``--json`` prints the same as
 JSON; ``--strict`` exits with 1 unless every source is ok.
 
+``link-npis`` links exclusion records to NPIs of the registry mirror: every latest record
+whose links are missing or older than the newest mirror load (``--source`` narrows it to one
+list), then prints the run's counts, phase timings and CPU time. A sync that changed rows runs
+the same linking by itself and prints its line under the source's; a linking failure makes it
+exit with 1 without undoing the sync.
+
 ``openapi`` prints the HTTP API's OpenAPI schema as JSON, without a server or a database;
 the frontend's API types are generated from it.
 """
@@ -24,12 +30,14 @@ from datetime import datetime
 
 from credentialing.api.app import create_app
 from credentialing.application.errors import UnknownSourceError
+from credentialing.application.link_npis import CLI_TRIGGER
 from credentialing.application.sync_source import SyncReport
 from credentialing.bootstrap import runtime
 from credentialing.cli.relative_time import until
 from credentialing.cli.sources import show
-from credentialing.domain.enums import DatasetLoadMode, Outcome
-from credentialing.domain.models import DatasetLoad
+from credentialing.domain.enums import DatasetLoadMode, MatchLevel, Outcome
+from credentialing.domain.models import DatasetLoad, NpiLinkRun
+from credentialing.domain.ports import BulkListConnector
 from credentialing.infrastructure.config import Settings, get_settings
 from credentialing.infrastructure.logging import configure_logging
 
@@ -63,6 +71,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="exit with 1 when any source is failing, overdue or never fetched",
     )
+    link = commands.add_parser(
+        "link-npis", help="link exclusion records to NPIs of the registry mirror"
+    )
+    link.add_argument("--source", help="only this list's records, such as ny_omig")
     commands.add_parser("openapi", help="print the HTTP API's OpenAPI schema as JSON")
     args = parser.parse_args(argv)
 
@@ -73,6 +85,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(settings.log_level)
     if args.command == "sources":
         return asyncio.run(_sources(settings, as_json=args.as_json, strict=args.strict))
+    if args.command == "link-npis":
+        return asyncio.run(_link_npis(settings, args.source))
     return asyncio.run(
         _sync(settings, args.source_id, every=args.all, force=args.force, only_due=args.due)
     )
@@ -88,8 +102,23 @@ async def _sources(settings: Settings, *, as_json: bool, strict: bool) -> int:
     async with runtime(settings) as services:
         now = services.clock.now()
         statuses = await services.source_status.run()
+        links = await services.link_npis.summary()
     color = not as_json and not settings.no_color and sys.stdout.isatty()
-    return show(statuses, now, out=sys.stdout, as_json=as_json, strict=strict, color=color)
+    return show(
+        statuses, now, out=sys.stdout, as_json=as_json, strict=strict, color=color, links=links
+    )
+
+
+async def _link_npis(settings: Settings, source_id: str | None) -> int:
+    async with runtime(settings) as services:
+        if source_id is not None and not isinstance(
+            services.registry.get(source_id), BulkListConnector
+        ):
+            sys.stderr.write(f"no bulk-list source is registered as {source_id!r}\n")
+            return 2
+        run = await services.link_npis.run(source_id=source_id, trigger=CLI_TRIGGER)
+    sys.stdout.write(link_summary(run) + "\n")
+    return 0
 
 
 async def _sync(
@@ -113,7 +142,15 @@ async def _sync(
                 sys.stderr.write(f"{error}\n")
                 return 2
             sys.stdout.write(_line(current, report, time.perf_counter() - started) + "\n")
-            failed = failed or report.snapshot.outcome is not Outcome.COMPLETED
+            if report.linking is not None:
+                sys.stdout.write(f"{current} npi links: {link_summary(report.linking)}\n")
+            if report.linking_failed is not None:
+                sys.stdout.write(f"{current} {report.linking_failed}\n")
+            failed = (
+                failed
+                or report.snapshot.outcome is not Outcome.COMPLETED
+                or report.linking_failed is not None
+            )
         return 1 if failed else 0
 
 
@@ -159,6 +196,21 @@ def load_summary(load: DatasetLoad) -> str:
         counts.append(f"cpu={load.cpu_time.total_seconds():.1f}s")
     phases = " ".join(f"{name} {spent.total_seconds():.0f}s" for name, spent in load.phases.items())
     return " ".join(counts) + (f" phases: {phases}" if phases else "")
+
+
+def link_summary(run: NpiLinkRun) -> str:
+    """A linking run on one line: records by best level, total and CPU time, then each phase:
+    "linked 148,361 records: exact=23,100 high=4,210 potential=19,870 ambiguous=51,300
+    none=49,881 duration=183.2s cpu=120.4s phases: candidates 60s scoring 95s writing 28s"."""
+    if run.note:
+        return f"linked {run.records:,} records ({run.note})"
+    counts = " ".join(f"{level.value}={run.by_level.get(level, 0):,}" for level in MatchLevel)
+    parts = [f"linked {run.records:,} records: {counts}"]
+    parts.append(f"duration={run.duration.total_seconds():.1f}s")
+    if run.cpu_time is not None:
+        parts.append(f"cpu={run.cpu_time.total_seconds():.1f}s")
+    phases = " ".join(f"{name} {spent.total_seconds():.0f}s" for name, spent in run.phases.items())
+    return " ".join(parts) + (f" phases: {phases}" if phases else "")
 
 
 if __name__ == "__main__":

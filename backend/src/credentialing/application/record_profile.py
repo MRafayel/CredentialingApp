@@ -5,7 +5,9 @@ it said and since when, across rewrites of its identity by the list), other rows
 same party (same NPI, or the same
 licence number and state), rows tied to it through the other NPIs it publishes, and rows that
 only share the name, which a person must weigh. Most records have little beyond themselves;
-the profile holds as much as the lists do and no more.
+the profile holds as much as the lists do and no more. It also carries the record's inferred
+links to NPIs of the registry mirror, best first, each with the mirror row it points at:
+evidence for a person, never the record's published NPI.
 """
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -23,9 +25,10 @@ from credentialing.domain.enums import (
     Freshness,
     RecordLink,
 )
-from credentialing.domain.models import ConnectorCapabilities, ExclusionRecord
+from credentialing.domain.models import ConnectorCapabilities, ExclusionRecord, NpiLink, NpiRecord
 from credentialing.domain.policies import (
     FreshnessPolicyTable,
+    level_rank,
     license_key,
     record_status,
     shares_party_name,
@@ -34,6 +37,8 @@ from credentialing.domain.ports import (
     Clock,
     ConnectorDirectory,
     ExclusionRecordRepository,
+    NpiLinkRepository,
+    NpiRegistryRepository,
     SnapshotRepository,
 )
 from credentialing.domain.types import Npi
@@ -103,6 +108,16 @@ class RecordVersion(BaseModel):
     npi: Npi | None
 
 
+class RecordNpiLink(BaseModel):
+    """An inferred link of the record to an NPI, with the mirror row it points at (None on
+    the record's no-link row, or when the row is missing from the mirror)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    link: NpiLink
+    registry: NpiRecord | None
+
+
 class RecordProfile(BaseModel):
     """What the stored lists say about one record and the records around it.
 
@@ -111,6 +126,8 @@ class RecordProfile(BaseModel):
     appears in two of them, and none is another version of the profiled row. ``versions`` run
     oldest first across the rewrites of the row's identity; ``rewritten_by`` is the id of the
     row that replaced the profiled identity when the list rewrote it, None otherwise.
+    ``npi_links`` are the record's links to NPIs of the mirror, best level first; empty when
+    it was never linked.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -123,10 +140,15 @@ class RecordProfile(BaseModel):
     related: tuple[LinkedRecord, ...]
     same_name: tuple[LinkedRecord, ...]
     rewritten_by: UUID | None = None
+    npi_links: tuple[RecordNpiLink, ...] = ()
 
 
 class RecordProfileQuery:
-    """Builds a :class:`RecordProfile` in a few indexed queries."""
+    """Builds a :class:`RecordProfile` in a few indexed queries.
+
+    Without ``npi_links`` (and ``npi_registry`` for the rows they point at) the profile has no
+    NPI links.
+    """
 
     def __init__(
         self,
@@ -135,12 +157,17 @@ class RecordProfileQuery:
         connectors: ConnectorDirectory,
         freshness: FreshnessPolicyTable,
         clock: Clock,
+        *,
+        npi_links: NpiLinkRepository | None = None,
+        npi_registry: NpiRegistryRepository | None = None,
     ) -> None:
         self._records = records
         self._snapshots = snapshots
         self._connectors = connectors
         self._freshness = freshness
         self._clock = clock
+        self._npi_links = npi_links
+        self._npi_registry = npi_registry
 
     async def run(self, record_id: UUID) -> RecordProfile:
         """The profile of the record with this id, current or not.
@@ -198,6 +225,24 @@ class RecordProfileQuery:
             related=tuple(related),
             same_name=tuple(same_name),
             rewritten_by=successor.id if successor else None,
+            npi_links=await self._npi_links_of(record),
+        )
+
+    async def _npi_links_of(self, record: ExclusionRecord) -> tuple[RecordNpiLink, ...]:
+        """The record's links, best level first, then by NPI, with their mirror rows."""
+        if self._npi_links is None:
+            return ()
+        links = (await self._npi_links.links_for([record.id])).get(record.id, ())
+        npis = [link.npi for link in links if link.npi]
+        rows = (
+            {row.npi: row for row in await self._npi_registry.get_many(npis)}
+            if npis and self._npi_registry
+            else {}
+        )
+        ordered = sorted(links, key=lambda link: (level_rank(link.level), link.npi or ""))
+        return tuple(
+            RecordNpiLink(link=link, registry=rows.get(link.npi) if link.npi else None)
+            for link in ordered
         )
 
     async def _history(
