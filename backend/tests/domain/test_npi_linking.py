@@ -134,8 +134,10 @@ def test_a_different_middle_name_is_a_contradiction() -> None:
 
 
 def test_the_same_licence_number_and_state_is_high() -> None:
+    # Illinois publishes "036123456" where NPPES holds "036-123456" or "036.123456": only the
+    # letters and digits count (owner, 2026-11-08).
     record = exclusion(license=License(number="ab 123456", state="NY"))
-    candidate = npi_person(NPI, licenses=(("AB123456", "NY"),))
+    candidate = npi_person(NPI, licenses=(("AB-123.456", "NY"),))
 
     result = match_record_to_npi(record, candidate, candidates=7)
 

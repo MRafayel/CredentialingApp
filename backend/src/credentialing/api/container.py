@@ -9,11 +9,14 @@ from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.application.npi_lookup import NpiLookup
+from credentialing.application.npi_suggestions import SuggestNpis
 from credentialing.application.provider_verdict import ProviderVerdictQuery
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
+from credentialing.application.set_provider_npi import SetProviderNpi
 from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.verification_history import VerificationHistory
+from credentialing.application.verify_npi import VerifyNpi
 from credentialing.domain.ports import ProviderRepository
 
 
@@ -34,6 +37,9 @@ class AppContainer:
     verification_history: VerificationHistory
     provider_verdict: ProviderVerdictQuery
     npi_lookup: NpiLookup
+    verify_npi: VerifyNpi
+    suggest_npis: SuggestNpis
+    set_provider_npi: SetProviderNpi
     providers: ProviderRepository
     organization_header_enabled: bool
 

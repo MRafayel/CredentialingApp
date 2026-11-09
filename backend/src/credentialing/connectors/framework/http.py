@@ -41,7 +41,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
 from typing import BinaryIO, Final, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx2
 
@@ -295,7 +295,10 @@ class _Transport:
             except httpx2.TransportError as error:
                 if attempt < attempts:
                     logger.warning(
-                        "http retry url=%s error=%s attempt=%d", url, type(error).__name__, attempt
+                        "http retry url=%s error=%s attempt=%d",
+                        loggable_url(url),
+                        type(error).__name__,
+                        attempt,
                     )
                     await self.sleep(self.retry_pause)
                     continue
@@ -341,7 +344,10 @@ class _Transport:
             except httpx2.TransportError as error:
                 if attempt <= RETRY_ATTEMPTS:
                     logger.warning(
-                        "http retry url=%s error=%s attempt=%d", url, type(error).__name__, attempt
+                        "http retry url=%s error=%s attempt=%d",
+                        loggable_url(url),
+                        type(error).__name__,
+                        attempt,
                     )
                     await self.sleep(self.retry_pause)
                     continue
@@ -540,7 +546,7 @@ class _HttpSession:
         logger.info(
             "http session request method=%s url=%s result=%s status=%s bytes=%s duration_ms=%d",
             method,
-            url,
+            loggable_url(url),
             result.outcome.value if isinstance(result, FetchFailure) else "ok",
             result.status,
             len(result.body) if isinstance(result, Response) else "-",
@@ -614,7 +620,7 @@ class HttpFetcher:
         result = await self._file_outcome(answer, headers, previous, destination, fetched_at)
         logger.info(
             "http download url=%s signal=%s result=%s status=%s bytes=%s duration_ms=%d",
-            url,
+            loggable_url(url),
             change_signal.value,
             _describe(result),
             result.status,
@@ -723,7 +729,7 @@ class HttpFetcher:
                 result = await self._header_compare(url, previous, fetched_at, delay)
         logger.info(
             "http fetch url=%s signal=%s result=%s status=%s bytes=%s duration_ms=%d",
-            url,
+            loggable_url(url),
             change_signal.value,
             _describe(result),
             result.status,
@@ -781,6 +787,13 @@ class HttpFetcher:
         return await self._transport.request(
             self._client, method, url, headers=headers, fetched_at=fetched_at, delay=delay
         )
+
+
+def loggable_url(url: str) -> str:
+    """``url`` as a log line shows it: without its query string or fragment, which may carry
+    a search's names or an identifier (the NPPES API), never needed to tell requests apart."""
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
 def _conditional_headers(previous: SourceSnapshot | None) -> dict[str, str]:

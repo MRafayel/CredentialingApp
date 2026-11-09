@@ -86,3 +86,21 @@ async def test_a_load_is_stored_on_its_snapshot_and_read_back(database: Connecti
     assert latest.id == unchanged.id
     assert latest.load is None
     assert await repository.latest_loaded("test_never_loaded") is None
+
+
+async def test_count_since_counts_a_source_requests_and_its_failures(
+    database: ConnectionSource,
+) -> None:
+    repository = PostgresSnapshotRepository(database)
+    for snapshot in (
+        _snapshot("test_on_demand", 200, Outcome.COMPLETED),
+        _snapshot("test_on_demand", 5, Outcome.COMPLETED),
+        _snapshot("test_on_demand", 3, Outcome.BLOCKED),
+        _snapshot("test_on_demand", 1, Outcome.COMPLETED),
+        _snapshot("test_other_list", 1, Outcome.FAILED),
+    ):
+        await repository.add(snapshot)
+
+    assert await repository.count_since("test_on_demand", NOW - timedelta(days=7)) == (3, 1)
+    assert await repository.count_since("test_on_demand", NOW - timedelta(hours=3)) == (2, 1)
+    assert await repository.count_since("test_never_fetched", NOW - timedelta(days=7)) == (0, 0)

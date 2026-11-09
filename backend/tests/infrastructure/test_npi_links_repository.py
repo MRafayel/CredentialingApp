@@ -5,6 +5,7 @@ test's rolled-back transaction (see the ``world`` fixture): the development data
 real registry and the real lists, which must neither be scanned nor disturbed.
 """
 
+import logging
 from datetime import timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -24,6 +25,8 @@ from credentialing.domain.enums import (
 from credentialing.domain.models import (
     Address,
     ExclusionRecord,
+    License,
+    LinkParty,
     MatchEvidence,
     MatchResult,
     NpiLink,
@@ -32,7 +35,7 @@ from credentialing.domain.models import (
     SourceSnapshot,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
-from credentialing.domain.policies import CANDIDATE_CAP
+from credentialing.domain.policies import CANDIDATE_CAP, party_of_provider, party_of_record
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.exclusion_records import (
     PostgresExclusionRecordRepository,
@@ -42,7 +45,16 @@ from credentialing.infrastructure.repositories.npi_registry import PostgresNpiRe
 from credentialing.infrastructure.repositories.snapshots import PostgresSnapshotRepository
 from tests.connectors.fixtures import nppes_builders as b
 from tests.fakes import FixedClock, ListDataset, ScriptedDatasetConnector, dataset_capabilities
-from tests.synthetic import NOW, exclusion, make_npi, npi_organization, npi_person, npi_stub
+from tests.synthetic import (
+    NOW,
+    exclusion,
+    individual,
+    make_npi,
+    npi_organization,
+    npi_person,
+    npi_stub,
+    organization,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -97,6 +109,10 @@ class _World:
     async def found(self, record: ExclusionRecord) -> tuple[list[str], int]:
         (item,) = await self.links.candidates([record.id])
         return [candidate.npi for candidate in item.candidates], item.found
+
+    async def found_for(self, party: LinkParty) -> tuple[list[str], int]:
+        candidates, count = await self.links.candidates_for(party)
+        return [candidate.npi for candidate in candidates], count
 
 
 @pytest.fixture
@@ -336,6 +352,107 @@ async def test_one_statement_serves_a_batch_of_records(world: _World) -> None:
         business.id: [npi(2)],
         nobody.id: [],
     }
+
+
+# --- Candidates for a party (a roster provider) ----------------------------------------------
+
+
+async def test_a_provider_is_found_by_last_and_first_name_and_initial(world: _World) -> None:
+    await world.mirror(
+        npi_person(npi(1)),
+        npi_person(npi(2), first="A"),
+        npi_person(npi(3), last="OTHERPERSON"),
+        npi_person(npi(4), first="RILEY"),
+        npi_organization(npi(5), "TESTPERSON AVERY"),
+    )
+
+    assert await world.found_for(party_of_provider(individual())) == ([npi(1), npi(2)], 2)
+
+
+async def test_an_organization_provider_is_found_by_name_and_other_name(world: _World) -> None:
+    await world.mirror(
+        npi_organization(npi(1)),
+        npi_organization(npi(2), "SAMPLE HOLDINGS", other_names=("SAMPLEVILLE CARE GROUP INC",)),
+        npi_organization(npi(3), "OTHER CLINIC"),
+    )
+
+    found = await world.found_for(party_of_provider(organization("Sampleville Care Group, LLC")))
+
+    assert found == ([npi(1), npi(2)], 2)
+
+
+async def test_a_zip_or_licence_on_any_address_or_licence_ranks_first(world: _World) -> None:
+    namesakes = [npi_person(npi(n)) for n in range(1, CANDIDATE_CAP + 5)]
+    licensed = npi_person(npi(98), licenses=(("22-2222", "NJ"),))
+    nearby = npi_person(
+        npi(99), mailing=SAMPLEVILLE.model_copy(update={"postal_code": "999010000"})
+    )
+    await world.mirror(*namesakes, licensed, nearby)
+    party = party_of_provider(
+        individual(
+            licenses=(License(number="111", state="NY"), License(number="222222", state="NJ"))
+        ).model_copy(update={"addresses": (Address(state="CT"), SAMPLEVILLE)})
+    )
+
+    found, count = await world.found_for(party)
+
+    assert count == CANDIDATE_CAP + 1
+    assert len(found) == CANDIDATE_CAP
+    assert found[:2] == [npi(99), npi(98)]  # ZIP and city (second address), then licence
+
+
+async def test_a_party_finds_nothing_without_a_namesake_or_a_first_name(world: _World) -> None:
+    await world.mirror(npi_person(npi(1)))
+    nameless = party_of_provider(individual()).model_copy(
+        update={"person_name": individual(first="").person_name}
+    )
+
+    assert await world.found_for(party_of_provider(individual(last="Nobody"))) == ([], 0)
+    assert await world.found_for(nameless) == ([], 0)
+
+
+async def test_a_record_and_its_party_get_the_same_candidates(world: _World) -> None:
+    await world.mirror(
+        npi_person(npi(1), practice=SAMPLEVILLE),
+        npi_person(npi(2), licenses=(("0012345", "NY"),)),
+        npi_person(npi(3), middle="J"),
+        npi_person(npi(4), last="SAMPLEFORD", first="RILEY"),
+        npi_person(npi(5), first="A"),
+        npi_organization(npi(6)),
+        npi_organization(npi(7), "SAMPLE HOLDINGS", other_names=("SAMPLEVILLE CLINIC",)),
+        npi_stub(npi(8)),
+    )
+    records = [
+        exclusion(middle="Jordan", license=None).model_copy(update={"address": SAMPLEVILLE}),
+        exclusion(first="A.", license=License(number="001-2345", state="NY")),
+        exclusion(last="Marriedname", first="Jo", aliases=("Riley Q. Sampleford",)),
+        exclusion(last="Marriedname", aliases=("Testperson, Avery J",)),
+        exclusion(last="Gone", npi=npi(8)),
+        exclusion(
+            entity_kind=EntityKind.ORGANIZATION,
+            last=None,
+            organization_name="Sampleville Care Group, Inc.",
+            aliases=("Sampleville Clinic",),
+        ),
+    ]
+    await world.listed(*records)
+
+    for record in records:
+        assert await world.found_for(party_of_record(record)) == await world.found(record)
+
+
+async def test_a_party_discovery_logs_its_kind_count_and_time_never_a_name(
+    world: _World, caplog: pytest.LogCaptureFixture
+) -> None:
+    await world.mirror(npi_person(npi(1)))
+
+    with caplog.at_level(logging.INFO, logger="credentialing.infrastructure.repositories"):
+        await world.found_for(party_of_provider(individual()))
+
+    (line,) = [r.getMessage() for r in caplog.records if "npi discovery" in r.getMessage()]
+    assert line.startswith("npi discovery party=individual found=1 elapsed_ms=")
+    assert "testperson" not in line.casefold()
+    assert "avery" not in line.casefold()
 
 
 # --- Links, staleness, summary, runs --------------------------------------------------------

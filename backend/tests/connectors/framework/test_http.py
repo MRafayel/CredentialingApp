@@ -15,6 +15,7 @@ from credentialing.connectors.framework.http import (
     NotModified,
     Response,
     document_from,
+    loggable_url,
 )
 from credentialing.domain.enums import ChangeSignal, Outcome
 from credentialing.domain.models import SourceSnapshot
@@ -553,3 +554,10 @@ def test_document_from_hashes_and_sizes_the_body() -> None:
     assert document.fetched_at == NOW
     assert document.final_url == URL
     assert document.status == 200
+
+
+def test_a_logged_url_drops_its_query_string_and_fragment() -> None:
+    assert loggable_url("https://example.test/api/?version=2.1&last_name=Testperson#top") == (
+        "https://example.test/api/"
+    )
+    assert loggable_url(URL) == URL

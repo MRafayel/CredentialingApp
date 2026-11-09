@@ -26,6 +26,7 @@ from credentialing.connectors.de_dmap.connector import DeDmapConnector
 from credentialing.connectors.framework.base import BulkListConnectorBase
 from credentialing.connectors.framework.browser import is_challenge
 from credentialing.connectors.framework.html_table import read_html_table
+from credentialing.connectors.framework.http import HttpFetcher
 from credentialing.connectors.framework.pdf_table import read_pdf_table
 from credentialing.connectors.framework.spreadsheet import read_sheet
 from credentialing.connectors.ga_dch.connector import COLUMNS as GA_COLUMNS
@@ -67,6 +68,7 @@ from credentialing.connectors.nj_treasury.connector import ACTIONS as NJ_ACTIONS
 from credentialing.connectors.nj_treasury.connector import COLUMNS as NJ_COLUMNS
 from credentialing.connectors.nj_treasury.connector import NjTreasuryConnector
 from credentialing.connectors.nppes import (
+    NppesApiConnector,
     NppesDeactivationsConnector,
     NppesMonthlyConnector,
     NppesWeeklyConnector,
@@ -93,8 +95,10 @@ from credentialing.connectors.wv_bms.connector import COLUMNS as WV_COLUMNS
 from credentialing.connectors.wv_bms.connector import WvBmsConnector
 from credentialing.connectors.wy_wdh.connector import COLUMNS as WY_COLUMNS
 from credentialing.connectors.wy_wdh.connector import WyWdhConnector
+from credentialing.domain.enums import Outcome
 from credentialing.infrastructure.config import get_settings
-from tests.fakes import ScriptedFetcher
+from tests.fakes import FixedClock, ScriptedFetcher
+from tests.synthetic import NOW, make_npi
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
@@ -465,3 +469,14 @@ async def test_nppes_files_page_links_each_file() -> None:
             assert head.status_code == 200, link
             assert int(head.headers["content-length"]) > 1_000_000
             assert head.headers.get("last-modified")
+
+
+async def test_nppes_api_answers_a_never_issued_npi_with_no_result() -> None:
+    # One request for a made-up NPI (it starts with 0, which NPPES never issues): the answer's
+    # shape (JSON with a count and a result list) is what the connector relies on.
+    async with create_http_client(get_settings()) as client:
+        connector = NppesApiConnector(HttpFetcher(client, FixedClock(NOW)))
+        answer = await connector.lookup_npi(make_npi("000000001"))
+
+    assert answer.snapshot.outcome is Outcome.COMPLETED, answer.snapshot.note
+    assert (answer.found, answer.records) == (False, ())

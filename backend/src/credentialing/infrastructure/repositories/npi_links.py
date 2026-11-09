@@ -10,13 +10,18 @@ the records' name keys are computed in SQL (``name_key``, ``organization_key``, 
 functions that generate the mirror's key columns), each name shape is one lateral index lookup
 on the mirror (at most :data:`SCAN_CAP` rows each), and the rows found are ranked per record by
 cheap shared evidence (ZIP, licence, city, middle initial, active) so the
-:data:`~credentialing.domain.policies.CANDIDATE_CAP` returned are the likeliest. Scoring is
+:data:`~credentialing.domain.policies.CANDIDATE_CAP` returned are the likeliest. A roster
+provider without an NPI (:meth:`PostgresNpiLinkRepository.candidates_for`) goes through the
+same statement (:func:`_discovery`), fed with its values instead of record rows. Scoring is
 the domain's, in Python, on what this returns.
 """
 
 import hashlib
+import logging
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from string.templatelib import Template
 from typing import Final
 from uuid import UUID
 
@@ -27,6 +32,7 @@ from pydantic import BaseModel, ConfigDict
 
 from credentialing.domain.enums import MatchLevel
 from credentialing.domain.models import (
+    LinkParty,
     MatchEvidence,
     MatchResult,
     NpiLink,
@@ -43,6 +49,8 @@ from credentialing.infrastructure.repositories.exclusion_records import (
 )
 from credentialing.infrastructure.repositories.npi_registry import MIRROR_COLUMNS, NpiRow
 
+logger = logging.getLogger(__name__)
+
 SCAN_CAP: Final = 10_000
 """The most mirror rows one name shape of one record reads before ranking. A very common
 name ("Smith", first initial "J") has a few thousand; the cap only bounds a pathological
@@ -57,6 +65,10 @@ def _lock_key() -> int:
 
 _LOCK_KEY: Final = _lock_key()
 
+_PARTY_ID: Final = UUID(int=0)
+"""The id the one party of :meth:`PostgresNpiLinkRepository.candidates_for` carries through
+the discovery statement (a party has no row of its own)."""
+
 _LEVELS: Final = [level.value for level in sorted(MatchLevel, key=level_rank)]
 """Level values best first: ``array_position`` over it ranks links in SQL."""
 
@@ -70,6 +82,131 @@ _RUN_SELECT: Final = sql.SQL(
     "select id, started_at, finished_at, trigger, mirror_snapshot_id, records, linked,"
     " by_level, phases, cpu_time, note from npi_link_runs"
 )
+
+
+def _discovery(recs: Template) -> Template:
+    """The discovery statement over ``recs``, the parties to find: one row per party with
+    ``id``, ``entity_kind``, ``npi``, ``aliases``, the name keys (``last_key``, ``first_key``,
+    ``middle_key``, ``org_key``) and arrays of its places and licences (``zips``, ``cities``
+    with ``states`` pairwise, ``licenses`` with ``license_states`` pairwise). Records and
+    roster providers go through this one statement, so their discovery cannot drift."""
+    return t"""
+        with recs as ({recs:q}),
+        people as (
+            select id, last_key as last, first_key as first from recs
+            where entity_kind = 'individual' and npi is null
+            union
+            select r.id, name_key(split_part(a.alias, ',', 1)),
+                split_part(name_key(substr(a.alias, strpos(a.alias, ',') + 1)), ' ', 1)
+            from recs r cross join unnest(r.aliases) as a (alias)
+            where r.entity_kind = 'individual' and r.npi is null
+              and strpos(a.alias, ',') > 0
+            union
+            select r.id, p.last, p.first
+            from recs r cross join unnest(r.aliases) as a (alias)
+                cross join lateral (
+                    select string_to_array(name_key(a.alias), ' ') as words
+                ) as w
+                cross join lateral (
+                    values (w.words[cardinality(w.words)], w.words[1]),
+                        (w.words[1], w.words[2])
+                ) as p (last, first)
+            where r.entity_kind = 'individual' and r.npi is null
+              and strpos(a.alias, ',') = 0 and cardinality(w.words) >= 2
+        ),
+        organizations as (
+            select id, org_key as key from recs
+            where entity_kind = 'organization' and npi is null
+            union
+            select r.id, organization_key(a.alias)
+            from recs r cross join unnest(r.aliases) as a (alias)
+            where r.entity_kind = 'organization' and r.npi is null
+        ),
+        hits as (
+            select p.id, n.npi from people p cross join lateral (
+                select n.npi from npi_registry n
+                where n.in_file and n.last_name_key = p.last
+                  and n.first_name_key = p.first
+                limit {SCAN_CAP}
+            ) as n
+            where p.last is not null and p.first is not null
+            union all
+            select p.id, n.npi from people p cross join lateral (
+                select n.npi from npi_registry n
+                where n.in_file and n.last_name_key = p.last
+                  and n.first_name_key = left(p.first, 1)
+                limit {SCAN_CAP}
+            ) as n
+            where p.last is not null and length(p.first) > 1
+            union all
+            select p.id, n.npi from people p cross join lateral (
+                select n.npi from npi_registry n
+                where n.in_file and n.last_name_key = p.last
+                  and n.first_name_key >= p.first
+                  and n.first_name_key < chr(ascii(p.first) + 1)
+                limit {SCAN_CAP}
+            ) as n
+            where p.last is not null and length(p.first) = 1
+            union all
+            select o.id, n.npi from organizations o cross join lateral (
+                select n.npi from npi_registry n
+                where n.in_file and n.organization_key = o.key
+                limit {SCAN_CAP}
+            ) as n
+            where o.key is not null
+            union all
+            select o.id, n.npi from organizations o cross join lateral (
+                select n.npi from npi_registry n
+                where n.in_file and n.other_name_keys @> array[o.key]
+                limit {SCAN_CAP}
+            ) as n
+            where o.key is not null
+            union all
+            select r.id, n.npi from recs r join npi_registry n on n.npi = r.npi
+        ),
+        ranked as (
+            select f.id as record_id,
+                least(count(*) over (partition by f.id), {CANDIDATE_CAP + 1}) as found,
+                row_number() over (
+                    partition by f.id
+                    order by
+                        coalesce(r.zips && array[
+                            substring(n.practice_address->>'postal_code'
+                                from '^[0-9]{{5}}'),
+                            substring(n.mailing_address->>'postal_code'
+                                from '^[0-9]{{5}}')
+                        ], false)::int * 4
+                        + exists (
+                            select 1 from jsonb_array_elements(n.taxonomies) as t
+                                cross join unnest(r.licenses, r.license_states)
+                                    as l (license, state)
+                            where t->>'license_state' = l.state
+                              and license_key(t->>'license_number') = l.license
+                        )::int * 4
+                        + exists (
+                            select 1 from unnest(r.cities, r.states) as a (city, state)
+                            where (n.practice_address->>'state' = a.state
+                                and name_key(n.practice_address->>'city') = a.city)
+                            or (n.mailing_address->>'state' = a.state
+                                and name_key(n.mailing_address->>'city') = a.city)
+                        )::int * 2
+                        + coalesce(
+                            left(name_key(n.middle_name), 1) = left(r.middle_key, 1),
+                            false
+                        )::int
+                        + (n.status = 'active')::int
+                        desc,
+                        f.npi
+                ) as position,
+                {_CANDIDATE_COLUMNS:q}
+            from (select distinct id, npi from hits) as f
+                join recs r on r.id = f.id
+                join npi_registry n on n.npi = f.npi
+        )
+        select * from ranked
+        where position <= {CANDIDATE_CAP}
+        order by record_id, position
+    """
 
 
 class _CandidateRow(NpiRow):
@@ -160,143 +297,21 @@ class PostgresNpiLinkRepository:
         if not ids:
             return []
         records = await self._records.get_many(ids)
-        async with (
-            self._database.connection() as connection,
-            connection.cursor(row_factory=class_row(_CandidateRow)) as cursor,
-        ):
-            await cursor.execute(
-                t"""
-                with recs as (
-                    select e.id, e.entity_kind, e.npi, e.aliases,
-                        name_key(e.last_name) as last_key,
-                        name_key(e.first_name) as first_key,
-                        name_key(e.middle_name) as middle_key,
-                        organization_key(e.organization_name) as org_key,
-                        substring(trim(e.address->>'postal_code') from '^[0-9]{{5}}') as zip,
-                        name_key(e.address->>'city') as city,
-                        e.address->>'state' as state,
-                        upper(regexp_replace(e.license_number, '\\s+', '', 'g')) as license,
-                        e.license_state
-                    from exclusion_records e
-                    where e.id = any({ids}::uuid[])
-                ),
-                people as (
-                    select id, last_key as last, first_key as first from recs
-                    where entity_kind = 'individual' and npi is null
-                    union
-                    select r.id, name_key(split_part(a.alias, ',', 1)),
-                        split_part(name_key(substr(a.alias, strpos(a.alias, ',') + 1)), ' ', 1)
-                    from recs r cross join unnest(r.aliases) as a (alias)
-                    where r.entity_kind = 'individual' and r.npi is null
-                      and strpos(a.alias, ',') > 0
-                    union
-                    select r.id, p.last, p.first
-                    from recs r cross join unnest(r.aliases) as a (alias)
-                        cross join lateral (
-                            select string_to_array(name_key(a.alias), ' ') as words
-                        ) as w
-                        cross join lateral (
-                            values (w.words[cardinality(w.words)], w.words[1]),
-                                (w.words[1], w.words[2])
-                        ) as p (last, first)
-                    where r.entity_kind = 'individual' and r.npi is null
-                      and strpos(a.alias, ',') = 0 and cardinality(w.words) >= 2
-                ),
-                organizations as (
-                    select id, org_key as key from recs
-                    where entity_kind = 'organization' and npi is null
-                    union
-                    select r.id, organization_key(a.alias)
-                    from recs r cross join unnest(r.aliases) as a (alias)
-                    where r.entity_kind = 'organization' and r.npi is null
-                ),
-                hits as (
-                    select p.id, n.npi from people p cross join lateral (
-                        select n.npi from npi_registry n
-                        where n.in_file and n.last_name_key = p.last
-                          and n.first_name_key = p.first
-                        limit {SCAN_CAP}
-                    ) as n
-                    where p.last is not null and p.first is not null
-                    union all
-                    select p.id, n.npi from people p cross join lateral (
-                        select n.npi from npi_registry n
-                        where n.in_file and n.last_name_key = p.last
-                          and n.first_name_key = left(p.first, 1)
-                        limit {SCAN_CAP}
-                    ) as n
-                    where p.last is not null and length(p.first) > 1
-                    union all
-                    select p.id, n.npi from people p cross join lateral (
-                        select n.npi from npi_registry n
-                        where n.in_file and n.last_name_key = p.last
-                          and n.first_name_key >= p.first
-                          and n.first_name_key < chr(ascii(p.first) + 1)
-                        limit {SCAN_CAP}
-                    ) as n
-                    where p.last is not null and length(p.first) = 1
-                    union all
-                    select o.id, n.npi from organizations o cross join lateral (
-                        select n.npi from npi_registry n
-                        where n.in_file and n.organization_key = o.key
-                        limit {SCAN_CAP}
-                    ) as n
-                    where o.key is not null
-                    union all
-                    select o.id, n.npi from organizations o cross join lateral (
-                        select n.npi from npi_registry n
-                        where n.in_file and n.other_name_keys @> array[o.key]
-                        limit {SCAN_CAP}
-                    ) as n
-                    where o.key is not null
-                    union all
-                    select r.id, n.npi from recs r join npi_registry n on n.npi = r.npi
-                ),
-                ranked as (
-                    select f.id as record_id,
-                        least(count(*) over (partition by f.id), {CANDIDATE_CAP + 1}) as found,
-                        row_number() over (
-                            partition by f.id
-                            order by
-                                coalesce(r.zip in (
-                                    substring(n.practice_address->>'postal_code'
-                                        from '^[0-9]{{5}}'),
-                                    substring(n.mailing_address->>'postal_code'
-                                        from '^[0-9]{{5}}')
-                                ), false)::int * 4
-                                + exists (
-                                    select 1 from jsonb_array_elements(n.taxonomies) as t
-                                    where t->>'license_state' = r.license_state
-                                      and upper(regexp_replace(
-                                          t->>'license_number', '\\s+', '', 'g'
-                                      )) = r.license
-                                )::int * 4
-                                + coalesce(
-                                    (n.practice_address->>'state' = r.state
-                                        and name_key(n.practice_address->>'city') = r.city)
-                                    or (n.mailing_address->>'state' = r.state
-                                        and name_key(n.mailing_address->>'city') = r.city),
-                                    false
-                                )::int * 2
-                                + coalesce(
-                                    left(name_key(n.middle_name), 1) = left(r.middle_key, 1),
-                                    false
-                                )::int
-                                + (n.status = 'active')::int
-                                desc,
-                                f.npi
-                        ) as position,
-                        {_CANDIDATE_COLUMNS:q}
-                    from (select distinct id, npi from hits) as f
-                        join recs r on r.id = f.id
-                        join npi_registry n on n.npi = f.npi
-                )
-                select * from ranked
-                where position <= {CANDIDATE_CAP}
-                order by record_id, position
-                """
-            )
-            rows = await cursor.fetchall()
+        recs = t"""
+            select e.id, e.entity_kind, e.npi, e.aliases,
+                name_key(e.last_name) as last_key,
+                name_key(e.first_name) as first_key,
+                name_key(e.middle_name) as middle_key,
+                organization_key(e.organization_name) as org_key,
+                array[substring(trim(e.address->>'postal_code') from '^[0-9]{{5}}')] as zips,
+                array[name_key(e.address->>'city')] as cities,
+                array[e.address->>'state'] as states,
+                array[license_key(e.license_number)] as licenses,
+                array[e.license_state] as license_states
+            from exclusion_records e
+            where e.id = any({ids}::uuid[])
+        """
+        rows = await self._discover(recs)
         found: dict[UUID, list[NpiRecord]] = {}
         counts: dict[UUID, int] = {}
         for row in rows:
@@ -306,6 +321,58 @@ class PostgresNpiLinkRepository:
             LinkCandidates(record, found.get(record.id, []), counts.get(record.id, 0))
             for record in sorted(records, key=lambda r: r.id)
         ]
+
+    async def candidates_for(self, party: LinkParty) -> tuple[Sequence[NpiRecord], int]:
+        """The party's candidates through the same discovery statement as :meth:`candidates`,
+        its values given as parameters and keyed in SQL as a record's columns are; every
+        licence and address of the party counts in the ranking. One INFO line per call: the
+        party's kind, the count found and the time, never a name."""
+        name = party.person_name
+        places = party.addresses
+        recs = t"""
+            select {_PARTY_ID}::uuid as id, {party.entity_kind.value}::text as entity_kind,
+                {party.npi}::char(10) as npi, {list(party.aliases)}::text[] as aliases,
+                name_key({name.last if name else None}::text) as last_key,
+                name_key({name.first if name else None}::text) as first_key,
+                name_key({name.middle if name else None}::text) as middle_key,
+                organization_key({party.organization_name}::text) as org_key,
+                array(
+                    select substring(trim(z) from '^[0-9]{{5}}')
+                    from unnest({[a.postal_code for a in places]}::text[]) as z
+                ) as zips,
+                array(
+                    select name_key(c) from unnest({[a.city for a in places]}::text[])
+                        with ordinality as u (c, i)
+                    order by i
+                ) as cities,
+                {[a.state for a in places]}::text[] as states,
+                array(
+                    select license_key(l)
+                    from unnest({[item.number for item in party.licenses]}::text[])
+                        with ordinality as u (l, i)
+                    order by i
+                ) as licenses,
+                {[item.state for item in party.licenses]}::text[] as license_states
+        """
+        started = time.perf_counter()
+        rows = await self._discover(recs)
+        found = rows[0].found if rows else 0
+        logger.info(
+            "npi discovery party=%s found=%d elapsed_ms=%.0f",
+            party.entity_kind.value,
+            found,
+            (time.perf_counter() - started) * 1000,
+        )
+        return [row.to_domain() for row in rows], found
+
+    async def _discover(self, recs: Template) -> Sequence[_CandidateRow]:
+        """Run the discovery statement over ``recs`` (:func:`_discovery`)."""
+        async with (
+            self._database.connection() as connection,
+            connection.cursor(row_factory=class_row(_CandidateRow)) as cursor,
+        ):
+            await cursor.execute(_discovery(recs))
+            return await cursor.fetchall()
 
     async def replace_links(self, links: Sequence[NpiLink]) -> None:
         """Delete the links of every record in ``links`` and copy these in, in one

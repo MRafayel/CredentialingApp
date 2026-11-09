@@ -16,11 +16,12 @@ from credentialing.domain.types import Npi
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.jsonb import models_jsonb
 
-_SELECT: Final = sql.SQL(
-    "select id, organization_id, entity_kind, last_name, first_name, middle_name, suffix,"
+_COLUMNS: Final = sql.SQL(
+    "id, organization_id, entity_kind, last_name, first_name, middle_name, suffix,"
     " organization_name, npi, date_of_birth, licenses, addresses, taxonomy_codes, created_at"
-    " from providers"
 )
+
+_SELECT: Final = sql.SQL("select {columns} from providers").format(columns=_COLUMNS)
 
 
 def _like_pattern(text: str) -> str:
@@ -127,6 +128,24 @@ class PostgresProviderRepository:
                 t"""
                 {_SELECT:q} where organization_id = {organization_id} and npi = {npi}
                 order by created_at, id limit 1
+                """
+            )
+            row = await cursor.fetchone()
+        return row.to_domain() if row else None
+
+    async def set_npi(self, organization_id: UUID, provider_id: UUID, npi: Npi) -> Provider | None:
+        """Set the NPI of the organization's provider when it has none, in one statement, so
+        two confirmations cannot both win; None when no row changed."""
+        async with (
+            self._database.connection() as connection,
+            connection.transaction(),
+            connection.cursor(row_factory=class_row(_ProviderRow)) as cursor,
+        ):
+            await cursor.execute(
+                t"""
+                update providers set npi = {npi}
+                where organization_id = {organization_id} and id = {provider_id} and npi is null
+                returning {_COLUMNS:q}
                 """
             )
             row = await cursor.fetchone()

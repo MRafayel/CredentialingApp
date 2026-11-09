@@ -8,10 +8,14 @@ from fastapi import APIRouter, Query, status
 from credentialing.api.container import Container
 from credentialing.api.organization import OrganizationId
 from credentialing.api.schemas import (
+    NpiSuggestionsResponse,
     ProviderCreate,
+    ProviderNpiBody,
+    ProviderNpiResponse,
     ProviderPageResponse,
     ProviderResponse,
     VerdictResponse,
+    VerificationResponse,
 )
 from credentialing.application.errors import ProviderNotFoundError
 from credentialing.application.list_providers import MAX_PAGE_SIZE
@@ -62,3 +66,29 @@ async def provider_verdict(
     verdict = await container.provider_verdict.run(organization_id, provider_id)
     views = await container.verification_history.expand(verdict.results)
     return VerdictResponse.from_verdict(verdict, views)
+
+
+@router.get("/{provider_id}/npi-suggestions")
+async def npi_suggestions(
+    provider_id: UUID, organization_id: OrganizationId, container: Container
+) -> NpiSuggestionsResponse:
+    """NPIs from the registry mirror the provider may have, best first, for a provider
+    without one; computed now, never stored, never EXACT by name. Nothing is written to the
+    roster: the user confirms one with ``PUT /providers/{id}/npi``."""
+    result = await container.suggest_npis.run(organization_id, provider_id)
+    return NpiSuggestionsResponse.from_suggestions(result)
+
+
+@router.put("/{provider_id}/npi")
+async def set_provider_npi(
+    provider_id: UUID, body: ProviderNpiBody, organization_id: OrganizationId, container: Container
+) -> ProviderNpiResponse:
+    """Set the NPI of a provider that has none, once NPPES knows it, and append the NPI
+    verification as the audit record. 422 when NPPES does not know the NPI, 409 when the
+    provider has an NPI already, 503 when NPPES could not be checked (nothing is set)."""
+    provider, result = await container.set_provider_npi.run(organization_id, provider_id, body.npi)
+    (view,) = await container.verification_history.expand([result])
+    return ProviderNpiResponse(
+        provider=ProviderResponse.from_domain(provider),
+        verification=VerificationResponse.from_view(view),
+    )

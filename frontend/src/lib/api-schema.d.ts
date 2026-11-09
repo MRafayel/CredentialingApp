@@ -88,6 +88,50 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/providers/{provider_id}/npi-suggestions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Npi Suggestions
+     * @description NPIs from the registry mirror the provider may have, best first, for a provider
+     *     without one; computed now, never stored, never EXACT by name. Nothing is written to the
+     *     roster: the user confirms one with ``PUT /providers/{id}/npi``.
+     */
+    get: operations['npi_suggestions_providers__provider_id__npi_suggestions_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/providers/{provider_id}/npi': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /**
+     * Set Provider Npi
+     * @description Set the NPI of a provider that has none, once NPPES knows it, and append the NPI
+     *     verification as the audit record. 422 when NPPES does not know the NPI, 409 when the
+     *     provider has an NPI already, 503 when NPPES could not be checked (nothing is set).
+     */
+    put: operations['set_provider_npi_providers__provider_id__npi_put']
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/providers/{provider_id}/verifications/exclusions': {
     parameters: {
       query?: never
@@ -102,6 +146,31 @@ export interface paths {
      * @description Check the provider against every exclusion list covering them; the verdict they give.
      */
     post: operations['check_exclusions_providers__provider_id__verifications_exclusions_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/providers/{provider_id}/verifications/npi': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Verify Npi
+     * @description Verify the provider's NPI in NPPES and append the result to the history.
+     *
+     *     The mirror answers unless ``live``, the mirror has no row, or its load is stale; then the
+     *     live registry is asked once. Active, deactivated, not in NPPES, a mirror the live registry
+     *     contradicts (review), no NPI on file (a manual step) and a check that could not run are
+     *     each their own result; the exclusion verdict is not changed.
+     */
+    post: operations['verify_npi_providers__provider_id__verifications_npi_post']
     delete?: never
     options?: never
     head?: never
@@ -209,12 +278,18 @@ export interface paths {
     }
     /**
      * Search Npis
-     * @description NPIs of the mirror matching ``q`` exactly: ten digits as an NPI, otherwise a person's
-     *     "last first" or "first last" name, one word as a last name, or an organization's name
-     *     without legal designators. Active NPIs first. Prefix and fuzzy search are not offered yet.
+     * @description NPIs of the mirror matching ``q`` exactly, or with ``live`` of the live registry.
      *
-     *     Every answer carries the NPPES load the mirror is as of. Fewer than two letters or digits
-     *     search nothing.
+     *     Mirror (default): ``q`` as ten digits (an NPI), a person's "last first" or "first last"
+     *     name, one word as a last name, or an organization's name without legal designators;
+     *     active NPIs first; at most 50 (20 by default). Fewer than two letters or digits search
+     *     nothing. Prefix and fuzzy search are not offered.
+     *
+     *     Live: ``q`` is ignored and the structured fields are sent to the NPPES API in one request
+     *     (a last name or an organization name is required; a name may end with ``*`` after two
+     *     characters); at most 200 (50 by default); no paging. Every result newer than the mirror
+     *     is stored in it. A failed request has no records and says why in ``live``, never mirror
+     *     rows in their place. A query the registry would refuse is 422.
      */
     get: operations['search_npis_npi_search_get']
     put?: never
@@ -234,8 +309,13 @@ export interface paths {
     }
     /**
      * Get Npi
-     * @description One NPI as the mirror holds it, with the NPPES load the mirror is as of; 404 when the
-     *     mirror has no record of it. Addresses are never returned (practice city and state only).
+     * @description One NPI: the backend's ``status``, its record, the mirror's load and the live check.
+     *
+     *     The mirror is read first; the live registry is asked when ``live``, when the mirror has
+     *     no row, or when its load is stale (one request; a newer answer is stored in the mirror).
+     *     Always 200 for ten digits: "not in NPPES" (``not_found``) and "could not check"
+     *     (``unknown``, with the failure in ``live``) are answers. Addresses are never returned
+     *     (practice city and state only).
      */
     get: operations['get_npi_npi__npi__get']
     put?: never
@@ -447,6 +527,22 @@ export interface components {
       via_npi: string | null
     }
     /**
+     * LiveCheckResponse
+     * @description What the live registry (the NPPES API) answered, as its own block: when it was asked
+     *     (``provenance.verified_at``), ``outcome`` (``completed`` when it answered), ``found``
+     *     (null unless it answered) and the request's ``note``. A failed request is never "not
+     *     found".
+     */
+    LiveCheckResponse: {
+      provenance: components['schemas']['ProvenanceResponse']
+      freshness: components['schemas']['Freshness']
+      outcome: components['schemas']['Outcome']
+      /** Found */
+      found: boolean | null
+      /** Note */
+      note: string | null
+    }
+    /**
      * LookupRecordResponse
      * @description An exclusion record a lookup found. The date of birth and street address are left out.
      *
@@ -623,6 +719,39 @@ export interface components {
       registry: components['schemas']['NpiSummaryResponse'] | null
     }
     /**
+     * NpiLookupResponse
+     * @description Body of ``GET /npi/{npi}``: the backend's ``status`` for the NPI, its record (the live
+     *     answer when the registry returned it, else the mirror's row, null when neither has it),
+     *     and two separate blocks: the mirror's load and the live check (null when not asked).
+     */
+    NpiLookupResponse: {
+      /** Npi */
+      npi: string
+      status: components['schemas']['RegistryStatus']
+      record: components['schemas']['NpiRecordResponse'] | null
+      mirror: components['schemas']['MirrorResponse'] | null
+      live: components['schemas']['LiveCheckResponse'] | null
+    }
+    /**
+     * NpiQueryResponse
+     * @description The structured query a live search sent (blank fields are null).
+     */
+    NpiQueryResponse: {
+      /** Last Name */
+      last_name: string | null
+      /** First Name */
+      first_name: string | null
+      /** Organization Name */
+      organization_name: string | null
+      entity_kind: components['schemas']['EntityKind'] | null
+      /** State */
+      state: string | null
+      /** City */
+      city: string | null
+      /** Postal Code */
+      postal_code: string | null
+    }
+    /**
      * NpiRecordResponse
      * @description One mirrored NPI in full, without addresses (practice city and state only).
      *
@@ -673,24 +802,20 @@ export interface components {
       updated_at: string | null
     }
     /**
-     * NpiResponse
-     * @description Body of ``GET /npi/{npi}``: the mirrored record and the load the mirror is as of.
-     */
-    NpiResponse: {
-      record: components['schemas']['NpiRecordResponse']
-      mirror: components['schemas']['MirrorResponse'] | null
-    }
-    /**
      * NpiSearchResponse
-     * @description Body of ``GET /npi/search``: the NPIs found, active first, and the load the mirror is
-     *     as of (null when it was never loaded).
+     * @description Body of ``GET /npi/search``. A mirror search has ``query_text`` and the mirror's NPIs,
+     *     active first; a live search has ``query`` and the registry's results in its order, and
+     *     ``live`` says what the request answered (a failed one has no records). ``mirror`` is the
+     *     load the mirror is as of (null when it was never loaded).
      */
     NpiSearchResponse: {
-      /** Query */
-      query: string
+      /** Query Text */
+      query_text: string
+      query: components['schemas']['NpiQueryResponse'] | null
       /** Records */
       records: components['schemas']['NpiSummaryResponse'][]
       mirror: components['schemas']['MirrorResponse'] | null
+      live: components['schemas']['LiveCheckResponse'] | null
     }
     /**
      * NpiStatus
@@ -698,6 +823,50 @@ export interface components {
      * @enum {string}
      */
     NpiStatus: 'active' | 'deactivated'
+    /**
+     * NpiSuggestionResponse
+     * @description One NPI the provider may have, for the user to weigh and confirm; never EXACT by name.
+     *     ``npi`` and ``registry`` are null on the one row saying why nothing was suggested (level
+     *     ``none``, the explanation says why). Never a street address.
+     */
+    NpiSuggestionResponse: {
+      /** Npi */
+      npi: string | null
+      level: components['schemas']['MatchLevel']
+      /** Evidence */
+      evidence: components['schemas']['MatchEvidenceResponse'][]
+      /** Explanation */
+      explanation: string
+      registry: components['schemas']['NpiSummaryResponse'] | null
+    }
+    /**
+     * NpiSuggestionsResponse
+     * @description Body of ``GET /providers/{id}/npi-suggestions``: NPIs from the registry mirror for a
+     *     provider without one, best first, computed now and never stored.
+     *
+     *     ``mirror`` is the NPPES load the suggestions rest on (null when the mirror was never
+     *     loaded, and then one ``none`` row says so); ``found`` how many mirror rows the search
+     *     found (51: more than 50); ``note`` why nothing was searched (the provider has an NPI).
+     */
+    NpiSuggestionsResponse: {
+      /**
+       * Provider Id
+       * Format: uuid
+       */
+      provider_id: string
+      /**
+       * Computed At
+       * Format: date-time
+       */
+      computed_at: string
+      mirror: components['schemas']['MirrorResponse'] | null
+      /** Found */
+      found: number
+      /** Note */
+      note: string | null
+      /** Suggestions */
+      suggestions: components['schemas']['NpiSuggestionResponse'][]
+    }
     /**
      * NpiSummaryResponse
      * @description A compact view of one mirrored NPI. Never a street or mailing address: the practice
@@ -866,6 +1035,23 @@ export interface components {
       addresses?: components['schemas']['AddressBody'][]
       /** Taxonomy Codes */
       taxonomy_codes?: string[]
+    }
+    /**
+     * ProviderNpiBody
+     * @description Request body of ``PUT /providers/{id}/npi``: the NPI the user confirms.
+     */
+    ProviderNpiBody: {
+      /** Npi */
+      npi: string
+    }
+    /**
+     * ProviderNpiResponse
+     * @description Body of ``PUT /providers/{id}/npi``: the provider with its NPI, and the NPI
+     *     verification appended as the record of what NPPES said and who set the NPI.
+     */
+    ProviderNpiResponse: {
+      provider: components['schemas']['ProviderResponse']
+      verification: components['schemas']['VerificationResponse']
     }
     /**
      * ProviderPageResponse
@@ -1041,6 +1227,18 @@ export interface components {
       /** Npi */
       npi: string | null
     }
+    /**
+     * RegistryStatus
+     * @description The backend's one-word conclusion about an NPI, from the mirror and the live registry.
+     *
+     *     The live registry (the NPPES API) lists active NPIs only: an NPI it does not return is not
+     *     active today, deactivated or never issued alike, and only the mirror (the deactivation
+     *     file) can say which. ``MIRROR_ONLY_ACTIVE`` is the contradiction a person reviews: the
+     *     mirror's file lists the NPI as active, the live registry returned nothing. ``UNKNOWN`` is
+     *     "we could not tell": no mirror row and no live answer (never asked, or the request failed).
+     * @enum {string}
+     */
+    RegistryStatus: 'active' | 'deactivated' | 'not_found' | 'mirror_only_active' | 'unknown'
     /**
      * SearchedSourceResponse
      * @description A list a lookup searched; ``fetched_at`` is null when the list was never loaded.
@@ -1400,6 +1598,76 @@ export interface operations {
       }
     }
   }
+  npi_suggestions_providers__provider_id__npi_suggestions_get: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        provider_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NpiSuggestionsResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  set_provider_npi_providers__provider_id__npi_put: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        provider_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ProviderNpiBody']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ProviderNpiResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   check_exclusions_providers__provider_id__verifications_exclusions_post: {
     parameters: {
       query?: never
@@ -1420,6 +1688,41 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['VerdictResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  verify_npi_providers__provider_id__verifications_npi_post: {
+    parameters: {
+      query?: {
+        live?: boolean
+      }
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        provider_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['VerificationResponse']
         }
       }
       /** @description Validation Error */
@@ -1569,7 +1872,15 @@ export interface operations {
     parameters: {
       query?: {
         q?: string
-        limit?: number
+        limit?: number | null
+        live?: boolean
+        last_name?: string | null
+        first_name?: string | null
+        organization_name?: string | null
+        entity_kind?: components['schemas']['EntityKind'] | null
+        state?: string | null
+        city?: string | null
+        postal_code?: string | null
       }
       header?: {
         'x-organization-id'?: string | null
@@ -1601,7 +1912,9 @@ export interface operations {
   }
   get_npi_npi__npi__get: {
     parameters: {
-      query?: never
+      query?: {
+        live?: boolean
+      }
       header?: {
         'x-organization-id'?: string | null
       }
@@ -1618,7 +1931,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['NpiResponse']
+          'application/json': components['schemas']['NpiLookupResponse']
         }
       }
       /** @description Validation Error */

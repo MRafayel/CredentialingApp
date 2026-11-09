@@ -87,6 +87,26 @@ async def test_find_by_npi(
     assert await repository.find_by_npi(organization_id, make_npi("100000002")) is None
 
 
+async def test_set_npi_sets_it_once_within_the_organization(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresProviderRepository(database)
+    organization_id = await _organization(db_connection)
+    other_organization = await _organization(db_connection)
+    provider = _provider(organization_id, npi=None)
+    await repository.add(provider)
+    other = make_npi("100000002")
+
+    assert await repository.set_npi(other_organization, provider.id, NPI) is None
+    updated = await repository.set_npi(organization_id, provider.id, NPI)
+    again = await repository.set_npi(organization_id, provider.id, other)
+
+    assert updated == provider.model_copy(update={"npi": NPI})
+    assert again is None
+    assert await repository.get(organization_id, provider.id) == updated
+    assert await repository.set_npi(organization_id, uuid4(), NPI) is None
+
+
 async def test_list_pages_newest_first_and_searches(
     database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
 ) -> None:

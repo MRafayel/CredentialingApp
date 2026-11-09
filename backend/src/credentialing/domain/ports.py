@@ -1,18 +1,27 @@
 """Ports: the interfaces outer layers implement and the application depends on."""
 
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
-from typing import NamedTuple, Protocol, runtime_checkable
+from typing import Final, NamedTuple, Protocol, runtime_checkable
 from uuid import UUID
 
-from credentialing.domain.enums import CredentialType, DatasetLoadMode, NpiStatus, Outcome
+from credentialing.domain.enums import (
+    CredentialType,
+    DatasetLoadMode,
+    EntityKind,
+    NpiStatus,
+    Outcome,
+)
 from credentialing.domain.models import (
     ConnectorCapabilities,
     DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    LinkParty,
+    NpiAnswer,
     NpiLink,
     NpiLinkRun,
     NpiLinkSummary,
@@ -46,6 +55,11 @@ class ProviderRepository(Protocol):
 
     async def find_by_npi(self, organization_id: UUID, npi: Npi) -> Provider | None:
         """Return the organization's provider with this NPI, if any."""
+        ...
+
+    async def set_npi(self, organization_id: UUID, provider_id: UUID, npi: Npi) -> Provider | None:
+        """Give the organization's provider this NPI when it has none; the provider as now
+        stored, or None when no row changed (no such provider, or it has an NPI already)."""
         ...
 
     async def list(
@@ -84,6 +98,11 @@ class SnapshotRepository(Protocol):
     async def set_load(self, snapshot_id: UUID, load: DatasetLoad) -> None:
         """Record what loading the snapshot's dataset did; its ``row_count`` becomes
         ``load.scanned``."""
+        ...
+
+    async def count_since(self, source_id: SourceId, since: datetime) -> tuple[int, int]:
+        """How many snapshots the source has fetched at or after ``since``, and how many of
+        them did not complete."""
         ...
 
 
@@ -403,6 +422,13 @@ class NpiLinkRepository(Protocol):
         """
         ...
 
+    async def candidates_for(self, party: LinkParty) -> tuple[Sequence[NpiRecord], int]:
+        """The mirror rows a party's discovery finds, strongest evidence first (at most
+        :data:`~credentialing.domain.policies.CANDIDATE_CAP`), and how many were found
+        (capped at the cap plus one). The same discovery as :meth:`candidates`, over every
+        licence and address of the party."""
+        ...
+
     async def replace_links(self, links: Sequence[NpiLink]) -> None:
         """Make ``links`` the only links of their records, atomically: each record's
         earlier links are deleted and these inserted."""
@@ -446,6 +472,81 @@ class DatasetConnector(Protocol):
         ...
 
 
+_NAME_FIELDS: Final = ("last_name", "first_name", "organization_name")
+_WILDCARD: Final = "*"
+_STATE: Final = re.compile(r"[A-Z]{2}")
+
+
+@dataclass(frozen=True, slots=True)
+class NpiQuery:
+    """A structured search of the live NPI registry; a last name or an organization name is
+    required (the registry's own rule).
+
+    Values are stripped, and a blank one counts as absent. A name may end with the registry's
+    wildcard ``*`` after at least two characters ("SMI*"); no other field takes one.
+    ``entity_kind`` narrows the search to individuals or organizations.
+
+    Raises:
+        ValueError: No last name or organization name, a misplaced wildcard, a state that is
+            not two capital letters, or an unknown entity kind.
+    """
+
+    last_name: str | None = None
+    first_name: str | None = None
+    organization_name: str | None = None
+    entity_kind: EntityKind | None = None
+    state: StateCode | None = None
+    city: str | None = None
+    postal_code: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in (*_NAME_FIELDS, "state", "city", "postal_code"):
+            value = getattr(self, name)
+            stripped = value.strip() if isinstance(value, str) else None
+            object.__setattr__(self, name, stripped or None)
+        if self.last_name is None and self.organization_name is None:
+            raise ValueError("an NPI search needs a last name or an organization name")
+        for name in _NAME_FIELDS:
+            value = getattr(self, name)
+            if value is not None and _WILDCARD in value:
+                head = value[:-1]
+                if not value.endswith(_WILDCARD) or _WILDCARD in head or len(head) < 2:
+                    raise ValueError(
+                        f"{name}: a wildcard may only end a name, after at least two characters"
+                    )
+        for name in ("state", "city", "postal_code"):
+            if _WILDCARD in (getattr(self, name) or ""):
+                raise ValueError(f"{name}: a wildcard may only end a name")
+        if self.state is not None and not _STATE.fullmatch(self.state):
+            raise ValueError("state: a two-letter state code in capitals")
+        if self.entity_kind is EntityKind.UNKNOWN:
+            raise ValueError("entity_kind: an individual or an organization")
+
+
+@runtime_checkable
+class NpiRegistryConnector(Protocol):
+    """The live NPI registry, queried one NPI or one search at a time, never polled.
+
+    Its methods are named ``lookup_npi`` and ``search_npis``, not ``fetch`` or ``verify``:
+    runtime protocol checks compare member names only, so a shared name would let it pass as a
+    bulk-list or lookup connector.
+    """
+
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        """What the connector covers and how it reaches its source."""
+        ...
+
+    async def lookup_npi(self, npi: Npi) -> NpiAnswer:
+        """Ask the registry for one NPI; one request, one snapshot."""
+        ...
+
+    async def search_npis(self, query: NpiQuery, *, limit: int) -> NpiAnswer:
+        """Ask the registry for the NPIs matching ``query``, at most ``limit`` (the registry
+        takes 10 to 200); one request, one snapshot, no paging."""
+        ...
+
+
 @runtime_checkable
 class LookupConnector(Protocol):
     """A source queried one provider at a time."""
@@ -465,7 +566,7 @@ class ConnectorDirectory(Protocol):
 
     def get(
         self, source_id: SourceId
-    ) -> BulkListConnector | DatasetConnector | LookupConnector | None:
+    ) -> BulkListConnector | DatasetConnector | LookupConnector | NpiRegistryConnector | None:
         """Return the connector for ``source_id``, if one is registered."""
         ...
 
@@ -479,6 +580,11 @@ class ConnectorDirectory(Protocol):
 
     def polled_connectors(self) -> Sequence[BulkListConnector | DatasetConnector]:
         """Every connector a sync polls (bulk lists and datasets), ordered by source id."""
+        ...
+
+    def npi_registry_connectors(self) -> Sequence[NpiRegistryConnector]:
+        """Every registered live NPI registry connector (asked on demand, never polled),
+        ordered by source id."""
         ...
 
     def bulk_connectors_for(

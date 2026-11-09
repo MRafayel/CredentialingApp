@@ -313,7 +313,7 @@ class PostgresExclusionRecordRepository:
                     npi = {npi}
                     or related_npis && {npis}::text[]
                     or name_keys && {names}::text[]
-                    or upper(regexp_replace(license_number, '\\s+', '', 'g'))
+                    or license_key(license_number)
                         = any({licenses}::text[])
                 )
                 order by source_id, id
@@ -457,7 +457,7 @@ class PostgresExclusionRecordRepository:
                 t"""
                 {_SELECT:q}
                 where latest and id <> {record.id}
-                  and upper(regexp_replace(license_number, '\\s+', '', 'g')) = {number}
+                  and license_key(license_number) = {number}
                   and license_state = {state}
                 order by source_id, id
                 limit {max(limit, 0)}

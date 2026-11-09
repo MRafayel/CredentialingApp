@@ -4,6 +4,7 @@ from credentialing.bootstrap import build_registry, create_browser_fetcher
 from credentialing.connectors.framework.base import BulkListConnectorBase
 from credentialing.connectors.framework.browser import ChromeFetcher
 from credentialing.connectors.framework.dataset import DatasetConnectorBase
+from credentialing.connectors.nppes.api import NppesApiConnector
 from credentialing.infrastructure.config import Settings
 from tests.fakes import FixedClock, ScriptedFetcher
 from tests.synthetic import NOW
@@ -61,6 +62,21 @@ def test_the_nppes_files_are_dataset_connectors_writing_under_the_dataset_dir() 
             f"data/test-datasets/{connector.capabilities.source_id}/x.zip"
         )
     assert not set(datasets) & set(registry.bulk_connectors())
+
+
+def test_the_nppes_api_is_registered_on_demand_only() -> None:
+    registry = build_registry(ScriptedFetcher(), browser=ScriptedFetcher())
+
+    (live,) = registry.npi_registry_connectors()
+
+    assert isinstance(live, NppesApiConnector)
+    assert live.capabilities.source_id == "nppes_api"
+    for others in (
+        registry.polled_connectors(),
+        registry.bulk_connectors(),
+        registry.dataset_connectors(),
+    ):
+        assert "nppes_api" not in [c.capabilities.source_id for c in others]
 
 
 def test_the_browser_fallback_follows_the_settings() -> None:

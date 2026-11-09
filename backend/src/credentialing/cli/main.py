@@ -7,8 +7,9 @@ With ``--due`` it skips the sources whose poll interval has not elapsed since th
 completed fetch, which is what a cron job runs.
 
 ``sources`` shows every registered source: its links, its last fetch, how many records are
-current, how old the data is and when the next fetch is due. ``--json`` prints the same as
-JSON; ``--strict`` exits with 1 unless every source is ok.
+current, how old the data is and when the next fetch is due, then the NPI links line and the
+live NPI registry's usage (requests in the last week, the last one). ``--json`` prints the
+same as JSON; ``--strict`` exits with 1 unless every polled source is ok.
 
 ``link-npis`` links exclusion records to NPIs of the registry mirror: every latest record
 whose links are missing or older than the newest mirror load (``--source`` narrows it to one
@@ -103,9 +104,17 @@ async def _sources(settings: Settings, *, as_json: bool, strict: bool) -> int:
         now = services.clock.now()
         statuses = await services.source_status.run()
         links = await services.link_npis.summary()
+        api = await services.source_status.npi_api_usage()
     color = not as_json and not settings.no_color and sys.stdout.isatty()
     return show(
-        statuses, now, out=sys.stdout, as_json=as_json, strict=strict, color=color, links=links
+        statuses,
+        now,
+        out=sys.stdout,
+        as_json=as_json,
+        strict=strict,
+        color=color,
+        links=links,
+        api=api,
     )
 
 

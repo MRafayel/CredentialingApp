@@ -509,7 +509,9 @@ class ConnectorCapabilities(DomainModel):
     access_policy: AccessPolicy
     change_signal: ChangeSignal
     method: VerificationMethod
-    poll_interval: timedelta
+    poll_interval: timedelta = Field(ge=timedelta(0))
+    """How often a sync polls the source; never polled, and zero, for an on-demand connector
+    (the NPPES API, asked one NPI or one search at a time)."""
     source_url: str
     display_name: str
     download_url: str | None = None
@@ -636,6 +638,51 @@ class NpiRecord(DomainModel):
                 if self.person_name is not None:
                     raise ValueError("an organization's record cannot have a person name")
         return self
+
+
+class NpiAnswer(DomainModel):
+    """One request to the live NPI registry: its snapshot always, the records only when the
+    registry answered (``COMPLETED``).
+
+    ``result_count`` is the registry's own count. The registry lists active NPIs only, so a
+    completed answer without results means "not active in NPPES today", never "never issued".
+    """
+
+    snapshot: SourceSnapshot
+    records: tuple[NpiRecord, ...] | None = None
+    result_count: int | None = Field(default=None, ge=0)
+
+    @property
+    def found(self) -> bool | None:
+        """Whether the registry returned an NPI; None when it could not be asked."""
+        if self.snapshot.outcome is not Outcome.COMPLETED or self.result_count is None:
+            return None
+        return self.result_count > 0
+
+    @model_validator(mode="after")
+    def _records_exactly_when_completed(self) -> Self:
+        completed = self.snapshot.outcome is Outcome.COMPLETED
+        if completed != (self.records is not None) or completed != (self.result_count is not None):
+            raise ValueError("records and a result count come exactly with a completed answer")
+        return self
+
+
+class LinkParty(DomainModel):
+    """What the NPI linking rules look at, from an exclusion record or a roster provider.
+
+    A record gives at most one licence and one address, a provider any number; ``aliases``
+    are other names of the same party (a record's only). Built by
+    :func:`~credentialing.domain.policies.party_of_record` and
+    :func:`~credentialing.domain.policies.party_of_provider`.
+    """
+
+    entity_kind: EntityKind
+    person_name: PersonName | None = None
+    organization_name: str | None = None
+    aliases: tuple[str, ...] = ()
+    npi: Npi | None = None
+    licenses: tuple[License, ...] = ()
+    addresses: tuple[Address, ...] = ()
 
 
 class NpiLink(DomainModel):

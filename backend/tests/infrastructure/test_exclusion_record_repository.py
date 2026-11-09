@@ -224,11 +224,14 @@ async def test_find_candidates_by_licence_number(database: ConnectionSource) -> 
     listed = exclusion(
         snapshot_id=snapshot_id,
         last="Qzxothername",
-        license=License(number="qzx 0012345", state="NY"),
+        license=License(number="qzx-00.12345", state="NY"),
     )
     await repository.replace_current(SOURCE, snapshot_id, [listed], NOW, source_changed=True)
 
-    found = await repository.find_candidates(None, None, None, license_numbers=["QZX0012345", "  "])
+    # Punctuation and spaces never count: the lists and NPPES write one licence differently.
+    found = await repository.find_candidates(
+        None, None, None, license_numbers=["QZX 0012345", "  "]
+    )
 
     assert _ours(found) == {listed.id}
     assert await repository.find_candidates(None, None, None, license_numbers=[" "]) == []

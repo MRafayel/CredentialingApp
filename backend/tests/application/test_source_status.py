@@ -12,7 +12,14 @@ from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import CredentialType, Freshness, Outcome
 from credentialing.domain.models import SourceSnapshot
 from credentialing.domain.policies import DEFAULT_FRESHNESS, FreshnessPolicy, FreshnessPolicyTable
-from tests.fakes import FixedClock, InMemoryRecords, InMemorySnapshots, ScriptedConnector
+from tests.fakes import (
+    API_SOURCE,
+    FixedClock,
+    InMemoryRecords,
+    InMemorySnapshots,
+    ScriptedConnector,
+    ScriptedNpiRegistryConnector,
+)
 from tests.fakes import capabilities as make_capabilities
 from tests.synthetic import NOW, exclusion
 
@@ -204,3 +211,42 @@ async def test_sources_are_ordered_by_display_name_with_sorted_jurisdictions() -
 
     assert [s.source_id for s in statuses] == ["zzz_list", "aaa_list"]
     assert statuses[0].jurisdictions == ("NJ", "NY")
+
+
+async def test_the_live_registry_is_reported_apart_with_its_week_of_requests() -> None:
+    registry = ConnectorRegistry()
+    registry.register(ScriptedConnector(make_capabilities(SOURCE)))
+    registry.register(ScriptedNpiRegistryConnector())
+    store = InMemorySnapshots()
+    store.stored.extend(
+        [
+            _snapshot(at=NOW - timedelta(days=9), source_id=API_SOURCE),
+            _snapshot(at=NOW - timedelta(days=2), source_id=API_SOURCE),
+            _snapshot(Outcome.BLOCKED, at=NOW - timedelta(hours=1), source_id=API_SOURCE),
+        ]
+    )
+    report = SourceStatusReport(
+        registry, store, InMemoryRecords(), DEFAULT_FRESHNESS, FixedClock(NOW)
+    )
+
+    statuses = await report.run()
+    usage = await report.npi_api_usage()
+
+    assert [status.source_id for status in statuses] == [SOURCE]
+    assert usage is not None
+    assert (usage.source_id, usage.requests, usage.failed) == (API_SOURCE, 2, 1)
+    assert usage.since == NOW - timedelta(days=7)
+    assert usage.last is not None
+    assert usage.last.outcome is Outcome.BLOCKED
+
+
+async def test_without_a_live_registry_there_is_no_usage_to_report() -> None:
+    report = SourceStatusReport(
+        ConnectorRegistry(),
+        InMemorySnapshots(),
+        InMemoryRecords(),
+        DEFAULT_FRESHNESS,
+        FixedClock(NOW),
+    )
+
+    assert await report.npi_api_usage() is None

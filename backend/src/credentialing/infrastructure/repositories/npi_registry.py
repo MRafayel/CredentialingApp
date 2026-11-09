@@ -23,7 +23,8 @@ advisory lock. Its phases:
 A deactivation file reads every row (a few hundred thousand stubs) before comparing, since
 what it changes is a status and a date, not a line. ``work_mem`` is raised for the
 transaction so the joins over ten million rows stay in memory; the mirror is analyzed after
-a load that wrote rows.
+a load that wrote at least :data:`ANALYZE_MIN_ROWS` rows (smaller ones are left to
+autovacuum).
 """
 
 import asyncio
@@ -65,6 +66,11 @@ SCAN_BATCH: Final = 50_000
 
 READ_BATCH: Final = 10_000
 """Records formatted per ``COPY`` write in the read phase."""
+
+ANALYZE_MIN_ROWS: Final = 1_000
+"""The fewest rows a load must write before it analyzes the mirror. Analyzing the ten-million
+row table takes about 4.5 s (measured 2026-11-08); a load of a few rows (a live registry
+answer, a small deactivation diff) leaves the statistics to autovacuum instead."""
 
 WORK_MEM: Final = "256MB"
 """``work_mem`` for the load's transaction: the joins and the duplicate count over ten
@@ -184,7 +190,9 @@ class PostgresNpiRegistryRepository:
                 await _create_work_tables(connection)
                 loader = _Load(connection, dataset, mode, snapshot_id, now, phases)
                 result = await loader.run(min_rows)
-            if result.added + result.changed + result.missing + result.deactivated:
+            if result.added + result.changed + result.missing + result.deactivated >= (
+                ANALYZE_MIN_ROWS
+            ):
                 async with connection.transaction():
                     await connection.execute("analyze npi_registry")
         for phase, spent in phases.items():

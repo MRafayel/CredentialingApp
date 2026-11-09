@@ -39,7 +39,7 @@ import csv
 import hashlib
 import io
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import date
 from pathlib import Path
@@ -294,16 +294,11 @@ class _Mapper:
         elif kind is EntityKind.ORGANIZATION:
             organization = f[self._organization] or None
 
-        other_last, other_first, other_middle = (f[i] for i in self._other_person)
-        other_person = None
-        if other_last:
-            given = " ".join(part for part in (other_first, other_middle) if part)
-            other_person = f"{other_last}, {given}" if given else other_last
-        other_names = tuple(
-            dict.fromkeys(
-                name
-                for name in (f[self._other_organization], other_person, f[self._parent])
-                if name
+        other_names = unique_names(
+            (
+                f[self._other_organization],
+                other_person_name(*(f[i] for i in self._other_person)),
+                f[self._parent],
             )
         )
 
@@ -330,7 +325,7 @@ class _Mapper:
                 "code": f[code_at],
                 "primary": f[switch_at] == "Y",
                 "license_number": f[number_at] or None,
-                "license_state": _state(f[state_at]),
+                "license_state": state_code(f[state_at]),
                 "group": f[group_at] or None,
             }
             for code_at, number_at, state_at, switch_at, group_at in self._taxonomies
@@ -384,27 +379,48 @@ class _Mapper:
 
 
 def _address(f: Sequence[str], at: tuple[int, ...]) -> dict[str, str | None] | None:
-    """An address from its six columns; ``None`` when all are empty. Kept as published, the
-    state only when it is a two-letter code."""
-    line1, line2, city, state, postal_code, country = (f[i] for i in at)
+    """An address from its six columns (:func:`address_fields`)."""
+    return address_fields(*(f[i] for i in at))
+
+
+def address_fields(
+    line1: str, line2: str, city: str, state: str, postal_code: str, country: str
+) -> dict[str, str | None] | None:
+    """An address's fields as the mirror keeps them; ``None`` when all are empty. Kept as
+    published, the state only when it is a two-letter code. Shared with the API mapping."""
     if not (line1 or line2 or city or state or postal_code or country):
         return None
     return {
         "line1": line1 or None,
         "line2": line2 or None,
         "city": city or None,
-        "state": _state(state),
+        "state": state_code(state),
         "postal_code": postal_code or None,
         "country": country or None,
     }
 
 
-def _state(value: str) -> str | None:
+def state_code(value: str) -> str | None:
+    """``value`` when it is a two-letter code in capitals (a U.S. state), else ``None``."""
     return (
         value
         if len(value) == 2 and value.isascii() and value.isalpha() and value.isupper()
         else None
     )
+
+
+def other_person_name(last: str, first: str, middle: str) -> str | None:
+    """A person's other name as the mirror keeps it: "Last, First Middle"; ``None`` without a
+    last name."""
+    if not last:
+        return None
+    given = " ".join(part for part in (first, middle) if part)
+    return f"{last}, {given}" if given else last
+
+
+def unique_names(names: Iterable[str | None]) -> tuple[str, ...]:
+    """The names that are filled in, without repeats, in order."""
+    return tuple(dict.fromkeys(name for name in names if name))
 
 
 def _decode(record: bytes, number: int) -> str:

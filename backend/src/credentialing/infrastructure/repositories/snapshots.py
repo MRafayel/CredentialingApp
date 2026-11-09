@@ -1,5 +1,6 @@
 """Source snapshots in Postgres (shared reference data)."""
 
+from datetime import datetime
 from typing import Final
 from uuid import UUID
 
@@ -91,3 +92,16 @@ class PostgresSnapshotRepository:
                 where id = {snapshot_id}
                 """
             )
+
+    async def count_since(self, source_id: SourceId, since: datetime) -> tuple[int, int]:
+        """How many snapshots the source has fetched at or after ``since``, and how many of
+        them did not complete; one index range scan."""
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                t"""
+                select count(*), count(*) filter (where outcome <> {Outcome.COMPLETED.value})
+                from source_snapshots where source_id = {source_id} and fetched_at >= {since}
+                """
+            )
+            row = await cursor.fetchone()
+        return (int(row[0]), int(row[1])) if row else (0, 0)

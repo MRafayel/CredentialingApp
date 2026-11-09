@@ -1,6 +1,7 @@
 """API behaviour over in-memory use cases: fast, no database."""
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -13,26 +14,36 @@ from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.application.npi_lookup import NpiLookup
+from credentialing.application.npi_suggestions import SuggestNpis
 from credentialing.application.provider_verdict import ProviderVerdictQuery
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
+from credentialing.application.set_provider_npi import SetProviderNpi
 from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.verification_history import VerificationHistory
+from credentialing.application.verify_npi import VerifyNpi
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import Outcome
-from credentialing.domain.models import SourceSnapshot
+from credentialing.domain.enums import DatasetLoadMode, Outcome
+from credentialing.domain.models import Address, DatasetLoad, NpiAnswer, NpiRecord, SourceSnapshot
 from credentialing.domain.policies import DEFAULT_FRESHNESS
 from tests.fakes import (
+    API_SOURCE,
     FixedClock,
+    InMemoryNpiLinks,
     InMemoryNpiRegistry,
     InMemoryProviders,
     InMemoryRecords,
     InMemorySnapshots,
     InMemoryVerifications,
     ScriptedConnector,
+    ScriptedDatasetConnector,
+    ScriptedNpiRegistryConnector,
+    api_failure,
+    api_no_result,
     capabilities,
+    dataset_capabilities,
 )
-from tests.synthetic import NOW, make_npi
+from tests.synthetic import NOW, make_npi, npi_person
 
 pytestmark = pytest.mark.anyio
 
@@ -61,6 +72,16 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
             last_modified=NOW - timedelta(days=9),
         )
     )
+    npi_registry = InMemoryNpiRegistry()
+    npi_lookup = NpiLookup(npi_registry, registry, snapshots, DEFAULT_FRESHNESS, clock)
+    verify_npi = VerifyNpi(
+        providers,
+        npi_lookup,
+        verifications,
+        clock,
+        source_id=API_SOURCE,
+        source_url="https://example.test/registry",
+    )
     return AppContainer(
         register_provider=RegisterProvider(providers, clock),
         list_providers=ListProviders(providers),
@@ -78,7 +99,12 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
         record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),
-        npi_lookup=NpiLookup(InMemoryNpiRegistry(), registry, snapshots, DEFAULT_FRESHNESS, clock),
+        npi_lookup=npi_lookup,
+        verify_npi=verify_npi,
+        suggest_npis=SuggestNpis(
+            providers, InMemoryNpiLinks(records, npi_registry), npi_lookup, clock
+        ),
+        set_provider_npi=SetProviderNpi(providers, npi_lookup, verify_npi, clock),
         providers=providers,
         organization_header_enabled=header_enabled,
     )
@@ -272,3 +298,166 @@ async def test_sources_need_the_organization_header(client: httpx2.AsyncClient) 
     response = await client.get("/sources")
 
     assert response.status_code == 401
+
+
+# --- NPI suggestions and confirming an NPI ---------------------------------------------------
+
+SUGGESTED = make_npi("190000011")
+STREET = "1 Sample Way"
+WRONG_CHECK_DIGIT = SUGGESTED[:9] + str((int(SUGGESTED[9]) + 1) % 10)
+
+
+def _npi_container(*mirror: NpiRecord, answers: tuple[NpiAnswer, ...] = ()) -> AppContainer:
+    """The base container over a loaded mirror holding ``mirror`` and, with ``answers``, a
+    live registry answering them."""
+    base = _container()
+    clock = FixedClock(NOW)
+    directory = ConnectorRegistry()
+    directory.register(ScriptedDatasetConnector(dataset_capabilities("nppes_monthly")))
+    if answers:
+        directory.register(ScriptedNpiRegistryConnector(*answers))
+    snapshots = InMemorySnapshots()
+    snapshots.stored.append(
+        SourceSnapshot(
+            id=uuid4(),
+            source_id="nppes_monthly",
+            fetched_at=NOW - timedelta(days=2),
+            outcome=Outcome.COMPLETED,
+            source_url="https://example.test/nppes/monthly.zip",
+            load=DatasetLoad(mode=DatasetLoadMode.FULL, scanned=1, added=1),
+        )
+    )
+    registry = InMemoryNpiRegistry(*mirror)
+    lookup = NpiLookup(registry, directory, snapshots, DEFAULT_FRESHNESS, clock)
+    verifications = InMemoryVerifications()
+    verify = VerifyNpi(
+        base.providers,
+        lookup,
+        verifications,
+        clock,
+        source_id=API_SOURCE,
+        source_url="https://example.test/registry",
+    )
+    return replace(
+        base,
+        npi_lookup=lookup,
+        verify_npi=verify,
+        verification_history=VerificationHistory(base.providers, verifications, InMemoryRecords()),
+        suggest_npis=SuggestNpis(
+            base.providers, InMemoryNpiLinks(InMemoryRecords(), registry), lookup, clock
+        ),
+        set_provider_npi=SetProviderNpi(base.providers, lookup, verify, clock),
+    )
+
+
+def _registered() -> NpiRecord:
+    place = Address(line1=STREET, city="Sampleville", state="NY", postal_code="99901")
+    return npi_person(SUGGESTED, practice=place, mailing=place)
+
+
+async def test_npi_suggestions_come_with_the_mirror_and_never_a_street() -> None:
+    async for client in _client(_npi_container(_registered())):
+        provider_id = await _add(client, "Testperson")
+        response = await client.get(f"/providers/{provider_id}/npi-suggestions", headers=HEADERS)
+        after = await client.get(f"/providers/{provider_id}", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["provider_id"], body["found"], body["note"]) == (provider_id, 1, None)
+    assert body["mirror"]["provenance"]["source_id"] == "nppes_monthly"
+    assert body["mirror"]["freshness"] == "cached"
+    (suggestion,) = body["suggestions"]
+    assert (suggestion["npi"], suggestion["level"]) == (SUGGESTED, "potential")
+    assert suggestion["registry"]["npi"] == SUGGESTED
+    assert suggestion["registry"]["practice_city"] == "Sampleville"
+    assert STREET not in response.text
+    assert after.json()["npi"] is None
+
+
+async def test_npi_suggestions_for_an_unknown_provider_are_404() -> None:
+    async for client in _client(_npi_container()):
+        response = await client.get(f"/providers/{uuid4()}/npi-suggestions", headers=HEADERS)
+
+    assert response.status_code == 404
+
+
+async def test_confirming_an_npi_sets_it_once_and_appends_the_verification() -> None:
+    async for client in _client(_npi_container(_registered())):
+        provider_id = await _add(client, "Testperson")
+        response = await client.put(
+            f"/providers/{provider_id}/npi", json={"npi": SUGGESTED}, headers=HEADERS
+        )
+        again = await client.put(
+            f"/providers/{provider_id}/npi", json={"npi": SUGGESTED}, headers=HEADERS
+        )
+        history = await client.get(f"/providers/{provider_id}/verifications", headers=HEADERS)
+        suggestions = await client.get(f"/providers/{provider_id}/npi-suggestions", headers=HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"]["npi"] == SUGGESTED
+    verification = body["verification"]
+    assert verification["credential_type"] == "npi"
+    assert verification["details"]["npi_set_by"] == "user"
+    assert verification["details"]["npi_status"] == "active"
+    assert verification["match"]["level"] == "exact"
+    assert [entry["id"] for entry in history.json()] == [verification["id"]]
+    assert again.status_code == 409
+    assert again.json()["detail"] == "the provider already has an NPI; changing it is not offered"
+    assert suggestions.json()["suggestions"] == []
+    assert suggestions.json()["note"].startswith("the provider already has an NPI")
+
+
+@pytest.mark.parametrize("npi", ["123", "12345678901", WRONG_CHECK_DIGIT])
+async def test_confirming_a_malformed_npi_is_422(npi: str) -> None:
+    async for client in _client(_npi_container(_registered())):
+        provider_id = await _add(client, "Testperson")
+        response = await client.put(
+            f"/providers/{provider_id}/npi", json={"npi": npi}, headers=HEADERS
+        )
+
+    assert response.status_code == 422
+
+
+async def test_confirming_an_npi_nppes_does_not_know_is_422_and_sets_nothing() -> None:
+    container = _npi_container(answers=(api_no_result(fetched_at=NOW),))
+    async for client in _client(container):
+        provider_id = await _add(client, "Testperson")
+        response = await client.put(
+            f"/providers/{provider_id}/npi", json={"npi": SUGGESTED}, headers=HEADERS
+        )
+        after = await client.get(f"/providers/{provider_id}", headers=HEADERS)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == f"NPI {SUGGESTED} is not in NPPES"
+    assert after.json()["npi"] is None
+
+
+async def test_confirming_an_npi_nppes_could_not_check_is_503_and_sets_nothing() -> None:
+    container = _npi_container(answers=(api_failure(Outcome.SOURCE_UNAVAILABLE, fetched_at=NOW),))
+    async for client in _client(container):
+        provider_id = await _add(client, "Testperson")
+        response = await client.put(
+            f"/providers/{provider_id}/npi", json={"npi": SUGGESTED}, headers=HEADERS
+        )
+        after = await client.get(f"/providers/{provider_id}", headers=HEADERS)
+        history = await client.get(f"/providers/{provider_id}/verifications", headers=HEADERS)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "NPPES could not be checked: HTTP 503"
+    assert after.json()["npi"] is None
+    assert history.json() == []
+
+
+async def test_confirming_an_npi_for_another_organizations_provider_is_404() -> None:
+    async for client in _client(_npi_container(_registered())):
+        provider_id = await _add(client, "Testperson")
+        response = await client.put(
+            f"/providers/{provider_id}/npi",
+            json={"npi": SUGGESTED},
+            headers={"X-Organization-Id": str(uuid4())},
+        )
+        after = await client.get(f"/providers/{provider_id}", headers=HEADERS)
+
+    assert response.status_code == 404
+    assert after.json()["npi"] is None

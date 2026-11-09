@@ -27,17 +27,22 @@ class InvalidProviderInputError(ApplicationError):
     """The provider data breaks a domain rule; ``message`` says which, without the values."""
 
 
+class ProviderHasNpiError(ApplicationError):
+    """The provider already has an NPI; setting one is offered only to a provider without."""
+
+    def __init__(self, provider_id: UUID) -> None:
+        super().__init__("the provider already has an NPI; changing it is not offered")
+        self.provider_id = provider_id
+
+
+class RegistryUnavailableError(ApplicationError):
+    """NPPES could not be asked or did not answer, so nothing that rests on it was done;
+    ``message`` says why ("NPPES could not be checked: ...")."""
+
+
 class RecordNotFoundError(ApplicationError):
     """No exclusion record has this id."""
 
     def __init__(self, record_id: UUID) -> None:
         super().__init__(f"exclusion record {record_id} not found")
         self.record_id = record_id
-
-
-class NpiNotFoundError(ApplicationError):
-    """The NPI registry mirror has no record of this NPI."""
-
-    def __init__(self, npi: str) -> None:
-        super().__init__(f"NPI {npi} is not in the registry mirror")
-        self.npi = npi

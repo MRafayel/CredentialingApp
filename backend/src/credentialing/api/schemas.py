@@ -8,7 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from credentialing.application.list_providers import ProviderPage
 from credentialing.application.lookup_exclusions import LookupRecord, LookupResult, SearchedSource
-from credentialing.application.npi_lookup import MirrorSource, NpiSearchResult, NpiView
+from credentialing.application.npi_lookup import LiveCheck, MirrorSource, NpiSearchResult, NpiView
+from credentialing.application.npi_suggestions import NpiSuggestion, NpiSuggestions
 from credentialing.application.record_profile import (
     LinkedRecord,
     ProfileRecord,
@@ -36,6 +37,7 @@ from credentialing.domain.enums import (
     Outcome,
     RecordLink,
     RecordStatus,
+    RegistryStatus,
     Verdict,
     VerificationMethod,
 )
@@ -755,34 +757,160 @@ class NpiRecordResponse(NpiSummaryResponse):
         )
 
 
-class NpiResponse(Schema):
-    """Body of ``GET /npi/{npi}``: the mirrored record and the load the mirror is as of."""
+class LiveCheckResponse(Schema):
+    """What the live registry (the NPPES API) answered, as its own block: when it was asked
+    (``provenance.verified_at``), ``outcome`` (``completed`` when it answered), ``found``
+    (null unless it answered) and the request's ``note``. A failed request is never "not
+    found"."""
 
-    record: NpiRecordResponse
-    mirror: MirrorResponse | None
+    provenance: ProvenanceResponse
+    freshness: Freshness
+    outcome: Outcome
+    found: bool | None
+    note: str | None
 
     @classmethod
-    def from_view(cls, view: NpiView) -> NpiResponse:
-        """Map a mirrored NPI into its HTTP shape."""
+    def from_check(cls, check: LiveCheck) -> LiveCheckResponse:
+        """Map a live check into its HTTP shape."""
+        return cls.model_validate(check.model_dump())
+
+
+class NpiLookupResponse(Schema):
+    """Body of ``GET /npi/{npi}``: the backend's ``status`` for the NPI, its record (the live
+    answer when the registry returned it, else the mirror's row, null when neither has it),
+    and two separate blocks: the mirror's load and the live check (null when not asked)."""
+
+    npi: str
+    status: RegistryStatus
+    record: NpiRecordResponse | None
+    mirror: MirrorResponse | None
+    live: LiveCheckResponse | None
+
+    @classmethod
+    def from_view(cls, view: NpiView) -> NpiLookupResponse:
+        """Map one NPI's view into its HTTP shape."""
         return cls(
-            record=NpiRecordResponse.from_record(view.record),
+            npi=view.npi,
+            status=view.registry_status,
+            record=NpiRecordResponse.from_record(view.record) if view.record else None,
             mirror=MirrorResponse.from_mirror(view.mirror) if view.mirror else None,
+            live=LiveCheckResponse.from_check(view.live) if view.live else None,
         )
+
+
+class NpiQueryResponse(Schema):
+    """The structured query a live search sent (blank fields are null)."""
+
+    last_name: str | None
+    first_name: str | None
+    organization_name: str | None
+    entity_kind: EntityKind | None
+    state: str | None
+    city: str | None
+    postal_code: str | None
 
 
 class NpiSearchResponse(Schema):
-    """Body of ``GET /npi/search``: the NPIs found, active first, and the load the mirror is
-    as of (null when it was never loaded)."""
+    """Body of ``GET /npi/search``. A mirror search has ``query_text`` and the mirror's NPIs,
+    active first; a live search has ``query`` and the registry's results in its order, and
+    ``live`` says what the request answered (a failed one has no records). ``mirror`` is the
+    load the mirror is as of (null when it was never loaded)."""
 
-    query: str
+    query_text: str
+    query: NpiQueryResponse | None
     records: list[NpiSummaryResponse]
     mirror: MirrorResponse | None
+    live: LiveCheckResponse | None
 
     @classmethod
     def from_result(cls, result: NpiSearchResult) -> NpiSearchResponse:
-        """Map a mirror search into its HTTP shape."""
+        """Map a search into its HTTP shape."""
+        query = result.query
         return cls(
-            query=result.query,
+            query_text=result.query_text,
+            query=(
+                NpiQueryResponse(
+                    last_name=query.last_name,
+                    first_name=query.first_name,
+                    organization_name=query.organization_name,
+                    entity_kind=query.entity_kind,
+                    state=query.state,
+                    city=query.city,
+                    postal_code=query.postal_code,
+                )
+                if query
+                else None
+            ),
             records=[NpiSummaryResponse.from_domain(record) for record in result.records],
             mirror=MirrorResponse.from_mirror(result.mirror) if result.mirror else None,
+            live=LiveCheckResponse.from_check(result.live) if result.live else None,
         )
+
+
+class NpiSuggestionResponse(Schema):
+    """One NPI the provider may have, for the user to weigh and confirm; never EXACT by name.
+    ``npi`` and ``registry`` are null on the one row saying why nothing was suggested (level
+    ``none``, the explanation says why). Never a street address."""
+
+    npi: str | None
+    level: MatchLevel
+    evidence: list[MatchEvidenceResponse]
+    explanation: str
+    registry: NpiSummaryResponse | None
+
+    @classmethod
+    def from_suggestion(cls, suggestion: NpiSuggestion) -> NpiSuggestionResponse:
+        """Map one suggestion into its HTTP shape."""
+        match = suggestion.match
+        return cls(
+            npi=suggestion.npi,
+            level=match.level,
+            evidence=[MatchEvidenceResponse.model_validate(e.model_dump()) for e in match.evidence],
+            explanation=match.explanation,
+            registry=(
+                NpiSummaryResponse.from_domain(suggestion.record) if suggestion.record else None
+            ),
+        )
+
+
+class NpiSuggestionsResponse(Schema):
+    """Body of ``GET /providers/{id}/npi-suggestions``: NPIs from the registry mirror for a
+    provider without one, best first, computed now and never stored.
+
+    ``mirror`` is the NPPES load the suggestions rest on (null when the mirror was never
+    loaded, and then one ``none`` row says so); ``found`` how many mirror rows the search
+    found (51: more than 50); ``note`` why nothing was searched (the provider has an NPI).
+    """
+
+    provider_id: UUID
+    computed_at: datetime
+    mirror: MirrorResponse | None
+    found: int
+    note: str | None
+    suggestions: list[NpiSuggestionResponse]
+
+    @classmethod
+    def from_suggestions(cls, result: NpiSuggestions) -> NpiSuggestionsResponse:
+        """Map the suggestions into their HTTP shape."""
+        return cls(
+            provider_id=result.provider_id,
+            computed_at=result.computed_at,
+            mirror=MirrorResponse.from_mirror(result.mirror) if result.mirror else None,
+            found=result.found,
+            note=result.note,
+            suggestions=[NpiSuggestionResponse.from_suggestion(s) for s in result.suggestions],
+        )
+
+
+class ProviderNpiBody(Schema):
+    """Request body of ``PUT /providers/{id}/npi``: the NPI the user confirms."""
+
+    npi: str = Field(pattern=r"^[0-9]{10}$")
+
+
+class ProviderNpiResponse(Schema):
+    """Body of ``PUT /providers/{id}/npi``: the provider with its NPI, and the NPI
+    verification appended as the record of what NPPES said and who set the NPI."""
+
+    provider: ProviderResponse
+    verification: VerificationResponse

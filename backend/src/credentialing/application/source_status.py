@@ -2,12 +2,15 @@
 
 For each bulk-list or dataset source it reports the latest fetch and the latest applied list,
 how many records are current, how old the data is, when the next fetch is due, and why the
-last fetch failed when it did; for a dataset source also what its last load did.
+last fetch failed when it did; for a dataset source also what its last load did. The live NPI
+registry, asked on demand and never polled, is reported apart: its requests over the last
+:data:`ON_DEMAND_WINDOW` and the last one.
 """
 
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Final
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
@@ -82,6 +85,24 @@ class SourceStatus(BaseModel):
     than ``latest_completed``."""
 
 
+ON_DEMAND_WINDOW: Final = timedelta(days=7)
+"""How far back the on-demand usage line counts requests."""
+
+
+class OnDemandUsage(BaseModel):
+    """How an on-demand source (the live NPI registry) has been used: requests since
+    ``since``, how many did not complete, and the latest request whatever its outcome."""
+
+    model_config = ConfigDict(frozen=True)
+
+    source_id: SourceId
+    display_name: str
+    since: AwareDatetime
+    requests: int
+    failed: int
+    last: SourceSnapshot | None
+
+
 class SourceStatusReport:
     """Builds a :class:`SourceStatus` for every registered bulk-list and dataset source.
 
@@ -116,6 +137,24 @@ class SourceStatusReport:
         mirrored = await self._mirror_count(connectors)
         statuses = [await self._status(c, now, mirrored) for c in connectors]
         return tuple(sorted(statuses, key=lambda s: (s.display_name.casefold(), s.source_id)))
+
+    async def npi_api_usage(self) -> OnDemandUsage | None:
+        """The live NPI registry's requests over :data:`ON_DEMAND_WINDOW` and its latest one;
+        None when no live registry connector is registered."""
+        connectors = self._connectors.npi_registry_connectors()
+        if not connectors:
+            return None
+        capabilities = connectors[0].capabilities
+        since = self._clock.now() - ON_DEMAND_WINDOW
+        requests, failed = await self._snapshots.count_since(capabilities.source_id, since)
+        return OnDemandUsage(
+            source_id=capabilities.source_id,
+            display_name=capabilities.display_name,
+            since=since,
+            requests=requests,
+            failed=failed,
+            last=await self._snapshots.latest(capabilities.source_id),
+        )
 
     async def _mirror_count(
         self, connectors: Sequence[BulkListConnector | DatasetConnector]

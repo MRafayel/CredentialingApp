@@ -6,8 +6,15 @@ from uuid import uuid4
 
 import pytest
 
-from credentialing.application.source_status import SourceHealth, SourceStatus
-from credentialing.cli.sources import WIDTH, links_line, render_json, render_table, show
+from credentialing.application.source_status import OnDemandUsage, SourceHealth, SourceStatus
+from credentialing.cli.sources import (
+    WIDTH,
+    api_line,
+    links_line,
+    render_json,
+    render_table,
+    show,
+)
 from credentialing.domain.enums import (
     AccessPolicy,
     ChangeSignal,
@@ -269,3 +276,52 @@ def test_json_carries_the_npi_links_summary() -> None:
     assert payload["npi_links"]["by_best_level"]["ambiguous"] == 51_300
     assert payload["npi_links"]["last_run"]["trigger"] == "cli"
     assert json.loads(render_json(STATUSES))["npi_links"] is None
+
+
+def _usage(requests: int, failed: int, last: SourceSnapshot | None) -> OnDemandUsage:
+    return OnDemandUsage(
+        source_id="nppes_api",
+        display_name="NPPES API",
+        since=NOW - timedelta(days=7),
+        requests=requests,
+        failed=failed,
+        last=last,
+    )
+
+
+API = _usage(
+    12,
+    1,
+    SourceSnapshot(
+        id=uuid4(),
+        source_id="nppes_api",
+        fetched_at=NOW - timedelta(minutes=41),
+        outcome=Outcome.COMPLETED,
+        source_url="https://example.test/api/",
+        note="lookup: found",
+    ),
+)
+
+
+def test_the_table_ends_with_the_api_line_after_the_links_line() -> None:
+    lines = render_table(STATUSES, NOW, color=False, links=LINKS, api=API).splitlines()
+
+    assert lines[-2].startswith("NPI links: ")
+    assert lines[-1] == (
+        "NPPES API: 12 requests in 7 days (1 failed); last 2026-01-15 11:19 UTC completed, "
+        "lookup: found"
+    )
+
+
+def test_an_api_never_asked_says_so() -> None:
+    assert api_line(_usage(0, 0, None), NOW) == "NPPES API: 0 requests in 7 days; never asked"
+    assert api_line(_usage(1, 0, API.last), NOW).startswith("NPPES API: 1 request in 7 days; last")
+
+
+def test_json_carries_the_api_usage() -> None:
+    payload = json.loads(render_json(STATUSES, LINKS, API))
+
+    assert payload["nppes_api"]["requests"] == 12
+    assert payload["nppes_api"]["failed"] == 1
+    assert payload["nppes_api"]["last"]["note"] == "lookup: found"
+    assert json.loads(render_json(STATUSES))["nppes_api"] is None

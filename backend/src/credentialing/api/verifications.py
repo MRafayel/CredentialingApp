@@ -21,6 +21,22 @@ async def check_exclusions(
     return VerdictResponse.from_verdict(verdict, views)
 
 
+@router.post("/npi")
+async def verify_npi(
+    provider_id: UUID, organization_id: OrganizationId, container: Container, live: bool = False
+) -> VerificationResponse:
+    """Verify the provider's NPI in NPPES and append the result to the history.
+
+    The mirror answers unless ``live``, the mirror has no row, or its load is stale; then the
+    live registry is asked once. Active, deactivated, not in NPPES, a mirror the live registry
+    contradicts (review), no NPI on file (a manual step) and a check that could not run are
+    each their own result; the exclusion verdict is not changed.
+    """
+    result = await container.verify_npi.run(organization_id, provider_id, live=live)
+    (view,) = await container.verification_history.expand([result])
+    return VerificationResponse.from_view(view)
+
+
 @router.get("")
 async def verification_history(
     provider_id: UUID, organization_id: OrganizationId, container: Container

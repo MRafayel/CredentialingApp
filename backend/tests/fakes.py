@@ -38,6 +38,8 @@ from credentialing.domain.models import (
     DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    LinkParty,
+    NpiAnswer,
     NpiLink,
     NpiLinkRun,
     NpiLinkSummary,
@@ -55,8 +57,9 @@ from credentialing.domain.policies import (
     license_key,
     pair_rewritten_rows,
     party_key,
+    party_of_record,
 )
-from credentialing.domain.ports import Dataset, DatasetFetch, LinkCandidates
+from credentialing.domain.ports import Dataset, DatasetFetch, LinkCandidates, NpiQuery
 from credentialing.domain.types import Npi, SourceId, StateCode
 
 _WORDS = re.compile(r"[^\W_]+")
@@ -213,6 +216,7 @@ class ScriptedFetcher:
         self.session_requests: list[SessionRequest] = []
         self.sessions: list[ScriptedSession] = []
         self.crawl_delays: list[timedelta] = []
+        self.fetch_crawl_delays: list[timedelta] = []
 
     @asynccontextmanager
     async def session(self, *, crawl_delay: timedelta) -> AsyncIterator[Session]:
@@ -238,6 +242,7 @@ class ScriptedFetcher:
     ) -> FetchOutcome:
         assert self.outcomes, "this fetcher has no scripted outcome"
         self.requests.append((url, change_signal))
+        self.fetch_crawl_delays.append(crawl_delay)
         self.entry_urls.append(entry_url)
         self.browser_options.append(BrowserOptions(profile, webdriver_disabled, challenge_timeout))
         return self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
@@ -304,6 +309,10 @@ class InMemorySnapshots:
             for s in self.stored
         ]
 
+    async def count_since(self, source_id: SourceId, since: datetime) -> tuple[int, int]:
+        own = [s for s in self.stored if s.source_id == source_id and s.fetched_at >= since]
+        return len(own), sum(1 for s in own if s.outcome is not Outcome.COMPLETED)
+
 
 class ListDataset:
     """A :class:`~credentialing.domain.ports.Dataset` over records in memory.
@@ -367,6 +376,92 @@ def dataset_capabilities(source_id: str = "fake_dataset") -> ConnectorCapabiliti
     )
 
 
+API_SOURCE = "nppes_api"
+"""The live registry's source id, as the real connector declares it."""
+
+
+def api_capabilities() -> ConnectorCapabilities:
+    """Made-up capabilities of the live NPI registry: on demand, never polled."""
+    return ConnectorCapabilities(
+        source_id=API_SOURCE,
+        credential_type=CredentialType.NPI,
+        jurisdictions=frozenset({"US"}),
+        access_policy=AccessPolicy.HTTP,
+        change_signal=ChangeSignal.CONTENT_HASH,
+        method=VerificationMethod.OFFICIAL_API,
+        poll_interval=timedelta(0),
+        source_url="https://example.test/registry",
+        display_name="Fake NPI API",
+    )
+
+
+def api_snapshot(
+    outcome: Outcome = Outcome.COMPLETED,
+    *,
+    fetched_at: datetime,
+    note: str | None = None,
+    url: str = "https://example.test/registry/api/",
+) -> SourceSnapshot:
+    """One live registry request's snapshot."""
+    return SourceSnapshot(
+        id=uuid4(),
+        source_id=API_SOURCE,
+        fetched_at=fetched_at,
+        outcome=outcome,
+        source_url=url,
+        note=note,
+    )
+
+
+def api_found(*records: NpiRecord, fetched_at: datetime) -> NpiAnswer:
+    """A completed answer listing ``records``, each re-stamped with its snapshot."""
+    snapshot = api_snapshot(fetched_at=fetched_at, note=f"search: {len(records)} results")
+    return NpiAnswer(
+        snapshot=snapshot,
+        records=tuple(r.model_copy(update={"snapshot_id": snapshot.id}) for r in records),
+        result_count=len(records),
+    )
+
+
+def api_no_result(*, fetched_at: datetime) -> NpiAnswer:
+    """A completed answer with no result: not active in NPPES."""
+    snapshot = api_snapshot(fetched_at=fetched_at, note="lookup: no result (not active in NPPES)")
+    return NpiAnswer(snapshot=snapshot, records=(), result_count=0)
+
+
+def api_failure(outcome: Outcome, *, fetched_at: datetime, note: str = "HTTP 503") -> NpiAnswer:
+    """A request the registry did not answer."""
+    return NpiAnswer(snapshot=api_snapshot(outcome, fetched_at=fetched_at, note=note))
+
+
+class ScriptedNpiRegistryConnector:
+    """The live NPI registry returning prepared answers in order (the last one repeats).
+
+    ``lookups`` records each NPI asked, ``searches`` each query and limit.
+    """
+
+    def __init__(self, *answers: NpiAnswer) -> None:
+        self._answers = list(answers)
+        self.lookups: list[Npi] = []
+        self.searches: list[tuple[NpiQuery, int]] = []
+
+    @property
+    def capabilities(self) -> ConnectorCapabilities:
+        return api_capabilities()
+
+    async def lookup_npi(self, npi: Npi) -> NpiAnswer:
+        self.lookups.append(npi)
+        return self._next()
+
+    async def search_npis(self, query: NpiQuery, *, limit: int) -> NpiAnswer:
+        self.searches.append((query, limit))
+        return self._next()
+
+    def _next(self) -> NpiAnswer:
+        assert self._answers, "this registry has no scripted answer"
+        return self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+
+
 class InMemoryNpiRegistry:
     """The NPI mirror in a dict: enough to exercise the use cases.
 
@@ -378,6 +473,7 @@ class InMemoryNpiRegistry:
         self.rows = {record.npi: record for record in records}
         self.fail = fail
         self.loads: list[tuple[DatasetLoadMode, UUID, int | None]] = []
+        self.loaded_npis: list[list[Npi]] = []
 
     async def load(
         self,
@@ -392,6 +488,7 @@ class InMemoryNpiRegistry:
         if self.fail is not None:
             raise self.fail
         hashes = dict(dataset.scan())
+        self.loaded_npis.append(list(hashes))
         if min_rows is not None and len(hashes) < min_rows:
             raise DatasetShrankError(len(hashes), min_rows)
         needed = {
@@ -456,9 +553,10 @@ def _npi_names(record: NpiRecord) -> str:
 class InMemoryNpiLinks:
     """Links in a dict over the in-memory records and mirror; enough for the use cases.
 
-    Discovery is a plain stand-in for the SQL one: a record's published NPI, else mirror rows
-    with the same normalized last and first name (or organization name). ``fail`` raises from
-    ``replace_links``; ``asked`` records each ``candidates`` batch.
+    Discovery is a plain stand-in for the SQL one: a record's (or party's) NPI, else mirror
+    rows with the same normalized last and first name (or organization name). ``fail`` raises
+    from ``replace_links``; ``asked`` records each ``candidates`` batch and ``parties`` each
+    ``candidates_for`` party.
     """
 
     def __init__(self, records: InMemoryRecords, registry: InMemoryNpiRegistry) -> None:
@@ -468,6 +566,7 @@ class InMemoryNpiLinks:
         self.runs: list[NpiLinkRun] = []
         self.fail: Exception | None = None
         self.asked: list[list[UUID]] = []
+        self.parties: list[LinkParty] = []
 
     async def stale_records(
         self,
@@ -494,16 +593,22 @@ class InMemoryNpiLinks:
             record = self._records.all.get(record_id)
             if record is None:
                 continue
-            if record.npi:
-                own = self._registry.rows.get(record.npi)
-                rows = [own] if own else []
-            else:
-                rows = [row for row in self._registry.rows.values() if _same_name(record, row)]
-            rows.sort(key=lambda row: row.npi)
-            found.append(
-                LinkCandidates(record, rows[:CANDIDATE_CAP], min(len(rows), CANDIDATE_CAP + 1))
-            )
+            rows, count = self._discover(party_of_record(record))
+            found.append(LinkCandidates(record, rows, count))
         return found
+
+    async def candidates_for(self, party: LinkParty) -> tuple[Sequence[NpiRecord], int]:
+        self.parties.append(party)
+        return self._discover(party)
+
+    def _discover(self, party: LinkParty) -> tuple[list[NpiRecord], int]:
+        if party.npi:
+            own = self._registry.rows.get(party.npi)
+            rows = [own] if own else []
+        else:
+            rows = [row for row in self._registry.rows.values() if _same_name(party, row)]
+        rows.sort(key=lambda row: row.npi)
+        return rows[:CANDIDATE_CAP], min(len(rows), CANDIDATE_CAP + 1)
 
     async def replace_links(self, links: Sequence[NpiLink]) -> None:
         if self.fail is not None:
@@ -547,13 +652,13 @@ class InMemoryNpiLinks:
         return max(self.runs, key=lambda run: run.finished_at) if self.runs else None
 
 
-def _same_name(record: ExclusionRecord, row: NpiRecord) -> bool:
-    if record.person_name and row.person_name and row.entity_kind is EntityKind.INDIVIDUAL:
-        return normalize_name(record.person_name.last) == normalize_name(
+def _same_name(party: LinkParty, row: NpiRecord) -> bool:
+    if party.person_name and row.person_name and row.entity_kind is EntityKind.INDIVIDUAL:
+        return normalize_name(party.person_name.last) == normalize_name(
             row.person_name.last
-        ) and normalize_name(record.person_name.first) == normalize_name(row.person_name.first)
-    if record.organization_name and row.organization_name:
-        return normalize_organization_name(record.organization_name) == (
+        ) and normalize_name(party.person_name.first) == normalize_name(row.person_name.first)
+    if party.organization_name and row.organization_name:
+        return normalize_organization_name(party.organization_name) == (
             normalize_organization_name(row.organization_name)
         )
     return False
@@ -805,6 +910,14 @@ class InMemoryProviders:
             ),
             None,
         )
+
+    async def set_npi(self, organization_id: UUID, provider_id: UUID, npi: Npi) -> Provider | None:
+        provider = await self.get(organization_id, provider_id)
+        if provider is None or provider.npi is not None:
+            return None
+        updated = provider.model_copy(update={"npi": npi})
+        self.stored[provider_id] = updated
+        return updated
 
     async def list(
         self, organization_id: UUID, *, query: str | None, limit: int, offset: int

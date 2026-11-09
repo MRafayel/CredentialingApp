@@ -4,10 +4,15 @@ Adding a source means registering its connector; nothing branches on a state or 
 """
 
 from credentialing.domain.enums import CredentialType
-from credentialing.domain.ports import BulkListConnector, DatasetConnector, LookupConnector
+from credentialing.domain.ports import (
+    BulkListConnector,
+    DatasetConnector,
+    LookupConnector,
+    NpiRegistryConnector,
+)
 from credentialing.domain.types import FEDERAL, SourceId, StateCode
 
-type Connector = BulkListConnector | DatasetConnector | LookupConnector
+type Connector = BulkListConnector | DatasetConnector | LookupConnector | NpiRegistryConnector
 
 
 class DuplicateSourceError(ValueError):
@@ -56,6 +61,14 @@ class ConnectorRegistry:
             connector
             for _, connector in sorted(self._connectors.items())
             if isinstance(connector, BulkListConnector | DatasetConnector)
+        ]
+
+    def npi_registry_connectors(self) -> list[NpiRegistryConnector]:
+        """Every live NPI registry connector (asked on demand, never polled), by source id."""
+        return [
+            connector
+            for _, connector in sorted(self._connectors.items())
+            if isinstance(connector, NpiRegistryConnector)
         ]
 
     def bulk_connectors_for(

@@ -25,6 +25,7 @@ from credentialing.domain.enums import (
     NpiStatus,
     Outcome,
     RecordStatus,
+    RegistryStatus,
     Verdict,
     VerificationMethod,
 )
@@ -33,9 +34,11 @@ from credentialing.domain.models import (
     DomainModel,
     ExclusionRecord,
     License,
+    LinkParty,
     MatchEvidence,
     MatchResult,
     NpiRecord,
+    NpiTaxonomy,
     PersonName,
     Provider,
     ProviderVerdict,
@@ -124,11 +127,91 @@ DEFAULT_FRESHNESS: Final = FreshnessPolicyTable(
         (CredentialType.NPI, "nppes_monthly"): FreshnessPolicy(max_age=timedelta(days=35)),
         (CredentialType.NPI, "nppes_weekly"): FreshnessPolicy(max_age=timedelta(days=10)),
         (CredentialType.NPI, "nppes_deactivations"): FreshnessPolicy(max_age=timedelta(days=35)),
+        # A live registry answer is live for its live window, then cached like any NPI result.
+        (CredentialType.NPI, "nppes_api"): FreshnessPolicy(max_age=timedelta(days=30)),
         (CredentialType.STATE_LICENSE, None): FreshnessPolicy(max_age=timedelta(days=1)),
         (CredentialType.BOARD_CERTIFICATION, None): FreshnessPolicy(max_age=timedelta(days=30)),
     }
 )
 """The single place freshness windows are declared."""
+
+
+def live_check_needed(*, requested: bool, mirrored: bool, freshness: Freshness | None) -> bool:
+    """Ask the live registry when the caller asks for it, when the mirror has no row (the only
+    way to learn a new NPI), or when the mirror's load is STALE by the NPI policy.
+
+    A mirror row with no file load known (``freshness`` None: rows the live registry wrote
+    before any file was loaded) cannot be called fresh, so it is asked too. A fresh or cached
+    mirror row is answered from the mirror, without a request.
+    """
+    return requested or not mirrored or freshness in (None, Freshness.STALE)
+
+
+def registry_status(mirrored: NpiRecord | None, live_found: bool | None) -> RegistryStatus:
+    """The one-word conclusion about an NPI from the mirror's row and the live answer.
+
+    ``live_found`` is None when the live registry was not asked or did not answer. The live
+    registry lists active NPIs only: found is ACTIVE whatever the mirror says (a reactivation
+    the files have not shown yet); not found is DEACTIVATED when the mirror says so, NOT_FOUND
+    without a mirror row, and MIRROR_ONLY_ACTIVE (a contradiction for a person) when the
+    mirror lists it as active. Without a live answer the mirror decides, and with neither the
+    answer is UNKNOWN, never "not found".
+    """
+    if live_found:
+        return RegistryStatus.ACTIVE
+    if mirrored is None:
+        return RegistryStatus.UNKNOWN if live_found is None else RegistryStatus.NOT_FOUND
+    if mirrored.status is NpiStatus.DEACTIVATED:
+        return RegistryStatus.DEACTIVATED
+    return RegistryStatus.ACTIVE if live_found is None else RegistryStatus.MIRROR_ONLY_ACTIVE
+
+
+_CARRIED_FIELDS: Final = (
+    "deactivation_date",
+    "reactivation_date",
+    "deactivation_reason",
+    "replacement_npi",
+)
+"""Fields the live registry omits for an active NPI, kept from the mirror's row."""
+
+
+def carry_forward(answer: NpiRecord, mirrored: NpiRecord | None) -> NpiRecord:
+    """A live answer with the mirror's deactivation history kept: each field of
+    :data:`_CARRIED_FIELDS` the answer lacks is taken from the mirror's row, so storing the
+    answer loses nothing the files said."""
+    if mirrored is None:
+        return answer
+    carried = {
+        name: getattr(mirrored, name)
+        for name in _CARRIED_FIELDS
+        if getattr(answer, name) is None and getattr(mirrored, name) is not None
+    }
+    return answer.model_copy(update=carried) if carried else answer
+
+
+def records_to_store(
+    answers: Sequence[NpiRecord], mirrored: Mapping[Npi, NpiRecord]
+) -> list[NpiRecord]:
+    """The live answers to write into the mirror: newer wins, nothing is lost.
+
+    An answer is stored when the mirror has no row for its NPI, or when its ``last_updated``
+    is later than the mirror row's (a row without one counts as older), with the mirror's
+    deactivation history carried forward (:func:`carry_forward`). An answer the mirror is at
+    least as current as is not written: it confirms the mirror. An NPI the answers repeat is
+    stored once, the first time.
+    """
+    stored: dict[Npi, NpiRecord] = {}
+    for answer in answers:
+        if answer.npi in stored:
+            continue
+        current = mirrored.get(answer.npi)
+        if current is None or _newer(answer.last_updated, current.last_updated):
+            stored[answer.npi] = carry_forward(answer, current)
+    return list(stored.values())
+
+
+def _newer(answer: date | None, mirrored: date | None) -> bool:
+    return answer is not None and (mirrored is None or answer > mirrored)
 
 
 # --- Matching ------------------------------------------------------------------------------
@@ -521,8 +604,13 @@ def _license_only(
 
 
 def license_key(number: str) -> str:
-    """A licence number as matching compares it: whitespace removed, upper case."""
-    return "".join(number.split()).upper()
+    """A licence number as matching compares it: letters and digits only, upper case.
+
+    The lists and NPPES write one licence differently ("036123456" against "036-123456" or
+    "036.123456"), so punctuation and spaces do not count (owner, 2026-11-08). The SQL
+    function ``license_key`` is the same rule, used on the database side of every comparison.
+    """
+    return "".join(char for char in number if char.isalnum()).upper()
 
 
 def _same_license(own: License, other: License) -> bool:
@@ -590,29 +678,67 @@ def level_rank(level: MatchLevel) -> int:
 _LEVEL_ORDER: Final = {level: rank for rank, level in enumerate(MatchLevel)}
 
 
+def party_of_record(record: ExclusionRecord) -> LinkParty:
+    """What the linking rules see of an exclusion record: its names, aliases and published
+    NPI, and its one licence and address (none when the list gives none)."""
+    return LinkParty(
+        entity_kind=record.entity_kind,
+        person_name=record.person_name,
+        organization_name=record.organization_name,
+        aliases=record.aliases,
+        npi=record.npi,
+        licenses=(record.license,) if record.license else (),
+        addresses=(record.address,) if record.address else (),
+    )
+
+
+def party_of_provider(provider: Provider) -> LinkParty:
+    """What the linking rules see of a roster provider: its names, its NPI, every licence and
+    every address. No aliases (the roster keeps none), and never the date of birth (the
+    registry publishes none)."""
+    return LinkParty(
+        entity_kind=provider.entity_kind,
+        person_name=provider.person_name,
+        organization_name=provider.organization_name,
+        npi=provider.npi,
+        licenses=provider.licenses,
+        addresses=provider.addresses,
+    )
+
+
 def match_record_to_npi(
     record: ExclusionRecord, candidate: NpiRecord, *, candidates: int
 ) -> MatchResult:
-    """Decide how strongly an exclusion record points at an NPI of the mirror.
+    """Decide how strongly an exclusion record points at an NPI of the mirror:
+    :func:`match_party_to_npi` on the record's party (:func:`party_of_record`)."""
+    return match_party_to_npi(party_of_record(record), candidate, candidates=candidates)
 
-    ``candidates`` is how many mirror rows the discovery found for the record; a unique
+
+def match_party_to_npi(party: LinkParty, candidate: NpiRecord, *, candidates: int) -> MatchResult:
+    """Decide how strongly a party (an exclusion record, a roster provider) points at an NPI
+    of the mirror.
+
+    ``candidates`` is how many mirror rows the discovery found for the party; a unique
     namesake counts for more than one of many. Deterministic and explainable like provider
     matching, and never EXACT by name (invariant 4).
 
-    A record with a published NPI is compared with that NPI's row only: EXACT when the last
-    name (or the organization name) also matches, HIGH "name differs from the registry" when
-    it does not, since the list may carry a typo and a person should look. Otherwise the
-    kinds must agree (a person against an individual NPI, a business against an organization
-    NPI), and:
+    A party with an NPI (a record's published NPI) is compared with that NPI's row only:
+    EXACT when the last name (or the organization name) also matches, HIGH "name differs from
+    the registry" when it does not, since the list may carry a typo and a person should look.
+    Otherwise the kinds must agree (a person against an individual NPI, a business against an
+    organization NPI), and:
 
-    - Individuals: the last name and the first name must match (on the record's own name, or
+    - Individuals: the last name and the first name must match (on the party's own name, or
       every word of the candidate's in one of its aliases); a single initial starting the
       other counts as "initial only". The middle name (own name only), the licence (number by
       :func:`license_key` in the same state, against the candidate's taxonomy licences) and
       the address (5-digit ZIP, else city and state, else state, against the practice and
-      mailing addresses) add evidence. HIGH: full first name, licence or ZIP matched, middle
-      name not contradicted. POTENTIAL: full first name and (same city, middle name matched,
-      or the only namesake) with no contradiction; or an initial with licence or ZIP matched.
+      mailing addresses) add evidence. With several licences or addresses each is compared
+      and the best kept: a match over a difference, the strongest match (ZIP, city, state),
+      else the first comparison that could be made. HIGH: full first name, licence or ZIP
+      matched, middle name not contradicted. POTENTIAL: full first name and (same city,
+      middle name matched, or the only namesake) with no contradiction; or an initial with
+      licence or ZIP matched.
       AMBIGUOUS otherwise: several namesakes, or a contradiction (middle name, licence or
       address differs).
     - Organizations: the names without legal designators must match (own name or an alias,
@@ -623,25 +749,23 @@ def match_record_to_npi(
     Nicknames are not resolved. A deactivated NPI is weighed like any other, and the
     explanation says it is deactivated.
     """
-    if record.npi is not None:
-        if candidate.npi != record.npi:
+    if party.npi is not None:
+        if candidate.npi != party.npi:
             evidence = (MatchEvidence(field=MatchField.NPI, matched=False),)
             return _conclude(_result(MatchLevel.NONE, evidence))
-        decision = _published_npi(record, candidate)
-    elif (
-        record.entity_kind is EntityKind.UNKNOWN or candidate.entity_kind is not record.entity_kind
-    ):
+        decision = _published_npi(party, candidate)
+    elif party.entity_kind is EntityKind.UNKNOWN or candidate.entity_kind is not party.entity_kind:
         return MatchResult(
             level=MatchLevel.NONE, evidence=(), explanation="No match: the kinds differ."
         )
-    elif record.entity_kind is EntityKind.INDIVIDUAL:
-        decision = _link_individual(record, candidate, candidates)
+    elif party.entity_kind is EntityKind.INDIVIDUAL:
+        decision = _link_individual(party, candidate, candidates)
     else:
-        decision = _link_organization(record, candidate, candidates)
+        decision = _link_organization(party, candidate, candidates)
     if decision.level is MatchLevel.NONE:
         return _conclude(decision)
     notes = [decision.note] if decision.note else []
-    if record.npi is None and candidates > 1:
+    if party.npi is None and candidates > 1:
         many = f"more than {CANDIDATE_CAP}" if candidates > CANDIDATE_CAP else str(candidates)
         notes.append(f"one of {many} namesakes in the registry")
     if candidate.status is NpiStatus.DEACTIVATED:
@@ -652,49 +776,56 @@ def match_record_to_npi(
 def link_record_to_npis(
     record: ExclusionRecord, candidates: Sequence[NpiRecord], found: int
 ) -> tuple[tuple[Npi | None, MatchResult], ...]:
-    """The links to store for one record: ``(npi, match)`` pairs, best first.
+    """The links to store for one record: :func:`suggest_npis` on the record's party."""
+    return suggest_npis(party_of_record(record), candidates, found)
 
-    Every candidate is scored with :func:`match_record_to_npi` and NONE pairs are dropped.
+
+def suggest_npis(
+    party: LinkParty, candidates: Sequence[NpiRecord], found: int
+) -> tuple[tuple[Npi | None, MatchResult], ...]:
+    """The NPIs a party points at: ``(npi, match)`` pairs, best first.
+
+    Every candidate is scored with :func:`match_party_to_npi` and NONE pairs are dropped.
     When the discovery found more than :data:`CANDIDATE_CAP` namesakes, AMBIGUOUS pairs are
     dropped too: the strongest are scored first, and an ambiguous one among so many says
-    nothing a person could act on. A record left without a link gets one ``(None, NONE)``
+    nothing a person could act on. A party left without a link gets one ``(None, NONE)``
     pair whose explanation says why, so "not linked" never reads as "never checked".
     """
-    scored = [(c.npi, match_record_to_npi(record, c, candidates=found)) for c in candidates]
+    scored = [(c.npi, match_party_to_npi(party, c, candidates=found)) for c in candidates]
     kept = [(npi, match) for npi, match in scored if match.level is not MatchLevel.NONE]
     if found > CANDIDATE_CAP:
         kept = [(npi, match) for npi, match in kept if match.level in _CONFIRMED]
     if kept:
         ordered = sorted(kept, key=lambda pair: (level_rank(pair[1].level), pair[0] or ""))
         return tuple((npi, match) for npi, match in ordered)
-    reason = _link_gap(record, found, scored=bool(scored))
+    reason = _link_gap(party, found, scored=bool(scored))
     return (
         (None, MatchResult(level=MatchLevel.NONE, evidence=(), explanation=f"No match: {reason}.")),
     )
 
 
-def _link_gap(record: ExclusionRecord, found: int, *, scored: bool) -> str:
-    """Why a record has no link, most basic reason first."""
-    if record.npi is not None:
+def _link_gap(party: LinkParty, found: int, *, scored: bool) -> str:
+    """Why a party has no link, most basic reason first."""
+    if party.npi is not None:
         return _UNKNOWN_PUBLISHED_NPI if not found else _NO_MATCHING_CANDIDATE
-    if record.entity_kind is EntityKind.INDIVIDUAL:
-        if record.person_name is None or not normalize_name(record.person_name.last):
+    if party.entity_kind is EntityKind.INDIVIDUAL:
+        if party.person_name is None or not normalize_name(party.person_name.last):
             return _NO_NAME
-        if not normalize_name(record.person_name.first):
+        if not normalize_name(party.person_name.first):
             return _NO_FIRST_NAME
-    elif not record.organization_name or not normalize_organization_name(record.organization_name):
+    elif not party.organization_name or not normalize_organization_name(party.organization_name):
         return _NO_NAME
     if found > CANDIDATE_CAP:
         return _TOO_MANY
     return _NO_MATCHING_CANDIDATE if scored else _NO_CANDIDATE
 
 
-def _published_npi(record: ExclusionRecord, candidate: NpiRecord) -> _Decision:
-    """The record's own NPI is the candidate's: EXACT with a matching name, else HIGH."""
+def _published_npi(party: LinkParty, candidate: NpiRecord) -> _Decision:
+    """The party's own NPI is the candidate's: EXACT with a matching name, else HIGH."""
     npi = MatchEvidence(field=MatchField.NPI, matched=True, detail="published by the list")
     field = (
         MatchField.LAST_NAME
-        if record.entity_kind is EntityKind.INDIVIDUAL
+        if party.entity_kind is EntityKind.INDIVIDUAL
         else MatchField.ORGANIZATION_NAME
     )
     if candidate.entity_kind is EntityKind.UNKNOWN:
@@ -702,26 +833,124 @@ def _published_npi(record: ExclusionRecord, candidate: NpiRecord) -> _Decision:
         return _result(
             MatchLevel.HIGH, (npi, MatchEvidence(field=field, matched=False, detail=detail))
         )
-    if candidate.entity_kind is not record.entity_kind:
+    if candidate.entity_kind is not party.entity_kind:
         other = "a person" if candidate.entity_kind is EntityKind.INDIVIDUAL else "an organization"
         detail = f"{_NAME_DIFFERS}: it lists {other} under this NPI"
         return _result(
             MatchLevel.HIGH, (npi, MatchEvidence(field=field, matched=False, detail=detail))
         )
-    if record.entity_kind is EntityKind.INDIVIDUAL:
-        names = _published_person(record, candidate)
+    if party.entity_kind is EntityKind.INDIVIDUAL:
+        names = _published_person(party, candidate)
     else:
-        names = _organization_names(record, candidate)
+        names = _organization_names(party, candidate)
     if names is None:
         differs = MatchEvidence(field=field, matched=False, detail=_NAME_DIFFERS)
         return _result(MatchLevel.HIGH, (npi, differs))
     return _result(MatchLevel.EXACT, (npi, *names.evidence))
 
 
-def _published_person(record: ExclusionRecord, candidate: NpiRecord) -> _PersonNames | None:
+def match_provider_to_npi(provider: Provider, record: NpiRecord) -> MatchResult:
+    """How the registry's record of the provider's own NPI agrees with the roster.
+
+    The NPI is the identity, so this never blocks on a contradiction; it says whether the name
+    agrees, as :func:`match_record_to_npi` does for a published NPI. EXACT when the last name
+    (a person) or the organization name without legal designators (or one of the registry's
+    other names) matches; HIGH "name differs from the registry" otherwise, and HIGH when the
+    registry publishes no name or lists the other kind of party under the NPI. The first and
+    middle names and the licences are supporting evidence only. NONE when the NPIs differ.
+    """
+    if provider.npi != record.npi:
+        return _conclude(
+            _result(MatchLevel.NONE, (MatchEvidence(field=MatchField.NPI, matched=False),))
+        )
+    npi = MatchEvidence(field=MatchField.NPI, matched=True, detail="on the roster")
+    kind = _provider_kind(provider)
+    field = MatchField.LAST_NAME if kind is EntityKind.INDIVIDUAL else MatchField.ORGANIZATION_NAME
+    if record.entity_kind is EntityKind.UNKNOWN:
+        detail = "the registry publishes no name for this NPI"
+        return _conclude(
+            _result(
+                MatchLevel.HIGH, (npi, MatchEvidence(field=field, matched=False, detail=detail))
+            )
+        )
+    if record.entity_kind is not kind:
+        other = "a person" if record.entity_kind is EntityKind.INDIVIDUAL else "an organization"
+        detail = f"{_NAME_DIFFERS}: it lists {other} under this NPI"
+        return _conclude(
+            _result(
+                MatchLevel.HIGH, (npi, MatchEvidence(field=field, matched=False, detail=detail))
+            )
+        )
+    names = (
+        _roster_person(provider, record)
+        if kind is EntityKind.INDIVIDUAL
+        else _roster_organization(provider, record)
+    )
+    if names is None:
+        differs = MatchEvidence(field=field, matched=False, detail=_NAME_DIFFERS)
+        return _conclude(_result(MatchLevel.HIGH, (npi, differs)))
+    licence = _roster_license(provider, record)
+    evidence = (npi, *names, *((licence,) if licence else ()))
+    return _conclude(_result(MatchLevel.EXACT, evidence))
+
+
+def _roster_person(provider: Provider, record: NpiRecord) -> tuple[MatchEvidence, ...] | None:
+    """The last name must match; first and middle names are reported whatever they say."""
+    own, theirs = provider.person_name, record.person_name
+    if own is None or theirs is None:
+        return None
+    their_last = normalize_name(theirs.last)
+    if not their_last or normalize_name(own.last) != their_last:
+        return None
+    evidence = [MatchEvidence(field=MatchField.LAST_NAME, matched=True)]
+    first, their_first = normalize_name(own.first), normalize_name(theirs.first)
+    if first and their_first:
+        same = first == their_first
+        initial = not same and _initial_of(first, their_first)
+        evidence.append(
+            MatchEvidence(
+                field=MatchField.FIRST_NAME,
+                matched=same or initial,
+                detail="initial only" if initial else None,
+            )
+        )
+    middle = _compare_middle(own.middle, theirs.middle)
+    if middle:
+        evidence.append(middle)
+    return tuple(evidence)
+
+
+def _roster_organization(provider: Provider, record: NpiRecord) -> tuple[MatchEvidence, ...] | None:
+    """The roster's organization name against the registry's name or other names, without
+    legal designators."""
+    wanted = normalize_organization_name(provider.organization_name or "")
+    if not wanted:
+        return None
+    theirs: list[tuple[str, str | None]] = (
+        [(record.organization_name, None)] if record.organization_name else []
+    )
+    theirs += [(other, f"other name {other!r}") for other in record.other_names]
+    for name, via in theirs:
+        if normalize_organization_name(name) != wanted:
+            continue
+        notes = [via] if via else []
+        if normalize_name(provider.organization_name or "") != normalize_name(name):
+            notes.append("legal suffix ignored")
+        detail = "; ".join(notes) or None
+        return (MatchEvidence(field=MatchField.ORGANIZATION_NAME, matched=True, detail=detail),)
+    return None
+
+
+def _roster_license(provider: Provider, record: NpiRecord) -> MatchEvidence | None:
+    """The roster's licences against the registry's taxonomy licences: matched when any one
+    agrees, else the first comparison that could be made; None when none could."""
+    return _license_evidence(provider.licenses, record)
+
+
+def _published_person(party: LinkParty, candidate: NpiRecord) -> _PersonNames | None:
     """Name evidence under a published NPI: the last name is enough, the first name is
     reported whatever it says; an alias naming the candidate counts too."""
-    own, theirs = record.person_name, candidate.person_name
+    own, theirs = party.person_name, candidate.person_name
     if own is None or theirs is None:
         return None
     their_last, their_first = normalize_name(theirs.last), normalize_name(theirs.first)
@@ -739,24 +968,24 @@ def _published_person(record: ExclusionRecord, candidate: NpiRecord) -> _PersonN
                 )
             )
         return _PersonNames(tuple(evidence), full_first=True, middle=None)
-    return _person_names(record, candidate)
+    return _person_names(party, candidate)
 
 
 class _PersonNames(NamedTuple):
-    """How a record's person name compares with a candidate's."""
+    """How a party's person name compares with a candidate's."""
 
     evidence: tuple[MatchEvidence, ...]
     full_first: bool
     middle: MatchEvidence | None
 
 
-def _person_names(record: ExclusionRecord, candidate: NpiRecord) -> _PersonNames | None:
+def _person_names(party: LinkParty, candidate: NpiRecord) -> _PersonNames | None:
     """Last and first name evidence, or None when the names do not match.
 
-    The record's own name first (first names equal, or one an initial starting the other),
+    The party's own name first (first names equal, or one an initial starting the other),
     then its aliases (every word of the candidate's last and first name in one alias).
     """
-    own, theirs = record.person_name, candidate.person_name
+    own, theirs = party.person_name, candidate.person_name
     if own is None or theirs is None:
         return None
     their_last, their_first = normalize_name(theirs.last), normalize_name(theirs.first)
@@ -775,7 +1004,7 @@ def _person_names(record: ExclusionRecord, candidate: NpiRecord) -> _PersonNames
         if middle:
             evidence.append(middle)
         return _PersonNames(tuple(evidence), full_first=full, middle=middle)
-    alias = _matching_alias(record.aliases, their_last, their_first)
+    alias = _matching_alias(party.aliases, their_last, their_first)
     if alias is None:
         return None
     detail = f"alias {alias!r}"
@@ -786,17 +1015,17 @@ def _person_names(record: ExclusionRecord, candidate: NpiRecord) -> _PersonNames
     return _PersonNames(tuple(evidence), full_first=True, middle=None)
 
 
-def _organization_names(record: ExclusionRecord, candidate: NpiRecord) -> _PersonNames | None:
+def _organization_names(party: LinkParty, candidate: NpiRecord) -> _PersonNames | None:
     """Organization-name evidence (in the :class:`_PersonNames` shape), or None.
 
-    The record's name or one of its aliases against the candidate's name or one of its other
+    The party's name or one of its aliases against the candidate's name or one of its other
     names, compared without legal designators; the detail says which names and whether a
     designator was ignored.
     """
     ours: list[tuple[str, str | None]] = (
-        [(record.organization_name, None)] if record.organization_name else []
+        [(party.organization_name, None)] if party.organization_name else []
     )
-    ours += [(alias, f"alias {alias!r}") for alias in record.aliases]
+    ours += [(alias, f"alias {alias!r}") for alias in party.aliases]
     theirs: list[tuple[str, str | None]] = (
         [(candidate.organization_name, None)] if candidate.organization_name else []
     )
@@ -819,12 +1048,12 @@ def _organization_names(record: ExclusionRecord, candidate: NpiRecord) -> _Perso
     return None
 
 
-def _link_individual(record: ExclusionRecord, candidate: NpiRecord, candidates: int) -> _Decision:
-    names = _person_names(record, candidate)
+def _link_individual(party: LinkParty, candidate: NpiRecord, candidates: int) -> _Decision:
+    names = _person_names(party, candidate)
     if names is None:
         return _result(MatchLevel.NONE, ())
-    license = _license_evidence(record.license, candidate)
-    address = _address_evidence(record.address, candidate)
+    license = _license_evidence(party.licenses, candidate)
+    address = _address_evidence(party.addresses, candidate)
     evidence = (*names.evidence, *(item for item in (license, address) if item))
     middle = names.middle
     middle_differs = middle is not None and not middle.matched
@@ -849,11 +1078,11 @@ def _link_individual(record: ExclusionRecord, candidate: NpiRecord, candidates: 
     return _result(level, evidence)
 
 
-def _link_organization(record: ExclusionRecord, candidate: NpiRecord, candidates: int) -> _Decision:
-    names = _organization_names(record, candidate)
+def _link_organization(party: LinkParty, candidate: NpiRecord, candidates: int) -> _Decision:
+    names = _organization_names(party, candidate)
     if names is None:
         return _result(MatchLevel.NONE, ())
-    address = _address_evidence(record.address, candidate)
+    address = _address_evidence(party.addresses, candidate)
     evidence = (*names.evidence, *((address,) if address else ()))
     if _same(address, SAME_ZIP):
         level = MatchLevel.HIGH
@@ -868,14 +1097,18 @@ def _same(address: MatchEvidence | None, *details: str) -> bool:
     return address is not None and address.matched and address.detail in details
 
 
-def _license_evidence(own: License | None, candidate: NpiRecord) -> MatchEvidence | None:
-    """The record's licence against the candidate's taxonomy licences; None when either side
-    has none. A licence only in other states is "not matched" too, the detail says so."""
-    if own is None:
-        return None
+def _license_evidence(own: Sequence[License], candidate: NpiRecord) -> MatchEvidence | None:
+    """The party's licences against the candidate's taxonomy licences; None when either side
+    has none. Matched when any one agrees, else the first licence's difference. A licence
+    only in other states is "not matched" too, the detail says so."""
     theirs = [t for t in candidate.taxonomies if t.license_number]
-    if not theirs:
+    if not own or not theirs:
         return None
+    compared = [_one_license(licence, theirs) for licence in own]
+    return next((item for item in compared if item.matched), compared[0])
+
+
+def _one_license(own: License, theirs: Sequence[NpiTaxonomy]) -> MatchEvidence:
     number = license_key(own.number)
     if any(
         t.license_state == own.state and license_key(t.license_number or "") == number
@@ -889,13 +1122,24 @@ def _license_evidence(own: License | None, candidate: NpiRecord) -> MatchEvidenc
     return MatchEvidence(field=MatchField.LICENSE, matched=False, detail=detail)
 
 
-def _address_evidence(own: Address | None, candidate: NpiRecord) -> MatchEvidence | None:
-    """The record's address against the candidate's practice and mailing addresses: the same
+_PLACE_STRENGTH: Final = {SAME_ZIP: 0, SAME_CITY: 1, SAME_STATE: 2}
+"""Matched address evidence, strongest first: which of several addresses speaks for a party."""
+
+
+def _address_evidence(own: Sequence[Address], candidate: NpiRecord) -> MatchEvidence | None:
+    """The party's addresses against the candidate's practice and mailing addresses: the same
     5-digit ZIP, else the same city and state, else the same state; "differs" when both sides
-    have something to compare and share nothing; None otherwise. Never the street."""
-    if own is None:
-        return None
+    have something to compare and share nothing; None otherwise. Never the street. With
+    several addresses the strongest match is kept, else the first difference."""
     places = [a for a in (candidate.practice_address, candidate.mailing_address) if a is not None]
+    compared = [item for item in (_one_address(a, places) for a in own) if item is not None]
+    matched = [item for item in compared if item.matched]
+    if matched:
+        return min(matched, key=lambda item: _PLACE_STRENGTH.get(item.detail or "", 3))
+    return compared[0] if compared else None
+
+
+def _one_address(own: Address, places: Sequence[Address]) -> MatchEvidence | None:
     zip_code = _zip5(own.postal_code)
     if not (zip_code or own.state) or not any(_zip5(a.postal_code) or a.state for a in places):
         return None

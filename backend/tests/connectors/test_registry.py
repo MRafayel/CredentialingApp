@@ -16,7 +16,11 @@ from credentialing.domain.models import (
     SourceSnapshot,
     VerificationResult,
 )
-from tests.fakes import ScriptedDatasetConnector, dataset_capabilities
+from tests.fakes import (
+    ScriptedDatasetConnector,
+    ScriptedNpiRegistryConnector,
+    dataset_capabilities,
+)
 
 
 def _capabilities(
@@ -107,4 +111,22 @@ def test_dataset_connectors_are_polled_but_never_bulk_lists(registry: ConnectorR
     assert registry.dataset_connectors() == [dataset]
     assert registry.polled_connectors() == [dataset, FEDERAL_LIST, STATE_LIST]
     assert "fake_a_dataset" not in [c.capabilities.source_id for c in registry.bulk_connectors()]
+    assert registry.bulk_connectors_for(CredentialType.NPI, "NY") == []
+
+
+def test_the_live_npi_registry_is_found_on_demand_and_never_polled(
+    registry: ConnectorRegistry,
+) -> None:
+    live = ScriptedNpiRegistryConnector()
+    registry.register(live)
+
+    assert registry.npi_registry_connectors() == [live]
+    assert registry.get("nppes_api") is live
+    for others in (
+        registry.polled_connectors(),
+        registry.bulk_connectors(),
+        registry.dataset_connectors(),
+    ):
+        assert "nppes_api" not in [c.capabilities.source_id for c in others]
+    assert registry.lookup_connectors_for(CredentialType.NPI, "NY") == []
     assert registry.bulk_connectors_for(CredentialType.NPI, "NY") == []

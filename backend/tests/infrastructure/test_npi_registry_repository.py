@@ -330,3 +330,43 @@ async def test_text_that_copy_must_escape_round_trips(mirror: _Mirror) -> None:
     assert stored.other_names == ('QUOTE " AND {BRACE}, COMMA', "SAMPLEVILLE HEALTH HOLDINGS")
     assert stored.practice_address is not None
     assert stored.practice_address.line1 == "LINE\r\nBREAK"
+
+
+async def test_an_api_answer_loads_incrementally_and_the_next_file_row_replaces_it(
+    mirror: _Mirror,
+) -> None:
+    api_row = NpiRecord(
+        npi=b.PERSON_NPI,
+        entity_kind=EntityKind.INDIVIDUAL,
+        status=NpiStatus.ACTIVE,
+        person_name=PersonName(last="TESTPERSON", first="AVERY"),
+        last_updated=date(2025, 7, 8),
+        deactivation_date=date(2020, 1, 1),
+        reactivation_date=date(2020, 6, 1),
+        line_hash="api:" + "a" * 64,
+        snapshot_id=uuid4(),
+    )
+    snapshot_id = await mirror.snapshot()
+
+    written = await mirror.repository.load(
+        ListDataset(api_row.model_copy(update={"snapshot_id": snapshot_id})),
+        mode=DatasetLoadMode.INCREMENTAL,
+        snapshot_id=snapshot_id,
+        now=NOW,
+    )
+
+    assert (written.added, written.changed, written.missing) == (1, 0, 0)
+    stored = await mirror.repository.get(b.PERSON_NPI)
+    assert stored is not None
+    assert stored.line_hash == "api:" + "a" * 64
+    assert stored.snapshot_id == snapshot_id
+    assert stored.reactivation_date == date(2020, 6, 1)
+
+    replaced = await mirror.load_rows([b.person()], mode=DatasetLoadMode.INCREMENTAL, now=LATER)
+
+    assert (replaced.added, replaced.changed, replaced.outdated) == (0, 1, 0)
+    from_file = await mirror.repository.get(b.PERSON_NPI)
+    assert from_file is not None
+    assert not from_file.line_hash.startswith("api:")
+    assert from_file.credential == "M.D."
+    assert [entry[0] for entry in await mirror.history(b.PERSON_NPI)] == ["api:" + "a" * 64]

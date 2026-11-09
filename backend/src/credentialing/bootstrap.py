@@ -21,12 +21,15 @@ from credentialing.application.link_npis import LinkNpis
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.application.npi_lookup import NpiLookup
+from credentialing.application.npi_suggestions import SuggestNpis
 from credentialing.application.provider_verdict import ProviderVerdictQuery
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
+from credentialing.application.set_provider_npi import SetProviderNpi
 from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.sync_source import SyncSource
 from credentialing.application.verification_history import VerificationHistory
+from credentialing.application.verify_npi import VerifyNpi
 from credentialing.connectors.ak_dhss import AkDhssConnector
 from credentialing.connectors.ca_dhcs import CaDhcsConnector
 from credentialing.connectors.co_hcpf import CoHcpfConnector
@@ -51,6 +54,7 @@ from credentialing.connectors.nd_medicaid import NdMedicaidConnector
 from credentialing.connectors.nh_dhhs import NhDhhsConnector
 from credentialing.connectors.nj_treasury import NjTreasuryConnector
 from credentialing.connectors.nppes import (
+    NppesApiConnector,
     NppesDeactivationsConnector,
     NppesMonthlyConnector,
     NppesWeeklyConnector,
@@ -115,6 +119,9 @@ class Services:
     list_providers: ListProviders
     verification_history: VerificationHistory
     provider_verdict: ProviderVerdictQuery
+    verify_npi: VerifyNpi
+    suggest_npis: SuggestNpis
+    set_provider_npi: SetProviderNpi
 
 
 def create_http_client(settings: Settings) -> httpx2.AsyncClient:
@@ -152,7 +159,8 @@ def build_registry(
 
     ``browser`` goes only to connectors whose source needs the browser fallback; sessions
     (``fetcher.session``) only to those whose file is behind a token flow; streaming
-    downloads (``fetcher.download``) and ``dataset_dir`` to the dataset connectors.
+    downloads (``fetcher.download``) and ``dataset_dir`` to the dataset connectors. The live
+    NPI registry (the NPPES API) is asked on demand and never polled.
     """
     registry = ConnectorRegistry()
     registry.register(OigLeieConnector(fetcher))
@@ -187,6 +195,7 @@ def build_registry(
     registry.register(NppesMonthlyConnector(fetcher, data_dir=dataset_dir))
     registry.register(NppesWeeklyConnector(fetcher, data_dir=dataset_dir))
     registry.register(NppesDeactivationsConnector(fetcher, data_dir=dataset_dir))
+    registry.register(NppesApiConnector(fetcher))
     return registry
 
 
@@ -201,6 +210,16 @@ def build_services(
     npi_links = PostgresNpiLinkRepository(database)
     verifications = PostgresVerificationRepository(database)
     link_npis = LinkNpis(registry, snapshots, npi_links, clock)
+    npi_lookup = NpiLookup(npi_registry, registry, snapshots, DEFAULT_FRESHNESS, clock)
+    live_registry = NppesApiConnector.CAPABILITIES
+    verify_npi = VerifyNpi(
+        providers,
+        npi_lookup,
+        verifications,
+        clock,
+        source_id=live_registry.source_id,
+        source_url=live_registry.source_url,
+    )
     return Services(
         registry=registry,
         clock=clock,
@@ -211,7 +230,7 @@ def build_services(
         npi_links=npi_links,
         verifications=verifications,
         link_npis=link_npis,
-        npi_lookup=NpiLookup(npi_registry, registry, snapshots, DEFAULT_FRESHNESS, clock),
+        npi_lookup=npi_lookup,
         sync_source=SyncSource(
             registry,
             snapshots,
@@ -240,6 +259,9 @@ def build_services(
         list_providers=ListProviders(providers),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),
+        verify_npi=verify_npi,
+        suggest_npis=SuggestNpis(providers, npi_links, npi_lookup, clock),
+        set_provider_npi=SetProviderNpi(providers, npi_lookup, verify_npi, clock),
     )
 
 
@@ -255,6 +277,9 @@ def api_container(services: Services, settings: Settings) -> AppContainer:
         verification_history=services.verification_history,
         provider_verdict=services.provider_verdict,
         npi_lookup=services.npi_lookup,
+        verify_npi=services.verify_npi,
+        suggest_npis=services.suggest_npis,
+        set_provider_npi=services.set_provider_npi,
         providers=services.providers,
         organization_header_enabled=settings.environment == "local",
     )

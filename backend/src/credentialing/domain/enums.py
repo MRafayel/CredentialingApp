@@ -185,6 +185,23 @@ class NpiStatus(StrEnum):
     DEACTIVATED = "deactivated"
 
 
+class RegistryStatus(StrEnum):
+    """The backend's one-word conclusion about an NPI, from the mirror and the live registry.
+
+    The live registry (the NPPES API) lists active NPIs only: an NPI it does not return is not
+    active today, deactivated or never issued alike, and only the mirror (the deactivation
+    file) can say which. ``MIRROR_ONLY_ACTIVE`` is the contradiction a person reviews: the
+    mirror's file lists the NPI as active, the live registry returned nothing. ``UNKNOWN`` is
+    "we could not tell": no mirror row and no live answer (never asked, or the request failed).
+    """
+
+    ACTIVE = "active"
+    DEACTIVATED = "deactivated"
+    NOT_FOUND = "not_found"
+    MIRROR_ONLY_ACTIVE = "mirror_only_active"
+    UNKNOWN = "unknown"
+
+
 class DatasetLoadMode(StrEnum):
     """What a downloaded dataset file says about the mirror it is loaded into.
 
