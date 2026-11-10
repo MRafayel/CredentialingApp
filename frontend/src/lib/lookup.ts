@@ -71,6 +71,17 @@ export type SearchedScope = {
   notLoaded: number
 }
 
+/** The NPI registry, as one more place a lookup searched. */
+const REGISTRY = 'the NPI registry'
+
+/** "a", "a and b", "a, b and c". */
+function joinPlaces(places: readonly (string | null)[]): string {
+  const present = places.filter((place): place is string => Boolean(place))
+  const last = present.pop()
+  if (last === undefined) return ''
+  return present.length ? `${present.join(', ')} and ${last}` : last
+}
+
 /** "the federal list", "the federal lists" or null. */
 function federalPhrase(searched: readonly SearchedSource[]): string | null {
   const count = searched.filter((source) => source.jurisdictions.includes(FEDERAL)).length
@@ -78,17 +89,21 @@ function federalPhrase(searched: readonly SearchedSource[]): string | null {
   return count === 1 ? 'the federal list' : 'the federal lists'
 }
 
-/** Where a lookup searched; see `SearchedScope`. */
+/**
+ * Where a lookup searched; see `SearchedScope`. `registry` adds the NPI registry when it was
+ * searched beside the lists ("Searched 9 states, the federal list and the NPI registry").
+ */
 export function searchedScope(
   sources: readonly SearchedSource[],
   state?: SearchedState | null,
+  registry = false,
 ): SearchedScope {
   const searched = sources.filter((source) => source.fetched_at !== null)
   const federal = federalPhrase(searched)
+  const npi = registry ? REGISTRY : null
   if (!state) {
     const states = new Set(searched.flatMap((source) => source.jurisdictions.filter(isState)))
-    const parts = [states.size > 0 ? plural(states.size, 'state') : null, federal]
-    const where = parts.filter(Boolean).join(' and ')
+    const where = joinPlaces([states.size > 0 ? plural(states.size, 'state') : null, federal, npi])
     return {
       where: where ? `Searched ${where}` : 'Searched no lists',
       notLoaded: sources.length - searched.length,
@@ -104,10 +119,11 @@ export function searchedScope(
         ? 'its state list'
         : 'its state lists'
   const missing = ownUnloaded ? 'its state list not loaded' : 'no state list yet'
+  const others = joinPlaces([federal, npi])
   const lists = ownPhrase
-    ? [ownPhrase, federal].filter(Boolean).join(' and ')
-    : federal
-      ? `${missing}, ${federal} only`
+    ? joinPlaces([ownPhrase, federal, npi])
+    : others
+      ? `${missing}, ${others} only`
       : missing
   return {
     where: `Searched in ${state.name} · ${lists}`,
@@ -125,8 +141,9 @@ export function notLoadedText(count: number): string {
 export function searchedLine(
   sources: readonly SearchedSource[],
   state?: SearchedState | null,
+  registry = false,
 ): string {
-  const { where, notLoaded } = searchedScope(sources, state)
+  const { where, notLoaded } = searchedScope(sources, state, registry)
   return notLoaded > 0 ? `${where} · ${notLoadedText(notLoaded)}` : where
 }
 

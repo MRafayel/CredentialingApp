@@ -7,7 +7,7 @@ registry, asked on demand and never polled, is reported apart: its requests over
 :data:`ON_DEMAND_WINDOW` and the last one.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Final
@@ -130,12 +130,14 @@ class SourceStatusReport:
     async def run(self) -> tuple[SourceStatus, ...]:
         """Return every source's status, ordered by display name.
 
-        The mirror is counted once per report, whatever the number of dataset sources.
+        The mirror is counted once per report, whatever the number of dataset sources, and
+        every list's current rows in one query.
         """
         now = self._clock.now()
         connectors = self._connectors.polled_connectors()
         mirrored = await self._mirror_count(connectors)
-        statuses = [await self._status(c, now, mirrored) for c in connectors]
+        current = await self._records.current_counts()
+        statuses = [await self._status(c, now, mirrored, current) for c in connectors]
         return tuple(sorted(statuses, key=lambda s: (s.display_name.casefold(), s.source_id)))
 
     async def npi_api_usage(self) -> OnDemandUsage | None:
@@ -166,7 +168,11 @@ class SourceStatusReport:
         return await self._npi_registry.count()
 
     async def _status(
-        self, connector: BulkListConnector | DatasetConnector, now: datetime, mirrored: int
+        self,
+        connector: BulkListConnector | DatasetConnector,
+        now: datetime,
+        mirrored: int,
+        current: Mapping[SourceId, int],
     ) -> SourceStatus:
         capabilities = connector.capabilities
         source_id = capabilities.source_id
@@ -200,7 +206,7 @@ class SourceStatusReport:
             source_url=capabilities.source_url,
             latest=latest,
             latest_completed=completed,
-            current_records=(mirrored if dataset else await self._records.count_current(source_id)),
+            current_records=mirrored if dataset else current.get(source_id, 0),
             health=health,
             freshness=(
                 policy.evaluate(completed.fetched_at, now, capabilities.method)

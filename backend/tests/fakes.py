@@ -698,6 +698,8 @@ class InMemoryRecords:
         self.current: dict[tuple[str, str], ExclusionRecord] = {}
         self.latest: dict[tuple[str, str], ExclusionRecord] = {}
         self.all: dict[UUID, ExclusionRecord] = {}
+        self.count_queries = 0
+        """How many times :meth:`current_counts` ran."""
 
     async def replace_current(
         self,
@@ -886,8 +888,12 @@ class InMemoryRecords:
         ]
         return sorted(found, key=lambda r: (r.source_id, str(r.id)))
 
-    async def count_current(self, source_id: SourceId) -> int:
-        return sum(1 for (source, _) in self.current if source == source_id)
+    async def current_counts(self) -> Mapping[SourceId, int]:
+        self.count_queries += 1
+        counts: dict[SourceId, int] = {}
+        for source, _ in self.current:
+            counts[source] = counts.get(source, 0) + 1
+        return counts
 
 
 class InMemoryProviders:

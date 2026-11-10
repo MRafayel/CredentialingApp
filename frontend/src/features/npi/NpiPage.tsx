@@ -463,15 +463,17 @@ function RegistryFacts({ record }: { record: NpiRecord }) {
             )}
           </Fact>
         )}
-        <Fact term="In latest file">{record.in_file ? 'Yes' : <InkNo />}</Fact>
+        {/* Shown only when a full file dropped the NPI: the usual "yes" is no fact worth a row
+            (owner, 2026-11-10). It is about publication, not status: a deactivated NPI the
+            file still lists is "in the registry". */}
+        {!record.in_file && (
+          <Fact term="Currently in NPI registry">
+            <span className="font-medium text-ink">No</span>
+          </Fact>
+        )}
       </motion.dl>
     </section>
   )
-}
-
-/** "No" for a row the latest full file no longer lists: worth noticing, so not muted. */
-function InkNo() {
-  return <span className="font-medium text-ink">No</span>
 }
 
 function NpiSkeleton() {

@@ -167,6 +167,26 @@ async def test_an_ok_source_reports_its_records_links_and_derived_times() -> Non
     assert status.credential_type is CredentialType.EXCLUSION
 
 
+async def test_every_list_is_counted_in_one_query_and_a_list_without_rows_is_zero() -> None:
+    registry = ConnectorRegistry()
+    for source_id in (SOURCE, "fake_state", "fake_empty"):
+        registry.register(ScriptedConnector(make_capabilities(source_id)))
+    records = InMemoryRecords()
+    for source_id, names in ((SOURCE, ("Aa", "Bb", "Cc")), ("fake_state", ("Dd",))):
+        snapshot_id = uuid4()
+        rows = [exclusion(source_id=source_id, snapshot_id=snapshot_id, last=n) for n in names]
+        await records.replace_current(source_id, snapshot_id, rows, NOW, source_changed=True)
+
+    statuses = await _report(now=NOW, records=records, registry=registry)
+
+    assert {s.source_id: s.current_records for s in statuses} == {
+        SOURCE: 3,
+        "fake_state": 1,
+        "fake_empty": 0,
+    }
+    assert records.count_queries == 1
+
+
 async def test_the_list_date_is_not_stated_when_the_source_gives_none() -> None:
     (status,) = await _report(_snapshot(at=NOW), now=NOW + timedelta(hours=1))
 

@@ -648,7 +648,8 @@ async def test_search_by_npi_name_and_organization(world: _World) -> None:
     assert await search("Testperson") == [npi(1), npi(2)]
     assert await search("Testperson", limit=1) == [npi(1)]
     assert await search("The Sampleville Care Group, Inc.") == [npi(5), npi(4)]
-    assert await search("Testp") == []
+    assert await search("Testp") == [npi(1), npi(2)]
+    assert await search("T") == []
     assert await search("Nobody Here") == []
 
 

@@ -16,10 +16,10 @@ import { ErrorNote } from '../../components/Note.tsx'
 import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
 import { TypedPlaceholder } from '../../components/TypedPlaceholder.tsx'
 import { useTypedPlaceholder } from '../../components/useTypedPlaceholder.ts'
-import type { Lookup, LookupRecord } from '../../lib/api.ts'
-import { draftFromRecord, isSearchable, matchesLine, noMatchesLine } from '../../lib/lookup.ts'
+import type { Lookup, LookupRecord, MirrorSource } from '../../lib/api.ts'
+import { draftFromRecord, isSearchable, matchesLine } from '../../lib/lookup.ts'
 import type { ProviderDraft } from '../../lib/provider.ts'
-import { LOOKUP_LIMIT, useExclusionLookup } from '../../lib/queries.ts'
+import { LOOKUP_LIMIT, useExclusionLookup, useNpi, useNpiSearch } from '../../lib/queries.ts'
 import { isNpi } from '../../lib/registry.ts'
 import { useRecedingHero } from '../../lib/scroll.ts'
 import { AddProviderSheet } from '../providers/AddProviderSheet.tsx'
@@ -27,8 +27,15 @@ import { useLookupState } from './lookupState.ts'
 import { LIST, ListsLine, LookupRow, LookupRowSkeleton } from './LookupRow.tsx'
 import { stateName } from './map/mapInfo.ts'
 import { StatesMap } from './map/StatesMap.tsx'
-import { isNameQuery } from './npiSearch.ts'
-import { RegistryCard, RegistryNames } from './Registry.tsx'
+import { isNameQuery, NAME_LIMIT } from './npiSearch.ts'
+import {
+  LiveSearchButton,
+  MirrorLine,
+  RegistryCard,
+  RegistryNames,
+  RegistryNote,
+  type NameSearch,
+} from './Registry.tsx'
 
 const SEARCH_DELAY_MS = 300
 
@@ -41,6 +48,45 @@ type View =
   | { kind: 'error'; message: string; retry: () => void }
   | { kind: 'results'; data: Lookup; refreshing: boolean }
   | { kind: 'empty'; data: Lookup; refreshing: boolean }
+
+/**
+ * The NPI registry's answer beside the lists, as far as the empty answer needs it: not asked
+ * (`off`: neither a name nor an NPI), still on its way, unanswered (an error, or for an NPI
+ * "could not tell"), something found, or nothing found. Only `none` joins the lists' empty
+ * answer in one card; for a name it carries the mirror's block (null when it is not loaded)
+ * and the way to ask the live registry.
+ */
+type Registry =
+  | { kind: 'off' }
+  | { kind: 'loading' }
+  | { kind: 'error' }
+  | { kind: 'found' }
+  | { kind: 'none'; name: { mirror: MirrorSource | null } | null; refreshing: boolean }
+
+/** The registry's state for a name query, from the mirror search the page runs. */
+function nameRegistry(search: NameSearch): Registry {
+  if (search.isError && !search.data) return { kind: 'error' }
+  if (!search.data) return { kind: 'loading' }
+  if (search.data.records.length > 0) return { kind: 'found' }
+  return {
+    kind: 'none',
+    name: { mirror: search.data.mirror },
+    refreshing: search.isPlaceholderData,
+  }
+}
+
+/**
+ * The registry's state for an NPI query, from the same lookup its card above the lists makes.
+ * No row and "not in NPPES" is nothing found; no row and "unknown" is not an answer.
+ */
+function npiRegistry(lookup: ReturnType<typeof useNpi>): Registry {
+  if (lookup.isError && !lookup.data) return { kind: 'error' }
+  if (!lookup.data) return { kind: 'loading' }
+  if (lookup.data.record) return { kind: 'found' }
+  return lookup.data.status === 'not_found'
+    ? { kind: 'none', name: null, refreshing: false }
+    : { kind: 'error' }
+}
 
 /**
  * Search every exclusion list directly, open a hit to see what the lists hold around it, or
@@ -58,6 +104,17 @@ export function LookupPage() {
   // An emptied field searches nothing, even before the pause that updates `q`.
   const searchable = isSearchable(q) && typing
   const lookup = useExclusionLookup(q, state, searchable)
+  // The registry is searched beside the lists: a name in the mirror (its NPIs under the lists),
+  // an NPI by its own lookup (its card above them, which shares this query).
+  const nameQuery = searchable && isNameQuery(q)
+  const npiQuery = searchable && isNpi(q)
+  const names = useNpiSearch({ q, limit: NAME_LIMIT }, nameQuery)
+  const npi = useNpi(q, npiQuery)
+  const registry: Registry = nameQuery
+    ? nameRegistry(names)
+    : npiQuery
+      ? npiRegistry(npi)
+      : { kind: 'off' }
   const { anchor: heroAnchor, ...hero } = useRecedingHero()
   const reduced = useReducedMotion() ?? false
   // The swap runs one way at a time. Typing: the map leaves, then results may show. Clearing:
@@ -85,6 +142,13 @@ export function LookupPage() {
               refreshing: lookup.isPlaceholderData,
             }
   const showResults = view.kind !== 'idle'
+  // The name's registry section shows under the lists unless the empty answer speaks for it:
+  // nothing in either (one card), or the lists empty while the registry is still on its way
+  // (their skeleton stays, so the card never shows a wrong state first).
+  const showNames =
+    nameQuery &&
+    !(registry.kind === 'none' && (view.kind === 'loading' || view.kind === 'empty')) &&
+    !(registry.kind === 'loading' && view.kind === 'empty')
   const showMap = !typing && resultsGone
   // Whatever is on screen is no longer gone. Set during render, so the other one never mounts
   // beside it; each becomes gone again only when its exit completes.
@@ -219,10 +283,17 @@ export function LookupPage() {
                 )}
                 <LookupView
                   view={view}
+                  registry={registry}
                   query={q}
                   onCheck={(record) => setPrefill(draftFromRecord(record))}
                 />
-                {isNameQuery(q) && <RegistryNames q={q} />}
+                {/* No NPI with this name under the lists' matches: one quiet line and the way to
+                    ask the live registry, never an empty section (owner, 2026-11-10). */}
+                {nameQuery && registry.kind === 'none' && view.kind === 'results' ? (
+                  <RegistryNote query={q} mirror={registry.name?.mirror ?? null} />
+                ) : (
+                  showNames && <RegistryNames q={q} search={names} alone={view.kind === 'empty'} />
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -237,10 +308,12 @@ export function LookupPage() {
 
 function LookupView({
   view,
+  registry,
   query,
   onCheck,
 }: {
   view: View
+  registry: Registry
   query: string
   onCheck: (record: LookupRecord) => void
 }) {
@@ -249,13 +322,7 @@ function LookupView({
       // The subtitle already says what the page does; nothing shows until there is an answer.
       return null
     case 'loading':
-      return (
-        <ul aria-label="Searching the exclusion lists" className={LIST}>
-          {Array.from({ length: 3 }, (_, index) => (
-            <LookupRowSkeleton key={index} />
-          ))}
-        </ul>
-      )
+      return <ListsSkeleton />
     case 'error':
       return (
         <ErrorNote
@@ -269,20 +336,18 @@ function LookupView({
         </ErrorNote>
       )
     case 'empty':
+      // The registry still on its way: the lists' skeleton stays, never a wrong empty answer.
+      if (registry.kind === 'loading') return <ListsSkeleton />
+      // Something was found in the registry (or it did not answer): the registry section
+      // under the lists is the whole answer, with nothing for the empty lists (owner, 2026-11-10).
+      if (registry.kind === 'found' || registry.kind === 'error') return null
       return (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: view.refreshing ? 0.6 : 1, y: 0 }}
-          transition={{ duration: 0.2 }}
-          className="flex flex-col items-center gap-2 rounded-card bg-surface px-6 py-12 text-center shadow-card"
-        >
-          <EmptyDrawer />
-          <p className="mt-4 text-title">
-            {noMatchesLine(view.data.sources, view.data.state && stateName(view.data.state))} for “
-            {query}”
-          </p>
-          <ListsLine sources={view.data.sources} state={view.data.state} className="max-w-xl" />
-        </motion.div>
+        <EmptyAnswer
+          data={view.data}
+          query={query}
+          registry={registry.kind === 'none' ? registry : null}
+          refreshing={view.refreshing || (registry.kind === 'none' && registry.refreshing)}
+        />
       )
     case 'results': {
       const { records, sources } = view.data
@@ -294,13 +359,17 @@ function LookupView({
           className="flex flex-col gap-4"
         >
           <div className="flex flex-col gap-1">
-            <p className="text-subheading">
-              {matchesLine(
-                records.length,
-                LOOKUP_LIMIT,
-                view.data.state && stateName(view.data.state),
-              )}
-            </p>
+            {/* The lists' answer is named like the registry's: the place, then the count. */}
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h2 className="text-subheading">Exclusion lists</h2>
+              <span className="text-body text-ink-muted tabular-nums">
+                {matchesLine(
+                  records.length,
+                  LOOKUP_LIMIT,
+                  view.data.state && stateName(view.data.state),
+                )}
+              </span>
+            </div>
             <ListsLine sources={sources} state={view.data.state} className="max-w-5xl" />
           </div>
           <motion.ul
@@ -323,6 +392,57 @@ function LookupView({
       )
     }
   }
+}
+
+function ListsSkeleton() {
+  return (
+    <ul aria-label="Searching the exclusion lists" className={LIST}>
+      {Array.from({ length: 3 }, (_, index) => (
+        <LookupRowSkeleton key={index} />
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * Nothing anywhere: one illustrated card for the lists and, when it was searched, the NPI
+ * registry. A name adds the mirror's provenance and the way to ask the live registry; an NPI's
+ * card above already says what the registry holds.
+ */
+function EmptyAnswer({
+  data,
+  query,
+  registry,
+  refreshing,
+}: {
+  data: Lookup
+  query: string
+  registry: Extract<Registry, { kind: 'none' }> | null
+  refreshing: boolean
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: refreshing ? 0.6 : 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+      className="flex flex-col items-center gap-2 rounded-card bg-surface px-6 py-12 text-center shadow-card"
+    >
+      <EmptyDrawer />
+      <p className="mt-4 text-title">No matches for “{query}”</p>
+      <ListsLine
+        sources={data.sources}
+        state={data.state}
+        registry={registry !== null}
+        className="max-w-xl"
+      />
+      {registry?.name && (
+        <>
+          <MirrorLine mirror={registry.name.mirror} className="justify-center" />
+          <LiveSearchButton query={query} className="mt-4" />
+        </>
+      )}
+    </motion.div>
+  )
 }
 
 const INSTANT: Transition = { duration: 0 }

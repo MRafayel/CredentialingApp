@@ -418,7 +418,7 @@ async def test_a_row_removed_from_the_list_stays_latest_and_keeps_matching(
     ]
     assert [(r.id, r.valid_to) for r in found] == [(listed.id, LATER)]
     assert await _search_ids(repository, "qzxremoved") == [listed.id]
-    assert await repository.count_current(SOURCE) == 0
+    assert SOURCE not in await repository.current_counts()
 
 
 async def test_a_row_missing_from_a_reparse_of_the_same_bytes_is_superseded_not_removed(
@@ -601,22 +601,25 @@ async def test_get_many_with_no_ids(database: ConnectionSource) -> None:
     assert await PostgresExclusionRecordRepository(database).get_many([]) == []
 
 
-async def test_count_current_counts_only_this_sources_open_rows(
+async def test_current_counts_counts_each_sources_open_rows_in_one_mapping(
     database: ConnectionSource,
 ) -> None:
     repository = PostgresExclusionRecordRepository(database)
-    assert await repository.count_current(SOURCE) == 0
+    before = await repository.current_counts()
+    assert SOURCE not in before
     first_snapshot = await _snapshot(database)
     rows = [exclusion(snapshot_id=first_snapshot, last=name) for name in ("Aaname", "Bbname")]
     await repository.replace_current(SOURCE, first_snapshot, rows, NOW, source_changed=True)
-    assert await repository.count_current(SOURCE) == 2
+    assert (await repository.current_counts())[SOURCE] == 2
 
     second_snapshot = await _snapshot(database)
     kept = exclusion(snapshot_id=second_snapshot, last="Aaname", raw=rows[0].raw)
     await repository.replace_current(SOURCE, second_snapshot, [kept], LATER, source_changed=True)
 
-    assert await repository.count_current(SOURCE) == 1
-    assert await repository.count_current("test_other_list") == 0
+    after = await repository.current_counts()
+    assert after[SOURCE] == 1
+    assert "test_other_list" not in after
+    assert {k: v for k, v in after.items() if k != SOURCE} == before
 
 
 RELATED_NPI = make_npi("100000002")

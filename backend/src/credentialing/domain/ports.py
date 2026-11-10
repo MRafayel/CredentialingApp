@@ -223,8 +223,9 @@ class ExclusionRecordRepository(Protocol):
         ``npis``, ordered by source and id; none when ``npis`` is empty."""
         ...
 
-    async def count_current(self, source_id: SourceId) -> int:
-        """Return how many of the source's rows are current (``valid_to`` is null)."""
+    async def current_counts(self) -> Mapping[SourceId, int]:
+        """Return how many rows are current (``valid_to`` is null) per source, in one query; a
+        source without current rows is absent."""
         ...
 
 
@@ -364,7 +365,7 @@ class NpiRegistryRepository(Protocol):
 
     async def count(self, *, status: NpiStatus | None = None) -> int:
         """Return how many mirrored NPIs the latest file lists (``in_file``), optionally only
-        those with ``status``."""
+        those with ``status``; a stored count kept exact by the database, not a scan."""
         ...
 
     async def get_many(self, npis: Sequence[Npi]) -> Sequence[NpiRecord]:
@@ -372,13 +373,14 @@ class NpiRegistryRepository(Protocol):
         ...
 
     async def search(self, query: str, *, limit: int) -> Sequence[NpiRecord]:
-        """NPIs the latest file lists matching ``query`` exactly by key, active rows first.
+        """NPIs the latest file lists matching ``query`` by key, active rows first.
 
         Ten digits: that NPI. Otherwise the query's name key (the SQL ``name_key``, as
-        :func:`~credentialing.domain.names.normalize_name`) as a person's last and first name
-        in either order (and "first ... last"), one word as a last name, and the whole query as
-        an organization's name or other name without legal designators. At most ``limit``
-        rows, never more than 50. No prefix or fuzzy search.
+        :func:`~credentialing.domain.names.normalize_name`) read as a person's name by
+        :func:`~credentialing.domain.names.name_search_shapes` (the last word, still being
+        typed, as the start of its name part; every word must fit), and the whole query
+        exactly as an organization's name or other name without legal designators. At most
+        ``limit`` rows, never more than 50. No fuzzy search.
         """
         ...
 

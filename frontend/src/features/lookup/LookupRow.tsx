@@ -42,14 +42,21 @@ const COLUMNS =
 export function ListsLine({
   sources,
   state,
+  registry = false,
   className,
 }: {
   sources: readonly SearchedSource[]
   /** The state the search was narrowed to, from the response. */
   state: string | null
+  /** Whether the NPI registry was searched beside the lists, so the line names it too. */
+  registry?: boolean
   className?: string
 }) {
-  const scope = searchedScope(sources, state ? { code: state, name: stateName(state) } : null)
+  const scope = searchedScope(
+    sources,
+    state ? { code: state, name: stateName(state) } : null,
+    registry,
+  )
   return (
     <p className={`text-caption text-ink-muted ${className ?? ''}`}>
       {scope.where}

@@ -11,16 +11,14 @@ import { Skeleton } from '../../components/Skeleton.tsx'
 import { StatusLabel } from '../../components/Status.tsx'
 import { CalendarDate } from '../../components/Time.tsx'
 import { plural } from '../../lib/format.ts'
+import type { MirrorSource } from '../../lib/api.ts'
 import { registryStatusLabel } from '../../lib/labels.ts'
-import { useNpi, useNpiSearch } from '../../lib/queries.ts'
+import { useNpi, type useNpiSearch } from '../../lib/queries.ts'
 import { registryName } from '../../lib/registry.ts'
 import { CARD, CARD_LINK } from './cards.ts'
 import { NpiSearchSheet } from './NpiSearchSheet.tsx'
-import { summaryFacts } from './npiSearch.ts'
+import { NAME_LIMIT, summaryFacts } from './npiSearch.ts'
 import { LiveLine, RegistryRow, RegistryRowSkeleton } from './RegistryParts.tsx'
-
-/** How many registry rows a name lookup shows from the mirror. */
-const NAME_LIMIT = 10
 
 /** The small spaced-capital caption over a card's name, as a lookup card names its list. */
 const CAPTION =
@@ -116,19 +114,87 @@ function namesCount(count: number): string {
   return count >= NAME_LIMIT ? `First ${count} NPIs` : plural(count, 'NPI')
 }
 
+/** The mirror search a name lookup runs (`useNpiSearch` with `NAME_LIMIT`), owned by the page. */
+export type NameSearch = ReturnType<typeof useNpiSearch>
+
+/**
+ * Where the mirror's answer comes from ("Cached · NPPES monthly file · as of Nov 2, 2026"), or
+ * that the mirror is not loaded, so an empty answer is never read as a searched registry.
+ */
+export function MirrorLine({
+  mirror,
+  className,
+}: {
+  mirror: MirrorSource | null
+  className?: string
+}) {
+  return mirror ? (
+    <SourceLine block={mirror} kind="mirror" className={className} />
+  ) : (
+    <p
+      className={`inline-flex items-center gap-1.5 text-small font-semibold text-ink ${className ?? ''}`}
+    >
+      <VerdictBlocked size={13} className="shrink-0" />
+      The registry mirror is not loaded
+    </p>
+  )
+}
+
+/** "Search NPPES live" and the sheet it opens, prefilled from the lookup's query. */
+export function LiveSearchButton({ query, className }: { query: string; className?: string }) {
+  const [asking, setAsking] = useState(false)
+  return (
+    <>
+      <Button variant="secondary" icon="bolt" className={className} onClick={() => setAsking(true)}>
+        Search NPPES live
+      </Button>
+      <AnimatePresence>
+        {asking && <NpiSearchSheet query={query} onClose={() => setAsking(false)} />}
+      </AnimatePresence>
+    </>
+  )
+}
+
+/**
+ * Under the lists' matches when the mirror has no NPI with this name: one muted line (the
+ * fact and where it comes from) over the way to ask the live registry, centred. Not a section.
+ */
+export function RegistryNote({ query, mirror }: { query: string; mirror: MirrorSource | null }) {
+  return (
+    <div className="mt-8 flex flex-col items-center gap-4 text-center lg:mt-10">
+      <p className="flex flex-wrap items-center justify-center gap-x-1.5 text-small text-ink-muted">
+        <span>No NPI with this name in the registry</span>
+        {/* The dot wraps with the source line, never left dangling at a line's end. */}
+        <span className="inline-flex flex-wrap items-center gap-x-1.5">
+          <span aria-hidden="true">·</span>
+          <MirrorLine mirror={mirror} />
+        </span>
+      </p>
+      <LiveSearchButton query={query} />
+    </div>
+  )
+}
+
 /**
  * A name lookup's answer from the registry, under the exclusion results: the mirror's NPIs with
  * exactly this name, as of the mirror's load, and the way to ask the live registry instead.
  */
-export function RegistryNames({ q }: { q: string }) {
-  const search = useNpiSearch({ q, limit: NAME_LIMIT }, true)
-  const [asking, setAsking] = useState(false)
+export function RegistryNames({
+  q,
+  search,
+  alone = false,
+}: {
+  q: string
+  search: NameSearch
+  /** Whether the section is the whole answer (the lists found nothing): no room above it. */
+  alone?: boolean
+}) {
   const data = search.data
   return (
-    <section aria-labelledby="registry-heading" className="mt-12 lg:mt-16">
+    <section aria-labelledby="registry-heading" className={alone ? '' : 'mt-12 lg:mt-16'}>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h2 id="registry-heading" className="text-subheading">
-          In the NPI registry
+          NPI Registry
         </h2>
         {data && (
           <span className="text-body text-ink-muted tabular-nums">
@@ -136,15 +202,7 @@ export function RegistryNames({ q }: { q: string }) {
           </span>
         )}
       </div>
-      {data &&
-        (data.mirror ? (
-          <SourceLine block={data.mirror} kind="mirror" className="mt-1" />
-        ) : (
-          <p className="mt-1 inline-flex items-center gap-1.5 text-small font-semibold text-ink">
-            <VerdictBlocked size={13} className="shrink-0" />
-            The registry mirror is not loaded
-          </p>
-        ))}
+      {data && <MirrorLine mirror={data.mirror} className="mt-1" />}
       <div className="mt-4">
         {search.isError && !data ? (
           <ErrorNote
@@ -177,12 +235,7 @@ export function RegistryNames({ q }: { q: string }) {
           )
         )}
       </div>
-      <Button variant="secondary" icon="bolt" className="mt-4" onClick={() => setAsking(true)}>
-        Search NPPES live
-      </Button>
-      <AnimatePresence>
-        {asking && <NpiSearchSheet query={q} onClose={() => setAsking(false)} />}
-      </AnimatePresence>
+      <LiveSearchButton query={q} className="mt-4" />
     </section>
   )
 }

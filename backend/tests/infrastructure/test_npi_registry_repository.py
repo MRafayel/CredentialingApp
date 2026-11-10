@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Final
 from uuid import UUID, uuid4
 
 import pytest
@@ -76,6 +77,29 @@ class _Mirror:
             )
             return [(row[0], row[1], row[2], row[3]) for row in await cursor.fetchall()]
 
+    async def counted(self) -> tuple[int, int, int]:
+        """The stored counts as the repository answers them: listed, active, deactivated."""
+        return (
+            await self.repository.count(),
+            await self.repository.count(status=NpiStatus.ACTIVE),
+            await self.repository.count(status=NpiStatus.DEACTIVATED),
+        )
+
+    async def scanned(self) -> tuple[int, int, int]:
+        """The same three counts taken from the mirror's rows."""
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                """
+                select count(*) filter (where in_file),
+                    count(*) filter (where in_file and status = 'active'),
+                    count(*) filter (where in_file and status = 'deactivated')
+                from npi_registry
+                """
+            )
+            row = await cursor.fetchone()
+        assert row is not None
+        return int(row[0]), int(row[1]), int(row[2])
+
     async def history_count(self) -> int:
         async with self._database.connection() as connection:
             cursor = await connection.execute("select count(*) from npi_registry_history")
@@ -131,6 +155,42 @@ async def test_a_first_load_adds_every_row_and_get_round_trips_every_field(
     assert await mirror.repository.count() == len(rows)
     assert await mirror.repository.count(status=NpiStatus.DEACTIVATED) == 1
     assert await mirror.repository.get(make_npi("199999999")) is None
+
+
+async def test_the_stored_count_follows_every_kind_of_write(
+    mirror: _Mirror, database: ConnectionSource, tmp_path: Path
+) -> None:
+    assert await mirror.counted() == (0, 0, 0)
+
+    await mirror.load_rows([b.person(), b.organization(), b.reactivated()])
+    assert await mirror.counted() == await mirror.scanned() == (3, 3, 0)
+    renamed = b.organization(
+        **{c.ORGANIZATION_NAME: "SAMPLEVILLE CARE GROUP PLLC", c.LAST_UPDATE_DATE: "01/02/2026"}
+    )
+    await mirror.load_rows([renamed, b.stub()], mode=DatasetLoadMode.INCREMENTAL, now=LATER)
+    assert await mirror.counted() == await mirror.scanned() == (4, 3, 1)
+    dropped = await mirror.load_rows([renamed, b.reactivated(), b.stub()], now=LATER)
+    assert dropped.missing == 1
+    assert await mirror.counted() == await mirror.scanned() == (3, 2, 1)
+
+    path = tmp_path / "deactivations.zip"
+    path.write_bytes(
+        b.deactivation_zip(
+            rows=((b.ORGANIZATION_NPI, "01/05/2026"), (make_npi("150000088"), "06/15/2019"))
+        )
+    )
+    snapshot_id = await mirror.snapshot()
+    await mirror.repository.load(
+        NppesDeactivationDataset(path, snapshot_id),
+        mode=DatasetLoadMode.DEACTIVATIONS,
+        snapshot_id=snapshot_id,
+        now=EVEN_LATER,
+    )
+    assert await mirror.counted() == await mirror.scanned() == (4, 1, 3)
+
+    async with database.connection() as connection:
+        await connection.execute(t"delete from npi_registry where npi = {b.STUB_NPI}")
+    assert await mirror.counted() == await mirror.scanned() == (3, 1, 2)
 
 
 async def test_loading_the_same_file_again_writes_nothing(mirror: _Mirror) -> None:
@@ -370,3 +430,62 @@ async def test_an_api_answer_loads_incrementally_and_the_next_file_row_replaces_
     assert not from_file.line_hash.startswith("api:")
     assert from_file.credential == "M.D."
     assert [entry[0] for entry in await mirror.history(b.PERSON_NPI)] == ["api:" + "a" * 64]
+
+
+# --- Search ---------------------------------------------------------------------------------
+
+JORDAN: Final = make_npi("151000001")
+QUINN: Final = make_npi("151000002")
+RILEY: Final = make_npi("151000003")
+
+
+async def _search_world(mirror: _Mirror) -> None:
+    await mirror.load_rows(
+        [
+            b.person(JORDAN, **{c.LAST_NAME: "TESTBAKER", c.MIDDLE_NAME: "JORDAN"}),
+            b.person(QUINN, **{c.LAST_NAME: "TESTBAKER", c.MIDDLE_NAME: "QUINN"}),
+            b.person(RILEY, **{c.LAST_NAME: "TESTBAKERSON", c.FIRST_NAME: "RILEY"}),
+            b.organization(),
+        ]
+    )
+
+
+async def _found(mirror: _Mirror, query: str, limit: int = 20) -> list[str]:
+    return [record.npi for record in await mirror.repository.search(query, limit=limit)]
+
+
+async def test_the_last_typed_word_is_the_start_of_a_name(mirror: _Mirror) -> None:
+    await _search_world(mirror)
+
+    assert await _found(mirror, "Avery Te") == [JORDAN, QUINN]
+    assert await _found(mirror, "Avery Testbaker") == [JORDAN, QUINN]
+    assert await _found(mirror, "Testbaker Av") == [JORDAN, QUINN]
+    assert await _found(mirror, "Testbaker A") == [JORDAN, QUINN]
+    assert await _found(mirror, "Riley T") == []
+
+
+async def test_one_word_is_the_start_of_a_last_name_in_name_order(mirror: _Mirror) -> None:
+    await _search_world(mirror)
+
+    assert await _found(mirror, "Testbak") == [JORDAN, QUINN, RILEY]
+    assert await _found(mirror, "Testbak", limit=1) == [JORDAN]
+    assert await _found(mirror, "Testbakers") == [RILEY]
+    assert await _found(mirror, "T") == []
+
+
+async def test_every_word_must_fit_and_inner_words_are_the_middle_name(mirror: _Mirror) -> None:
+    await _search_world(mirror)
+
+    assert await _found(mirror, "Avery Testbaker ased") == []
+    assert await _found(mirror, "Avery J Testbaker") == [JORDAN]
+    assert await _found(mirror, "Avery Quinn Testb") == [QUINN]
+    assert await _found(mirror, "Testbaker Avery Q") == [QUINN]
+    assert await _found(mirror, "Testbaker Avery Jor") == [JORDAN]
+
+
+async def test_an_organization_name_is_still_matched_whole(mirror: _Mirror) -> None:
+    await _search_world(mirror)
+
+    assert await _found(mirror, "The Sampleville Care Group, Inc.") == [b.ORGANIZATION_NPI]
+    assert await _found(mirror, "Sampleville Clinic") == [b.ORGANIZATION_NPI]
+    assert await _found(mirror, "Sampleville Ca") == []

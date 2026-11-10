@@ -187,10 +187,11 @@ class NpiLookup:
     ) -> NpiSearchResult:
         """NPIs matching ``text`` in the mirror, or ``query`` in the live registry (``live``).
 
-        Mirror: exact by key (an NPI, or a name), at most ``limit`` and never more than
-        :data:`MAX_RESULTS`; fewer than two letters or digits search nothing. Live: one
-        request for at most ``limit`` (up to :data:`LIVE_MAX_RESULTS`), every result newer
-        than the mirror stored in one load, the results in the registry's order.
+        Mirror: by key (an NPI, or a name whose last word may be cut short), at most
+        ``limit`` and never more than :data:`MAX_RESULTS`; fewer than two letters or digits
+        search nothing. Live: one request for at most ``limit`` (up to
+        :data:`LIVE_MAX_RESULTS`), every result newer than the mirror stored in one load, the
+        results in the registry's order.
 
         Raises:
             ValueError: ``live`` without a ``query``.

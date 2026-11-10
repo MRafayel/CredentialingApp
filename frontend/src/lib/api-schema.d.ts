@@ -278,12 +278,13 @@ export interface paths {
     }
     /**
      * Search Npis
-     * @description NPIs of the mirror matching ``q`` exactly, or with ``live`` of the live registry.
+     * @description NPIs of the mirror matching ``q`` as typed, or with ``live`` of the live registry.
      *
      *     Mirror (default): ``q`` as ten digits (an NPI), a person's "last first" or "first last"
-     *     name, one word as a last name, or an organization's name without legal designators;
-     *     active NPIs first; at most 50 (20 by default). Fewer than two letters or digits search
-     *     nothing. Prefix and fuzzy search are not offered.
+     *     name whose last word is the start of a name part (as a last name from two characters;
+     *     every word must fit, inner words the middle name), one word as the start of a last name,
+     *     or an organization's whole name without legal designators; active NPIs first; at most 50
+     *     (20 by default). Fewer than two letters or digits search nothing. No fuzzy search.
      *
      *     Live: ``q`` is ignored and the structured fields are sent to the NPPES API in one request
      *     (a last name or an organization name is required; a name may end with ``*`` after two

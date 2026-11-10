@@ -7,6 +7,9 @@ import type { NpiSearchQuery, NpiSummary } from '../../lib/api.ts'
 import { entityKindWord } from '../../lib/provider.ts'
 import { isNpi, registryPlace } from '../../lib/registry.ts'
 
+/** How many registry rows a name lookup shows from the mirror. */
+export const NAME_LIMIT = 10
+
 /** A query that can be a name: not an NPI, at least two letters and no run of digits. */
 export function isNameQuery(query: string): boolean {
   const q = query.trim()

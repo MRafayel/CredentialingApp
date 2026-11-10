@@ -162,6 +162,44 @@ describe('searchedLine', () => {
   })
 })
 
+describe('searchedLine with the NPI registry', () => {
+  it('adds the registry as the last place searched', () => {
+    expect(searchedLine([federal, state, older, regional], null, true)).toBe(
+      'Searched 3 states, the federal list and the NPI registry',
+    )
+    expect(searchedLine([state], null, true)).toBe('Searched 1 state and the NPI registry')
+    expect(searchedLine([federal, regional, never], null, true)).toBe(
+      'Searched 2 states, the federal list and the NPI registry · 1 list not loaded',
+    )
+  })
+
+  it('names the registry alone when no list was loaded', () => {
+    expect(searchedLine([never], null, true)).toBe('Searched the NPI registry · 1 list not loaded')
+  })
+
+  it('narrowed to a state, lists its own list, the federal list and the registry', () => {
+    expect(searchedLine([federal, state, older], WASHINGTON, true)).toBe(
+      'Searched in Washington · its state list, the federal list and the NPI registry',
+    )
+    expect(searchedLine([federal, older], WASHINGTON, true)).toBe(
+      'Searched in Washington · no state list yet, the federal list and the NPI registry only',
+    )
+    expect(searchedLine([older], WASHINGTON, true)).toBe(
+      'Searched in Washington · no state list yet, the NPI registry only',
+    )
+  })
+
+  it('keeps the lists-only wording by default', () => {
+    expect(searchedLine([federal, state], null, false)).toBe(
+      'Searched 1 state and the federal list',
+    )
+    expect(searchedScope([federal, state], WASHINGTON)).toEqual({
+      where: 'Searched in Washington · its state list and the federal list',
+      notLoaded: 0,
+    })
+  })
+})
+
 describe('searchedCount', () => {
   it('counts only loaded lists as searched', () => {
     expect(searchedCount([federal, state, never])).toBe(2)

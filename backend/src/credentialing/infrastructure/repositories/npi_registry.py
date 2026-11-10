@@ -55,6 +55,7 @@ from credentialing.domain.models import (
     NpiTaxonomy,
     PersonName,
 )
+from credentialing.domain.names import NameTerm, name_search_shapes
 from credentialing.domain.ports import Dataset
 from credentialing.domain.types import Npi
 from credentialing.infrastructure.database import ConnectionSource
@@ -216,17 +217,27 @@ class PostgresNpiRegistryRepository:
         return row.to_domain() if row else None
 
     async def count(self, *, status: NpiStatus | None = None) -> int:
-        """Return how many mirrored NPIs the latest file lists, optionally with ``status``."""
-        wanted = status.value if status else None
+        """Return how many mirrored NPIs the latest file lists, optionally with ``status``.
+
+        Read from ``npi_registry_count``, which triggers on ``npi_registry`` keep exact
+        (counting ten million rows took seconds). The mirror's statuses are active and
+        deactivated only, so the deactivated count is the listed minus the active rows.
+        """
         async with self._database.connection() as connection:
             cursor = await connection.execute(
-                t"""
-                select count(*) from npi_registry
-                where in_file and ({wanted}::text is null or status = {wanted})
-                """
+                "select in_file, active from npi_registry_count where singleton"
             )
             row = await cursor.fetchone()
-        return int(row[0]) if row else 0
+        if row is None:
+            return 0
+        listed, active = int(row[0]), int(row[1])
+        match status:
+            case None:
+                return listed
+            case NpiStatus.ACTIVE:
+                return active
+            case NpiStatus.DEACTIVATED:
+                return listed - active
 
     async def get_many(self, npis: Sequence[Npi]) -> Sequence[NpiRecord]:
         """Return the mirrored records of these NPIs that exist, in no particular order."""
@@ -242,15 +253,18 @@ class PostgresNpiRegistryRepository:
         return [row.to_domain() for row in rows]
 
     async def search(self, query: str, *, limit: int) -> Sequence[NpiRecord]:
-        """NPIs the latest file lists matching ``query`` exactly by key, active rows first.
+        """NPIs the latest file lists matching ``query`` by key, active rows first.
 
         Ten digits look up that NPI. Otherwise the keys are computed in SQL (``name_key``,
-        ``organization_key``) and each candidate shape is one index lookup, at most
-        ``limit`` NPIs each: the whole query as an organization's name or other name; one
-        word as a last name; several words as "last first", "first last" and "first ...
-        last". The NPIs found are then ordered active first, then by name and NPI. A very
-        common surname returns the first ``limit`` namesakes in key order (first name, then
-        NPI), so "active first" orders those. Prefix and fuzzy search are not in stage 2.
+        ``organization_key``) and each candidate shape is one index range, at most ``limit``
+        NPIs each: the whole query exactly as an organization's name or other name, and the
+        person readings of :func:`~credentialing.domain.names.name_search_shapes`, whose
+        last word is matched as the start of a name because the user is still typing ("Avery
+        Te" finds "Testbaker, Avery"; one word is the start of a last name; three or more
+        words must all fit, the middle ones the middle name). The NPIs found are then ordered active
+        first, then by name and NPI. A very common surname returns the first ``limit``
+        namesakes in key order (last name, first name, NPI), so "active first" orders those.
+        Organization names stay exact; there is no fuzzy search.
         """
         size = min(max(limit, 1), MAX_SEARCH_RESULTS)
         term = query.strip()
@@ -282,30 +296,28 @@ class PostgresNpiRegistryRepository:
 async def _search_npis(
     connection: AsyncConnection[TupleRow], keys: tuple[str | None, str | None], size: int
 ) -> list[str]:
-    """The NPIs whose keys equal the query's, one index lookup per shape, ``size`` each."""
+    """The NPIs of the query's person shapes and organization key, ``size`` per lookup.
+
+    Each person shape is one range of ``npi_registry_person_key_idx`` (a LIKE on the C
+    collation keys is an index range; a pattern without ``%`` an equality), its middle name
+    filtered on the rows the range found. The statements are never prepared: a generic plan
+    cannot turn a LIKE parameter into an index range.
+    """
     name, organization = keys
-    words = name.split() if name else []
-    people: list[tuple[str, str]] = []
-    if len(words) >= 2:
-        people = list(
-            dict.fromkeys([(words[0], words[1]), (words[1], words[0]), (words[-1], words[0])])
-        )
     found: list[str] = []
-    for last, first in people:
+    for shape in name_search_shapes(name.split() if name else []):
+        last = like_pattern(shape.last)
+        first = like_pattern(shape.first) if shape.first else None
+        middle = " ".join(like_pattern(term) for term in shape.middle) or None
         cursor = await connection.execute(
             t"""
             select npi from npi_registry
-            where in_file and last_name_key = {last} and first_name_key = {first}
-            order by npi limit {size}
-            """
-        )
-        found += [row[0] for row in await cursor.fetchall()]
-    if len(words) == 1:
-        cursor = await connection.execute(
-            t"""
-            select npi from npi_registry where in_file and last_name_key = {words[0]}
-            order by first_name_key, npi limit {size}
-            """
+            where in_file and last_name_key like {last}
+                and ({first}::text is null or first_name_key like {first})
+                and ({middle}::text is null or name_key(middle_name) like {middle})
+            order by last_name_key, first_name_key, npi limit {size}
+            """,
+            prepare=False,
         )
         found += [row[0] for row in await cursor.fetchall()]
     if organization:
@@ -321,6 +333,12 @@ async def _search_npis(
         )
         found += [row[0] for row in await cursor.fetchall()]
     return list(dict.fromkeys(found))
+
+
+def like_pattern(term: NameTerm) -> str:
+    """``term`` as a LIKE pattern: ``%``, ``_`` and backslash escaped, ``%`` after a prefix."""
+    escaped = term.text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%" if term.prefix else escaped
 
 
 @dataclass(frozen=True, slots=True)
@@ -606,13 +624,16 @@ class _Load:
         """Version and flag the mirrored rows a full file no longer lists; return how many.
 
         After the upsert every one of the file's ``distinct`` NPIs is listed, so when the
-        mirror lists exactly that many rows none is missing and the anti-join is skipped (one
-        count instead of a join over ten million rows each; the first load spent three
-        minutes in it). Otherwise the anti-join runs once, into ``npi_missing``; versioning
-        and flagging then join that short list.
+        mirror lists exactly that many rows none is missing and the anti-join is skipped (the
+        stored count, kept by the triggers through the upsert's own statements, instead of a
+        join over ten million rows each; the first load spent three minutes in it). Otherwise
+        the anti-join runs once, into ``npi_missing``; versioning and flagging then join that
+        short list.
         """
         connection = self._connection
-        (listed,) = await _counts(connection, "select count(*) from npi_registry where in_file")
+        (listed,) = await _counts(
+            connection, "select coalesce(max(in_file), 0) from npi_registry_count"
+        )
         if listed == distinct:
             return 0
         await connection.execute(

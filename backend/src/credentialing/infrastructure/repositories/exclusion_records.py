@@ -8,7 +8,7 @@ data: no organization owns them.
 
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Final
 from uuid import UUID
@@ -503,15 +503,18 @@ class PostgresExclusionRecordRepository:
             rows = await cursor.fetchall()
         return [row.to_domain() for row in rows]
 
-    async def count_current(self, source_id: SourceId) -> int:
-        """Return how many of the source's rows are current (``valid_to`` is null)."""
+    async def current_counts(self) -> Mapping[SourceId, int]:
+        """Return how many rows are current (``valid_to`` is null) per source, in one grouped
+        query (one scan instead of one per source); a source without current rows is absent."""
         async with self._database.connection() as connection:
             cursor = await connection.execute(
-                t"select count(*) from exclusion_records"
-                t" where source_id = {source_id} and valid_to is null"
+                """
+                select source_id, count(*) from exclusion_records
+                where valid_to is null group by source_id
+                """
             )
-            row = await cursor.fetchone()
-        return int(row[0]) if row else 0
+            rows = await cursor.fetchall()
+        return {str(source_id): int(count) for source_id, count in rows}
 
 
 def _lock_key(source_id: str) -> int:
