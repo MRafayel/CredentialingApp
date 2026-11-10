@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { ProviderVerdict } from './api.ts'
 import {
   freshnessLabel,
+  matchLevelLabel,
+  npiStatusLabel,
   outcomeWord,
   recordStatusLabel,
+  registryStatusLabel,
   resultLabel,
   verdictLabel,
 } from './labels.ts'
@@ -142,5 +145,41 @@ describe('recordStatusLabel', () => {
       tone: 'review',
       word: 'Removed from published list',
     })
+  })
+})
+
+describe('the NPI registry labels', () => {
+  it('names an NPI verification by the registry status the backend put in its details', () => {
+    const base = { outcome: 'completed' as const, finding: 'record_found' as const }
+    expect(resultLabel({ ...base, details: { npi_status: 'active' } })).toEqual({
+      tone: 'clear',
+      word: 'Active',
+    })
+    expect(resultLabel({ ...base, details: { npi_status: 'deactivated' } })).toEqual({
+      tone: 'listed',
+      word: 'Deactivated',
+    })
+    expect(
+      resultLabel({ ...base, finding: 'no_record', details: { npi_status: 'not_found' } }),
+    ).toEqual({ tone: 'review', word: 'Not in NPPES' })
+    expect(
+      resultLabel({ ...base, finding: 'ambiguous', details: { npi_status: 'mirror_only_active' } }),
+    ).toEqual({ tone: 'review', word: 'Needs review' })
+    expect(
+      resultLabel({ outcome: 'manual_required', finding: null, details: { reason: 'no_npi' } }),
+    ).toEqual({ tone: 'review', word: 'No NPI on file' })
+    // An exclusion result with no registry status reads as before.
+    expect(resultLabel({ ...base, details: {} })).toEqual({ tone: 'listed', word: 'Record found' })
+  })
+
+  it('gives every registry status, NPI status and match level a tone and a word', () => {
+    expect(registryStatusLabel('unknown')).toEqual({ tone: 'blocked', word: 'Could not check' })
+    expect(npiStatusLabel('active')).toEqual({ tone: 'clear', word: 'Active' })
+    expect(npiStatusLabel('deactivated')).toEqual({ tone: 'listed', word: 'Deactivated' })
+    expect(matchLevelLabel('exact')).toEqual({ tone: 'clear', word: 'Exact' })
+    expect(matchLevelLabel('high')).toEqual({ tone: 'clear', word: 'High' })
+    expect(matchLevelLabel('potential')).toEqual({ tone: 'review', word: 'Potential' })
+    expect(matchLevelLabel('ambiguous')).toEqual({ tone: 'review', word: 'Ambiguous' })
+    expect(matchLevelLabel('none')).toEqual({ tone: 'neutral', word: 'No match' })
   })
 })

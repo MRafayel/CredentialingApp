@@ -27,12 +27,29 @@ export type ExclusionAction = LookupRecord['action']
 export type Outcome = Verification['outcome']
 export type Freshness = Verification['freshness']
 export type SourceHealth = SourceStatus['health']
+export type DatasetLoad = Schemas['DatasetLoadResponse']
+// The NPI registry (P1): the mirror of NPPES, the live registry, links and suggestions.
+export type NpiLookup = Schemas['NpiLookupResponse']
+export type NpiSearch = Schemas['NpiSearchResponse']
+export type NpiSearchQuery = NonNullable<paths['/npi/search']['get']['parameters']['query']>
+export type NpiSummary = Schemas['NpiSummaryResponse']
+export type NpiRecord = Schemas['NpiRecordResponse']
+export type NpiLink = Schemas['NpiLinkResponse']
+export type NpiSuggestions = Schemas['NpiSuggestionsResponse']
+export type NpiSuggestion = Schemas['NpiSuggestionResponse']
+export type LiveCheck = Schemas['LiveCheckResponse']
+export type MirrorSource = Schemas['MirrorResponse']
+export type RegistryStatus = Schemas['RegistryStatus']
+export type MatchLevel = Schemas['MatchLevel']
+export type MatchEvidence = Schemas['MatchEvidenceResponse']
+export type NpiStatus = NpiSummary['status']
+export type ProviderNpi = Schemas['ProviderNpiResponse']
 
 /** The seeded development organization; override with VITE_ORGANIZATION_ID. */
 const DEFAULT_ORGANIZATION_ID = '00000000-0000-0000-0000-000000000001'
 const ORGANIZATION_ID = import.meta.env.VITE_ORGANIZATION_ID || DEFAULT_ORGANIZATION_ID
 
-type Method = 'get' | 'post'
+type Method = 'get' | 'post' | 'put'
 type PathsWith<M extends Method> = {
   [P in keyof paths]: undefined extends paths[P][M] ? never : P
 }[keyof paths]
@@ -141,4 +158,12 @@ export function post<P extends PathsWith<'post'>>(
 ): Promise<SuccessBody<Operation<P, 'post'>>> {
   const url = buildUrl(path, options?.path, options?.query)
   return request('post', url, options?.body, options?.signal)
+}
+
+export function put<P extends PathsWith<'put'>>(
+  path: P,
+  ...[options]: Args<Operation<P, 'put'>, { body?: RequestBody<Operation<P, 'put'>> }>
+): Promise<SuccessBody<Operation<P, 'put'>>> {
+  const url = buildUrl(path, options?.path, options?.query)
+  return request('put', url, options?.body, options?.signal)
 }

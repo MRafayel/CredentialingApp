@@ -41,6 +41,6 @@ describe('entityKindWord', () => {
   it('names each kind, and says so when the source does not', () => {
     expect(entityKindWord('individual')).toBe('Individual')
     expect(entityKindWord('organization')).toBe('Organization')
-    expect(entityKindWord('unknown')).toBe('Unknown kind')
+    expect(entityKindWord('unknown')).toBe('Kind not published')
   })
 })

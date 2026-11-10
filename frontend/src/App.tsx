@@ -12,6 +12,7 @@ import { ProvidersPage } from './features/providers/ProvidersPage.tsx'
 import { Atmosphere } from './features/shell/Atmosphere.tsx'
 import { TabBar } from './features/shell/TabBar.tsx'
 import { TopBar } from './features/shell/TopBar.tsx'
+import { NpiPage } from './features/npi/NpiPage.tsx'
 import { SourcesPage } from './features/sources/SourcesPage.tsx'
 
 /**
@@ -70,6 +71,7 @@ export default function App() {
                     <Route path="/" element={<Navigate to="/lookup" replace />} />
                     <Route path="/lookup" element={<LookupPage />} />
                     <Route path="/lookup/:recordId" element={<RecordPage />} />
+                    <Route path="/npi/:npi" element={<NpiPage />} />
                     <Route path="/providers" element={<ProvidersPage />} />
                     <Route path="/providers/new" element={<ProvidersPage />} />
                     <Route path="/providers/:id" element={<ProviderPage />} />

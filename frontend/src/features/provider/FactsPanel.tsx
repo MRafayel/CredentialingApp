@@ -3,6 +3,7 @@ import { CopyValue } from '../../components/CopyValue.tsx'
 import { CodePill } from '../../components/Status.tsx'
 import { DateOf } from '../../components/Time.tsx'
 import type { Provider } from '../../lib/api.ts'
+import { RegistryLink } from './RegistryLink.tsx'
 
 /** One term and its value in a facts panel. */
 export function Fact({ term, children }: { term: string; children: ReactNode }) {
@@ -39,7 +40,14 @@ export function FactsPanel({ provider }: { provider: Provider }) {
           <Fact term="Organization">{provider.organization_name ?? NONE}</Fact>
         )}
         <Fact term="NPI">
-          {provider.npi ? <CopyValue value={provider.npi} label="NPI" className="-ml-1.5" /> : NONE}
+          {provider.npi ? (
+            <span className="flex flex-wrap items-center gap-x-1">
+              <CopyValue value={provider.npi} label="NPI" className="-ml-1.5" />
+              <RegistryLink npi={provider.npi} />
+            </span>
+          ) : (
+            NONE
+          )}
         </Fact>
         {provider.entity_kind === 'individual' && (
           <Fact term="Date of birth on file">{provider.has_date_of_birth ? 'Yes' : 'No'}</Fact>

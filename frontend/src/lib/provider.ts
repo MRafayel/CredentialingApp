@@ -31,7 +31,7 @@ export function providerStates(provider: Pick<Provider, 'licenses' | 'addresses'
   return [...states].sort()
 }
 
-/** The kind of party in words; a source that does not say gives "Unknown kind". */
+/** The kind of party in words; a source that does not say gives "Kind not published". */
 export function entityKindWord(kind: Provider['entity_kind']): string {
   switch (kind) {
     case 'organization':
@@ -39,6 +39,6 @@ export function entityKindWord(kind: Provider['entity_kind']): string {
     case 'individual':
       return 'Individual'
     case 'unknown':
-      return 'Unknown kind'
+      return 'Kind not published'
   }
 }

@@ -3,7 +3,16 @@
  * word. Nothing here decides a status; the verdict, findings, outcomes and freshness arrive
  * from the backend and are only named.
  */
-import type { Freshness, Outcome, ProviderVerdict, RecordStatus, Verification } from './api.ts'
+import type {
+  Freshness,
+  MatchLevel,
+  NpiStatus,
+  Outcome,
+  ProviderVerdict,
+  RecordStatus,
+  RegistryStatus,
+  Verification,
+} from './api.ts'
 import { plural } from './format.ts'
 
 /** The status colours; each always travels with a symbol and a word. */
@@ -70,6 +79,12 @@ const REMOVED_WORD = 'Removed from published list'
 export function resultLabel(
   result: Pick<Verification, 'outcome' | 'finding'> & Partial<Pick<Verification, 'details'>>,
 ): Label {
+  // An NPI verification (credential type `npi`) names the registry's status instead.
+  const npiStatus = result.details?.npi_status
+  if (npiStatus && isRegistryStatus(npiStatus)) return registryStatusLabel(npiStatus)
+  if (result.outcome === 'manual_required' && result.details?.reason === 'no_npi') {
+    return { tone: 'review', word: 'No NPI on file' }
+  }
   if (result.outcome !== 'completed') {
     return { tone: 'blocked', word: OUTCOME_WORDS[result.outcome] }
   }
@@ -127,5 +142,65 @@ export function freshnessLabel(freshness: Freshness): Label {
       return { tone: 'review', word: 'Stale' }
     case 'manual':
       return { tone: 'neutral', word: 'Manually verified' }
+  }
+}
+
+// --- The NPI registry -----------------------------------------------------------------------
+
+const REGISTRY_STATUSES: readonly RegistryStatus[] = [
+  'active',
+  'deactivated',
+  'not_found',
+  'mirror_only_active',
+  'unknown',
+]
+
+function isRegistryStatus(value: string): value is RegistryStatus {
+  return (REGISTRY_STATUSES as readonly string[]).includes(value)
+}
+
+/**
+ * The backend's one-word conclusion about an NPI. "Not in NPPES" and "Needs review" (the mirror
+ * lists it active, the live registry returned nothing) are amber; "Could not check" is never
+ * clean.
+ */
+export function registryStatusLabel(status: RegistryStatus): Label {
+  switch (status) {
+    case 'active':
+      return { tone: 'clear', word: 'Active' }
+    case 'deactivated':
+      return { tone: 'listed', word: 'Deactivated' }
+    case 'not_found':
+      return { tone: 'review', word: 'Not in NPPES' }
+    case 'mirror_only_active':
+      return { tone: 'review', word: 'Needs review' }
+    case 'unknown':
+      return { tone: 'blocked', word: 'Could not check' }
+  }
+}
+
+/** A registry row's own status, as the NPPES files publish it. */
+export function npiStatusLabel(status: NpiStatus): Label {
+  return status === 'active'
+    ? { tone: 'clear', word: 'Active' }
+    : { tone: 'listed', word: 'Deactivated' }
+}
+
+/**
+ * How strongly a record or a roster provider points at an NPI, as the backend decided. Exact
+ * and high read clear; potential and ambiguous are for a person to weigh (amber); none is quiet.
+ */
+export function matchLevelLabel(level: MatchLevel): Label {
+  switch (level) {
+    case 'exact':
+      return { tone: 'clear', word: 'Exact' }
+    case 'high':
+      return { tone: 'clear', word: 'High' }
+    case 'potential':
+      return { tone: 'review', word: 'Potential' }
+    case 'ambiguous':
+      return { tone: 'review', word: 'Ambiguous' }
+    case 'none':
+      return { tone: 'neutral', word: 'No match' }
   }
 }

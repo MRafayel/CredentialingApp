@@ -9,10 +9,11 @@ import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
 import { Skeleton } from '../../components/Skeleton.tsx'
 import { CodePill, Freshness, StatusLabel } from '../../components/Status.tsx'
 import { Ago, DateOf, Until } from '../../components/Time.tsx'
-import type { SourceStatus } from '../../lib/api.ts'
+import type { DatasetLoad, SourceStatus } from '../../lib/api.ts'
 import { freshnessLabel } from '../../lib/labels.ts'
 import { useSources } from '../../lib/queries.ts'
 import { healthLabel, sourcesSummary } from '../../lib/sources.ts'
+import { loadLine } from './load.ts'
 
 const NONE = <span className="text-ink-muted">—</span>
 /** A loaded list whose source gives no date of its own: never the fetch time in its place. */
@@ -128,13 +129,16 @@ function SourcesTable({ sources }: { sources: readonly SourceStatus[] }) {
 
 function SourceTableRows({ source }: { source: SourceStatus }) {
   const loaded = source.latest_completed !== null
+  const load = datasetLoad(source)
   const pad = 'px-4 align-top first:pl-6 last:pr-6'
   const cell = `${pad} py-4`
+  // The hairline closes a source's last row: its main row, its problem or its load note.
+  const closes = 'border-b border-line last:border-b-0'
   return (
     <>
       <motion.tr
         variants={rise}
-        className={`border-line transition-colors duration-150 hover:bg-soft/60 ${source.problem ? '' : 'border-b last:border-b-0'}`}
+        className={`border-line transition-colors duration-150 hover:bg-soft/60 ${source.problem || load ? '' : 'border-b last:border-b-0'}`}
       >
         <th scope="row" className={`${cell} max-w-[280px] font-normal`}>
           <span className="block text-body font-semibold text-ink">{source.display_name}</span>
@@ -168,9 +172,16 @@ function SourceTableRows({ source }: { source: SourceStatus }) {
         </td>
       </motion.tr>
       {source.problem && (
-        <motion.tr variants={rise} className="border-b border-line last:border-b-0">
+        <motion.tr variants={rise} className={load ? '' : closes}>
           <td colSpan={COLUMNS.length} className="px-6 pt-0 pb-4">
             <Problem source={source} />
+          </td>
+        </motion.tr>
+      )}
+      {load && (
+        <motion.tr variants={rise} className={closes}>
+          <td colSpan={COLUMNS.length} className="px-6 pt-0 pb-4">
+            <LoadNote load={load} />
           </td>
         </motion.tr>
       )}
@@ -181,6 +192,7 @@ function SourceTableRows({ source }: { source: SourceStatus }) {
 /** Phone: the same facts stacked, as a hairline row per source. */
 function SourceRow({ source }: { source: SourceStatus }) {
   const loaded = source.latest_completed !== null
+  const load = datasetLoad(source)
   return (
     <article className="flex flex-col gap-3 px-5 py-4">
       <header className="flex items-start gap-3">
@@ -211,11 +223,14 @@ function SourceRow({ source }: { source: SourceStatus }) {
         </Fact>
       </dl>
       {source.problem && <Problem source={source} />}
-      <footer className="flex items-center gap-3 text-small text-ink-muted">
-        <span>Last fetch {source.latest ? <Ago at={source.latest.fetched_at} /> : 'never'}</span>
-        <span className="ml-auto">
-          <OfficialLink href={source.source_url} />
-        </span>
+      <footer className="flex flex-col gap-2 text-small text-ink-muted">
+        {load && <LoadNote load={load} />}
+        <div className="flex items-center gap-3">
+          <span>Last fetch {source.latest ? <Ago at={source.latest.fetched_at} /> : 'never'}</span>
+          <span className="ml-auto">
+            <OfficialLink href={source.source_url} />
+          </span>
+        </div>
       </footer>
     </article>
   )
@@ -250,6 +265,21 @@ function Problem({ source }: { source: SourceStatus }) {
         </span>{' '}
         {source.problem}
       </span>
+    </p>
+  )
+}
+
+/** A dataset source's last load, when it has one (the NPPES files). */
+function datasetLoad(source: SourceStatus): DatasetLoad | null {
+  return source.credential_type === 'npi' ? source.last_load : null
+}
+
+/** What the last load of a dataset file did, as a quiet note: counts and time. */
+function LoadNote({ load }: { load: DatasetLoad }) {
+  return (
+    <p className="flex items-start gap-2 text-small break-words text-ink-muted tabular-nums">
+      <Icon name="registry" size={14} className="mt-0.5 shrink-0 text-ink-faint" />
+      <span>{loadLine(load)}</span>
     </p>
   )
 }

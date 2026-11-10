@@ -7,16 +7,19 @@ import { OrganizationMark, PersonMark } from '@/components/illustrations'
 import { useNow } from '../../components/useNow.ts'
 import type { Provider, Verification } from '../../lib/api.ts'
 import { dateTime, eventTime, plural, utcTitle } from '../../lib/format.ts'
-import type { CheckRun } from '../../lib/history.ts'
 import { resultLabel } from '../../lib/labels.ts'
+import { npiStepTitle, type TimelineEntry } from './timeline.ts'
 
-/** "What happened": every check run, newest first, then the day the provider was added. */
+/**
+ * "What happened": every check run and every NPI verification, newest first, then the day the
+ * provider was added. An NPI verification is a step of its own, never counted as a list.
+ */
 export function Timeline({
-  runs,
+  entries,
   provider,
   sourceName,
 }: {
-  runs: CheckRun[]
+  entries: TimelineEntry[]
   provider: Provider
   sourceName: (id: string) => string
 }) {
@@ -27,22 +30,38 @@ export function Timeline({
         What happened
       </h2>
       <motion.ol variants={stagger()} initial="hidden" animate="shown" className="mt-5">
-        {runs.map((run) => (
-          <TimelineStep
-            key={run.at}
-            at={run.at}
-            now={now}
-            icon={<Icon name="check" size={13} />}
-            title={`Checked ${plural(run.results.length, 'list')}`}
-            detail={
-              <span className="flex flex-col gap-0.5">
-                {run.results.map((result) => (
-                  <RunResult key={result.id} result={result} sourceName={sourceName} />
-                ))}
-              </span>
-            }
-          />
-        ))}
+        {entries.map((entry) =>
+          entry.kind === 'npi' ? (
+            <TimelineStep
+              key={entry.result.id}
+              at={entry.at}
+              now={now}
+              icon={<Icon name="registry" size={13} />}
+              title={npiStepTitle(entry.result)}
+              detail={
+                <span className="flex flex-col gap-0.5">
+                  {entry.result.details.npi_set_by === 'user' && <span>NPI set by the user</span>}
+                  <span>{entry.result.summary}</span>
+                </span>
+              }
+            />
+          ) : (
+            <TimelineStep
+              key={entry.at}
+              at={entry.at}
+              now={now}
+              icon={<Icon name="check" size={13} />}
+              title={`Checked ${plural(entry.results.length, 'list')}`}
+              detail={
+                <span className="flex flex-col gap-0.5">
+                  {entry.results.map((result) => (
+                    <RunResult key={result.id} result={result} sourceName={sourceName} />
+                  ))}
+                </span>
+              }
+            />
+          ),
+        )}
         <TimelineStep
           at={provider.created_at}
           now={now}

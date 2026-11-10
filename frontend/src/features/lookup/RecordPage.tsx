@@ -24,6 +24,7 @@ import { HeroFigure } from '../provider/VerdictHero.tsx'
 import { AddProviderSheet } from '../providers/AddProviderSheet.tsx'
 import { ProviderMark } from '../providers/ProviderMark.tsx'
 import { CARD, CARD_LINK } from './cards.ts'
+import { NpiFactValue, NpiTrouble } from './RecordNpi.tsx'
 
 const BACK = { to: '/lookup', label: 'Lookup' }
 
@@ -93,6 +94,7 @@ function Loaded({ profile }: { profile: RecordProfile }) {
         <div className="flex flex-col gap-3">
           <StatusHero profile={profile} onCheck={() => setPrefill(draftFromRecord(record))} />
           {profile.rewritten_by && <RewrittenNote successor={profile.rewritten_by} />}
+          <NpiTrouble profile={profile} />
         </div>
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
           <div className="flex min-w-0 flex-col gap-12 lg:gap-14">
@@ -414,7 +416,7 @@ function RecordFacts({ profile }: { profile: RecordProfile }) {
           </Fact>
         )}
         <Fact term="NPI">
-          {record.npi ? <CopyValue value={record.npi} label="NPI" className="-ml-1.5" /> : MUTED}
+          <NpiFactValue profile={profile} />
         </Fact>
         {record.related_npis.length > 0 && (
           <Fact term="Other NPIs on this row">

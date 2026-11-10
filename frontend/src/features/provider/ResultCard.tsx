@@ -1,14 +1,26 @@
 import { AnimatePresence, motion } from 'motion/react'
-import { useId, useState } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { VerdictBlocked, VerdictListed } from '@/components/illustrations'
 import { Icon } from '../../components/Icon.tsx'
 import { settle } from '../../components/motion.ts'
 import { Skeleton } from '../../components/Skeleton.tsx'
 import { Freshness, StatusLabel } from '../../components/Status.tsx'
 import { Ago, CalendarDate, DateOf } from '../../components/Time.tsx'
-import type { MatchedRecord, Verification } from '../../lib/api.ts'
-import { displayName } from '../../lib/provider.ts'
-import { freshnessLabel, outcomeWord, resultLabel } from '../../lib/labels.ts'
+import type {
+  MatchedRecord,
+  MatchLevel,
+  Provider,
+  RegistryStatus,
+  Verification,
+} from '../../lib/api.ts'
+import { displayName, entityKindWord } from '../../lib/provider.ts'
+import {
+  freshnessLabel,
+  matchLevelLabel,
+  outcomeWord,
+  registryStatusLabel,
+  resultLabel,
+} from '../../lib/labels.ts'
 
 const FIELD_WORDS: Record<string, string> = {
   npi: 'NPI',
@@ -27,6 +39,55 @@ const DETAIL_WORDS: Record<string, string> = {
   latest_fetch_outcome: 'Latest fetch',
   latest_fetch_at: 'Latest fetch at',
   record_status: 'Record status',
+  // An NPI verification's details.
+  npi_status: 'Registry status',
+  name_match: 'Name match',
+  entity_kind: 'Kind in NPPES',
+  checked_live: 'Live registry answered',
+  registry_last_updated: 'Record last updated',
+  live_check_outcome: 'Live check',
+  live_check_at: 'Live check at',
+  npi_set_by: 'NPI set by',
+  npi_set_at: 'NPI set at',
+  reason: 'Reason',
+}
+
+const REGISTRY_STATUSES: readonly string[] = [
+  'active',
+  'deactivated',
+  'not_found',
+  'mirror_only_active',
+  'unknown',
+] satisfies RegistryStatus[]
+const MATCH_LEVELS: readonly string[] = [
+  'exact',
+  'high',
+  'potential',
+  'ambiguous',
+  'none',
+] satisfies MatchLevel[]
+const KINDS: readonly string[] = [
+  'individual',
+  'organization',
+  'unknown',
+] satisfies Provider['entity_kind'][]
+
+const isRegistryStatus = (value: string): value is RegistryStatus =>
+  REGISTRY_STATUSES.includes(value)
+const isMatchLevel = (value: string): value is MatchLevel => MATCH_LEVELS.includes(value)
+const isKind = (value: string): value is Provider['entity_kind'] => KINDS.includes(value)
+
+/** A detail's value in words; the backend's enum values are named as the labels name them. */
+function DetailValue({ name, value }: { name: string; value: string }) {
+  if (name.endsWith('_at')) return <DateOf at={value} />
+  if (name === 'registry_last_updated') return <CalendarDate value={value} />
+  if (name.endsWith('_outcome')) return outcomeWord(value)
+  if (name === 'npi_status' && isRegistryStatus(value)) return registryStatusLabel(value).word
+  if (name === 'name_match' && isMatchLevel(value)) return matchLevelLabel(value).word
+  if (name === 'entity_kind' && isKind(value)) return entityKindWord(value)
+  if (name === 'checked_live') return value === 'true' ? 'Yes' : 'No'
+  if (name === 'npi_set_by' && value === 'user') return 'The user'
+  return value
 }
 
 /** One source's answer: status, source, time, the backend's sentence, and the evidence. */
@@ -118,7 +179,8 @@ export function ResultCard({ result, sourceName }: { result: Verification; sourc
   )
 }
 
-function Evidence({ result }: { result: Verification }) {
+/** A result's evidence, its matched records and its details; `children` close the panel. */
+export function Evidence({ result, children }: { result: Verification; children?: ReactNode }) {
   const details = Object.entries(result.details)
   return (
     <div className="flex flex-col gap-5 border-t border-line px-5 py-5 sm:px-6">
@@ -159,18 +221,13 @@ function Evidence({ result }: { result: Verification }) {
             <div key={key} className="flex items-baseline justify-between gap-4 py-2.5">
               <dt className="text-ink-muted">{DETAIL_WORDS[key] ?? key.replaceAll('_', ' ')}</dt>
               <dd className="min-w-0 text-right break-words tabular-nums">
-                {key.endsWith('_at') ? (
-                  <DateOf at={value} />
-                ) : key.endsWith('_outcome') ? (
-                  outcomeWord(value)
-                ) : (
-                  value
-                )}
+                <DetailValue name={key} value={value} />
               </dd>
             </div>
           ))}
         </dl>
       )}
+      {children}
     </div>
   )
 }

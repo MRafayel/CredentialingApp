@@ -3,11 +3,15 @@ import { Link } from 'react-router'
 import { CopyValue } from '../../components/CopyValue.tsx'
 import { Icon } from '../../components/Icon.tsx'
 import { rise } from '../../components/motion.ts'
-import { CodePill } from '../../components/Status.tsx'
+import { CodePill, StatusLabel } from '../../components/Status.tsx'
 import { DateOf } from '../../components/Time.tsx'
 import type { Provider } from '../../lib/api.ts'
+import type { Label } from '../../lib/labels.ts'
 import { displayName, providerStates } from '../../lib/provider.ts'
 import { ProviderMark } from './ProviderMark.tsx'
+
+/** A roster gap is never quiet: the review mark and the words, at a glance down the list. */
+const NO_NPI: Label = { tone: 'review', word: 'No NPI' }
 
 const ROW = 'flex items-center gap-3 px-4 py-4 sm:gap-4 sm:px-5'
 
@@ -37,7 +41,7 @@ export function ProviderRow({ provider }: { provider: Provider }) {
             {provider.npi ? (
               <CopyValue value={provider.npi} label="NPI" className="relative z-10 -ml-1.5" />
             ) : (
-              <span className="h-7 leading-7">No NPI</span>
+              <StatusLabel label={NO_NPI} size={13} className="h-7 text-small" />
             )}
           </div>
         </div>

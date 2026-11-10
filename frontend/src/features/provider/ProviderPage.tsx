@@ -1,14 +1,16 @@
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, LayoutGroup, motion } from 'motion/react'
 import { useParams } from 'react-router'
 import { ButtonLink } from '../../components/Button.tsx'
 import { CopyValue } from '../../components/CopyValue.tsx'
 import { ErrorNote } from '../../components/Note.tsx'
 import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
 import { Skeleton } from '../../components/Skeleton.tsx'
+import { StatusLabel } from '../../components/Status.tsx'
 import { ApiError, type Provider, type SourceStatus } from '../../lib/api.ts'
 import { plural } from '../../lib/format.ts'
+import { resultLabel } from '../../lib/labels.ts'
 import { displayName } from '../../lib/provider.ts'
-import { checkRuns } from '../../lib/history.ts'
+import { latestNpiVerification } from '../../lib/registry.ts'
 import { needsAttention } from '../../lib/results.ts'
 import {
   useProvider,
@@ -19,12 +21,17 @@ import {
 } from '../../lib/queries.ts'
 import { ProviderMark } from '../providers/ProviderMark.tsx'
 import { FactsPanel } from './FactsPanel.tsx'
+import { npiShape } from './npi.ts'
+import { NpiCard, NpiCardSkeleton } from './NpiCard.tsx'
 import { ResultCard, ResultCardSkeleton } from './ResultCard.tsx'
 import { Timeline } from './Timeline.tsx'
+import { timelineEntries } from './timeline.ts'
 import { VerdictHero } from './VerdictHero.tsx'
 
 const BACK = { to: '/providers', label: 'Providers' }
 const CARD_STAGGER = 0.08
+/** The sections under the NPI card glide when it changes shape. */
+const FOLLOW = { layout: { duration: 0.36, ease: [0.22, 1, 0.36, 1] as const } }
 
 export function ProviderPage() {
   const { id = '' } = useParams()
@@ -73,6 +80,7 @@ function Loaded({ provider }: { provider: Provider }) {
   // A check consults the exclusion lists; the NPI registry files are listed too but not checked.
   const expected = (sources.data ?? []).filter((source) => source.credential_type === 'exclusion')
   const running = run.isPending
+  const npi = npiShape(provider.npi, latestNpiVerification(history.data ?? []))
 
   return (
     <div className="flex flex-col gap-10 lg:gap-14">
@@ -89,10 +97,21 @@ function Loaded({ provider }: { provider: Provider }) {
             <span>{provider.entity_kind === 'organization' ? 'Organization' : 'Individual'}</span>
             {provider.npi && (
               <>
-                <span aria-hidden="true">·</span>
-                <span className="inline-flex items-center gap-1">
-                  NPI
-                  <CopyValue value={provider.npi} label="NPI" />
+                <span aria-hidden="true" className="max-sm:hidden">
+                  ·
+                </span>
+                {/* The NPI and its registry status wrap together (on a phone, on their own line). */}
+                <span className="inline-flex flex-wrap items-center gap-x-2 max-sm:basis-full">
+                  <span className="inline-flex items-center gap-1">
+                    NPI
+                    <CopyValue value={provider.npi} label="NPI" />
+                  </span>
+                  {npi.kind === 'verified' && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <StatusLabel label={resultLabel(npi.result)} size={14} />
+                    </>
+                  )}
                 </span>
               </>
             )}
@@ -126,66 +145,79 @@ function Loaded({ provider }: { provider: Provider }) {
       </div>
 
       <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
-        <div className="flex min-w-0 flex-col gap-12 lg:gap-14">
-          <section
-            aria-labelledby="results-heading"
-            aria-live="polite"
-            aria-busy={running}
-            className="flex flex-col gap-3"
-          >
-            <h2 id="results-heading" className="mb-2 text-subheading">
-              Results
-            </h2>
-            <AnimatePresence mode="popLayout" initial={false}>
-              {running
-                ? (expected.length ? expected : [null]).map((source, index) => (
-                    <motion.div
-                      key={`checking-${source?.source_id ?? index}`}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                    >
-                      <ResultCardSkeleton sourceName={source?.display_name ?? 'Checking…'} />
-                    </motion.div>
-                  ))
-                : shown.map((result, index) => (
-                    <motion.div
-                      key={result.id}
-                      layout="position"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0 }}
-                      transition={{
-                        duration: 0.26,
-                        ease: [0.22, 1, 0.36, 1],
-                        delay: index * CARD_STAGGER,
-                      }}
-                    >
-                      <ResultCard result={result} sourceName={sourceName(result.source_id)} />
-                    </motion.div>
-                  ))}
-            </AnimatePresence>
-            {!running && verdict.data && shown.length === 0 && (
-              <p className="rounded-card border border-line px-5 py-6 text-body text-ink-muted">
-                {latest.length
-                  ? `No record in ${plural(latest.length, 'list')}. Each list's answer is under What happened.`
-                  : expected.length
-                    ? `A check covers ${plural(expected.length, 'list')}.`
-                    : 'Run a check to see results here.'}
-              </p>
+        <LayoutGroup>
+          <div className="flex min-w-0 flex-col gap-12 lg:gap-14">
+            {provider.npi && !history.data ? (
+              history.isError ? (
+                <ErrorNote>{history.error.message}</ErrorNote>
+              ) : (
+                <NpiCardSkeleton />
+              )
+            ) : (
+              <NpiCard provider={provider} history={history.data ?? []} />
             )}
-          </section>
+            <motion.section
+              layout="position"
+              transition={FOLLOW}
+              aria-labelledby="results-heading"
+              aria-live="polite"
+              aria-busy={running}
+              className="flex flex-col gap-3"
+            >
+              <h2 id="results-heading" className="mb-2 text-subheading">
+                Results
+              </h2>
+              <AnimatePresence mode="popLayout" initial={false}>
+                {running
+                  ? (expected.length ? expected : [null]).map((source, index) => (
+                      <motion.div
+                        key={`checking-${source?.source_id ?? index}`}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                      >
+                        <ResultCardSkeleton sourceName={source?.display_name ?? 'Checking…'} />
+                      </motion.div>
+                    ))
+                  : shown.map((result, index) => (
+                      <motion.div
+                        key={result.id}
+                        layout="position"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        transition={{
+                          duration: 0.26,
+                          ease: [0.22, 1, 0.36, 1],
+                          delay: index * CARD_STAGGER,
+                        }}
+                      >
+                        <ResultCard result={result} sourceName={sourceName(result.source_id)} />
+                      </motion.div>
+                    ))}
+              </AnimatePresence>
+              {!running && verdict.data && shown.length === 0 && (
+                <p className="rounded-card border border-line px-5 py-6 text-body text-ink-muted">
+                  {latest.length
+                    ? `No record in ${plural(latest.length, 'list')}. Each list's answer is under What happened.`
+                    : expected.length
+                      ? `A check covers ${plural(expected.length, 'list')}.`
+                      : 'Run a check to see results here.'}
+                </p>
+              )}
+            </motion.section>
 
-          <div className="flex flex-col gap-3">
-            {history.isError && <ErrorNote>{history.error.message}</ErrorNote>}
-            <Timeline
-              runs={checkRuns(history.data ?? [])}
-              provider={provider}
-              sourceName={sourceName}
-            />
+            <motion.div layout="position" transition={FOLLOW} className="flex flex-col gap-3">
+              {history.isError && <ErrorNote>{history.error.message}</ErrorNote>}
+              <Timeline
+                entries={timelineEntries(history.data ?? [])}
+                provider={provider}
+                sourceName={sourceName}
+              />
+            </motion.div>
           </div>
-        </div>
+        </LayoutGroup>
 
         <div className="lg:sticky lg:top-28 lg:self-start">
           <FactsPanel provider={provider} />

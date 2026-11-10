@@ -9,6 +9,9 @@ import {
 import {
   get,
   post,
+  put,
+  type NpiLookup,
+  type NpiSearchQuery,
   type Provider,
   type ProviderCreate,
   type ProviderPage,
@@ -25,6 +28,9 @@ export const keys = {
   verdict: (id: string) => ['providers', 'detail', id, 'verdict'] as const,
   lookup: (q: string, state: string | null) => ['exclusions', 'search', { q, state }] as const,
   record: (id: string) => ['exclusions', 'records', id] as const,
+  npi: (npi: string) => ['npi', 'detail', npi] as const,
+  npiSearch: (query: NpiSearchQuery) => ['npi', 'search', query] as const,
+  suggestions: (id: string) => ['providers', 'detail', id, 'npi-suggestions'] as const,
 }
 
 export const PAGE_SIZE = 10
@@ -133,6 +139,95 @@ export function useRunCheck(id: string) {
         ...verdict.results,
         ...(old ?? []),
       ])
+      return client.invalidateQueries({ queryKey: keys.verifications(id) })
+    },
+  })
+}
+
+// --- The NPI registry (P1) ------------------------------------------------------------------
+
+/**
+ * One NPI from the registry mirror, with the backend's status and the mirror's load. The
+ * backend asks the live registry on its own only when the mirror has no row or is stale; a
+ * reader who wants a fresh answer uses `useCheckNpiLive`.
+ */
+export function useNpi(npi: string, enabled = true) {
+  return useQuery({
+    queryKey: keys.npi(npi),
+    queryFn: ({ signal }) => get('/npi/{npi}', { path: { npi }, signal }),
+    enabled: enabled && /^\d{10}$/.test(npi),
+  })
+}
+
+/** One request to the live registry for this NPI; its answer replaces the cached lookup. */
+export function useCheckNpiLive(npi: string) {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: () => get('/npi/{npi}', { path: { npi }, query: { live: true } }),
+    onSuccess: (lookup) => {
+      client.setQueryData<NpiLookup>(keys.npi(npi), lookup)
+    },
+  })
+}
+
+/**
+ * The registry search: the mirror by exact name key (`q`), or the live registry with
+ * `live: true` and the structured fields. `enabled` gates it, so a half-typed query waits.
+ */
+export function useNpiSearch(query: NpiSearchQuery, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.npiSearch(query),
+    queryFn: ({ signal }) => get('/npi/search', { query, signal }),
+    enabled,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** NPIs the mirror suggests for a provider without one, best first; read only. */
+export function useNpiSuggestions(id: string, enabled = true) {
+  return useQuery({
+    queryKey: keys.suggestions(id),
+    queryFn: ({ signal }) =>
+      get('/providers/{provider_id}/npi-suggestions', { path: { provider_id: id }, signal }),
+    enabled,
+  })
+}
+
+/** Verify the provider's NPI in NPPES (`live` asks the registry itself); one more history row. */
+export function useVerifyNpi(id: string) {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ live }: { live: boolean }) =>
+      post('/providers/{provider_id}/verifications/npi', {
+        path: { provider_id: id },
+        query: live ? { live: true } : undefined,
+      }),
+    onSuccess: (result) => {
+      client.setQueryData<Verification[]>(keys.verifications(id), (old) => [result, ...(old ?? [])])
+      void client.invalidateQueries({ queryKey: ['npi', 'detail'] })
+      return client.invalidateQueries({ queryKey: keys.verifications(id) })
+    },
+  })
+}
+
+/**
+ * Give a provider without an NPI the one the user confirmed. The answer carries the provider
+ * as it now is and the NPI verification the backend appended, so both caches are replaced at
+ * once; the suggestions and the roster list are refetched.
+ */
+export function useSetProviderNpi(id: string) {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (npi: string) =>
+      put('/providers/{provider_id}/npi', { path: { provider_id: id }, body: { npi } }),
+    onSuccess: ({ provider, verification }) => {
+      client.setQueryData<Provider>(keys.provider(id), provider)
+      client.setQueryData<Verification[]>(keys.verifications(id), (old) => [
+        verification,
+        ...(old ?? []),
+      ])
+      void client.invalidateQueries({ queryKey: keys.suggestions(id) })
+      void client.invalidateQueries({ queryKey: ['providers', 'list'] })
       return client.invalidateQueries({ queryKey: keys.verifications(id) })
     },
   })
