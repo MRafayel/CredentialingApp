@@ -1,6 +1,9 @@
 import { Icon } from '../../components/Icon.tsx'
 
-/** ← 1 2 3 → with "N in all". Pages near the current one, plus the first and last. */
+/**
+ * ← 1 2 3 → centred under the list, "N in all" at the right end (owner, 2026-11-12). Pages near
+ * the current one, plus the first and last.
+ */
 export function Pager({
   page,
   pageSize,
@@ -19,12 +22,12 @@ export function Pager({
   const step =
     'grid size-9 place-items-center rounded-full text-sm font-medium tabular-nums transition-colors disabled:opacity-40'
   return (
-    <nav aria-label="Pages" className="flex items-center justify-between gap-3 pt-5">
-      <p className="text-small text-ink-muted tabular-nums">
+    <nav aria-label="Pages" className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 pt-5">
+      <p className="col-start-3 justify-self-end text-small text-ink-muted tabular-nums">
         {new Intl.NumberFormat().format(total)} in all
       </p>
       {pages > 1 && (
-        <ul className="flex items-center gap-1">
+        <ul className="col-start-2 row-start-1 flex items-center gap-1">
           <li>
             <button
               type="button"

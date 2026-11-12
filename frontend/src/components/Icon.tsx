@@ -4,6 +4,9 @@ const PATHS = {
   search: 'M10.5 17a6.5 6.5 0 1 0 0-13a6.5 6.5 0 0 0 0 13zM15.5 15.5L20 20',
   plus: 'M12 5v14M5 12h14',
   chevronDown: 'M6 9l6 6l6-6',
+  /** The roster's filter menu: two sliders, the top knob right, the bottom knob left. */
+  sliders:
+    'M3 8.5h9.5M18.5 8.5H21M3 15.5h2.5M12 15.5h9M15.5 5.5a3 3 0 1 1 0 6a3 3 0 0 1 0-6zM8.5 12.5a3 3 0 1 1 0 6a3 3 0 0 1 0-6z',
   chevronRight: 'M9 6l6 6l-6 6',
   chevronLeft: 'M15 6l-6 6l6 6',
   arrowLeft: 'M19 12H5M11 6l-6 6l6 6',

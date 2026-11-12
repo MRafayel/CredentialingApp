@@ -10,6 +10,7 @@ from credentialing.api.organization import OrganizationId
 from credentialing.api.schemas import (
     AttentionFilter,
     ImportReportResponse,
+    KindFilter,
     NpiSuggestionsResponse,
     ProviderCreate,
     ProviderImportBody,
@@ -24,6 +25,7 @@ from credentialing.api.schemas import (
 )
 from credentialing.application.errors import ProviderNotFoundError
 from credentialing.application.list_providers import MAX_PAGE_SIZE
+from credentialing.domain.enums import RosterOrder
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -46,17 +48,22 @@ async def list_providers(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 10,
     attention: AttentionFilter | None = None,
+    kind: KindFilter | None = None,
+    order: RosterOrder = RosterOrder.ATTENTION,
 ) -> ProviderPageResponse:
-    """One page of the organization's providers with their monitoring status, those needing
-    attention first (most serious first), then newest first; ``q`` searches names or NPI,
-    ``attention`` keeps only providers with that reason, ``any`` those with some reason,
-    ``none`` those needing nobody."""
+    """One page of the organization's providers with their monitoring status, in ``order``
+    (by default those needing attention first, most serious first, then newest first;
+    ``newest`` or ``oldest`` by the date added); ``q`` searches names or NPI, ``attention``
+    keeps only providers with that reason, ``any`` those with some reason, ``none`` those
+    needing nobody, ``kind`` only individuals or only organizations."""
     result = await container.list_providers.run(
         organization_id,
         query=q,
         page=page,
         page_size=page_size,
         attention=attention.selection() if attention else None,
+        kind=kind.kind() if kind else None,
+        order=order,
     )
     return ProviderPageResponse.from_page(result)
 

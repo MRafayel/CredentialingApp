@@ -14,6 +14,7 @@ import {
   put,
   type AttentionFilter,
   type HistoryPage,
+  type KindFilter,
   type NpiLookup,
   type NpiSearchQuery,
   type Provider,
@@ -21,14 +22,15 @@ import {
   type ProviderPage,
   type ProviderStatus,
   type ProviderVerdict,
+  type RosterOrder,
   type Verification,
 } from './api.ts'
 
 export const keys = {
   sources: ['sources'] as const,
   providers: ['providers'] as const,
-  providerList: (q: string, page: number, attention: AttentionFilter | undefined) =>
-    ['providers', 'list', { q, page, attention }] as const,
+  providerList: (q: string, page: number, narrowing: RosterNarrowing) =>
+    ['providers', 'list', { q, page, ...narrowing }] as const,
   summary: ['providers', 'summary'] as const,
   provider: (id: string) => ['providers', 'detail', id] as const,
   status: (id: string) => ['providers', 'detail', id, 'status'] as const,
@@ -92,16 +94,24 @@ export function useRecordProfile(id: string) {
   })
 }
 
+/** What narrows and orders a roster page beyond the search: all the backend's. */
+export type RosterNarrowing = {
+  attention?: AttentionFilter
+  kind?: KindFilter
+  order?: RosterOrder
+}
+
 /**
- * One page of the roster with each provider's status, those needing a person first (the
- * backend's order); `attention` keeps one reason, `any` every provider with a reason.
+ * One page of the roster with each provider's status in the backend's order (those needing a
+ * person first unless `order` says newest or oldest); `attention` keeps one reason, `kind`
+ * individuals or organizations.
  */
-export function useProviderList(q: string, page: number, attention?: AttentionFilter) {
+export function useProviderList(q: string, page: number, narrowing: RosterNarrowing = {}) {
   return useQuery({
-    queryKey: keys.providerList(q, page, attention),
+    queryKey: keys.providerList(q, page, narrowing),
     queryFn: ({ signal }) =>
       get('/providers', {
-        query: { q: q || undefined, page, page_size: PAGE_SIZE, attention },
+        query: { q: q || undefined, page, page_size: PAGE_SIZE, ...narrowing },
         signal,
       }),
     placeholderData: keepPreviousData,

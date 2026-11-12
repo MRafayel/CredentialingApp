@@ -3,19 +3,12 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { CopyValue } from '../../components/CopyValue.tsx'
 import { settle } from '../../components/motion.ts'
-import { CodePill, Freshness } from '../../components/Status.tsx'
-import { Ago, CalendarDate, DateOf } from '../../components/Time.tsx'
-import type { LiveCheck, MirrorSource, NpiRecord, Provider } from '../../lib/api.ts'
-import { freshnessLabel, roleWord } from '../../lib/labels.ts'
-import { asOf } from '../../lib/registry.ts'
+import { CodePill } from '../../components/Status.tsx'
+import { CalendarDate, DateOf } from '../../components/Time.tsx'
+import type { NpiRecord, Provider } from '../../lib/api.ts'
+import { roleWord } from '../../lib/labels.ts'
 import { useFrom } from '../shell/back.ts'
-import {
-  addedLicences,
-  addedPlace,
-  addedTaxonomies,
-  registryNameIfDifferent,
-  type RegistryTaxonomy,
-} from './facts.ts'
+import { REGISTRY, addedFacts, type ListedRecord, type RegistryTaxonomy } from './facts.ts'
 import { RegistryLink } from './RegistryLink.tsx'
 
 /** A registry row or value arriving after the roster's rows: it rises in. */
@@ -49,41 +42,49 @@ export function Fact({
   )
 }
 
-/** The quiet mark after a value that comes from the registry, the same in every row. */
-function Nppes({ words = 'NPPES', className = 'ml-2' }: { words?: string; className?: string }) {
+/**
+ * The quiet mark after a value that is not the roster's: the sources that say it ("NPPES",
+ * "NPPES · NY list"), the same in every row.
+ */
+function Mark({
+  sources = [REGISTRY],
+  prefix = '',
+  className = 'ml-2',
+}: {
+  sources?: readonly string[]
+  prefix?: string
+  className?: string
+}) {
   return (
-    <span className={`text-caption whitespace-nowrap text-ink-muted ${className}`}>{words}</span>
+    <span className={`text-caption whitespace-nowrap text-ink-muted ${className}`}>
+      {prefix}
+      {sources.join(' · ')}
+    </span>
   )
 }
 
 const NONE = <span className="text-ink-muted">None</span>
 
-/** What NPPES records about the provider's NPI, with where it was read from. */
-export type RegistryFactsInput = {
-  record: NpiRecord
-  source: MirrorSource | LiveCheck
-  kind: 'mirror' | 'live'
-}
-
 /**
- * Everything known about the provider: the roster's facts and, once the NPI's registry record
- * has arrived, what NPPES adds in the same rows (each such value marked "NPPES", the registry's
- * source and date once under the heading). Without the registry it is the roster's facts alone.
+ * Everything known about the provider: the roster's facts and, in the same rows, what NPPES
+ * records about the NPI once it is known and what the lists that matched the provider as the
+ * party itself say about them (their licence, place, other names, published NPI; what belongs
+ * to the listing itself stays in the Results). Each added value is marked with its sources,
+ * and a value two sources carry is one row with both marks; a value the roster already holds is
+ * never repeated. Without a registry record or a listed record it is the roster's facts alone.
  * The date of birth itself is never sent back.
  */
 export function FactsPanel({
   provider,
   registry = null,
+  listed = [],
 }: {
   provider: Provider
-  registry?: RegistryFactsInput | null
+  registry?: NpiRecord | null
+  listed?: readonly ListedRecord[]
 }) {
   const name = provider.person_name
-  const record = registry?.record ?? null
-  const theirName = record ? registryNameIfDifferent(provider, record) : null
-  const licences = record ? addedLicences(provider, record) : []
-  const place = record ? addedPlace(provider, record) : null
-  const taxonomies = record ? addedTaxonomies(provider, record) : []
+  const added = addedFacts(provider, registry, listed)
   return (
     // On desktop the heading and the card are two rows of the page's grid, so the card's top
     // lines up with the NPI card's across the page (owner, 2026-11-12).
@@ -92,25 +93,6 @@ export function FactsPanel({
         <h2 id="facts-heading" className="text-subheading">
           Facts
         </h2>
-        {registry && (
-          <motion.p
-            {...ARRIVE}
-            className="inline-flex items-center gap-x-1 text-caption whitespace-nowrap text-ink-muted"
-          >
-            {/* One short line beside the title, "with NPPES cached as of Nov 3, 2026": the
-                freshness word keeps its coloured mark; the file itself is named on the NPI
-                card's own line (owner, 2026-11-12). */}
-            <span>with NPPES</span>
-            <Freshness label={freshnessLabel(registry.source.freshness)} className="lowercase" />
-            {registry.kind === 'mirror' ? (
-              <span>
-                as of <DateOf at={asOf(registry.source)} />
-              </span>
-            ) : (
-              <Ago at={registry.source.provenance.verified_at} />
-            )}
-          </motion.p>
-        )}
       </div>
       {/* `self-start`: the card ends with its last row, never stretched to the left column. */}
       <dl className="mt-4 divide-y divide-line rounded-card bg-surface px-5 py-1 shadow-card lg:mt-0 lg:self-start">
@@ -129,29 +111,29 @@ export function FactsPanel({
           ) : (
             <span className="block">{provider.organization_name ?? NONE}</span>
           )}
-          {theirName && (
-            <motion.span {...ARRIVE} className="block">
-              {theirName}
-              <Nppes words="in NPPES" />
+          {added.names.map((item) => (
+            <motion.span {...ARRIVE} key={item.value} className="block">
+              {item.value}
+              <Mark sources={item.sources} prefix="in " />
             </motion.span>
-          )}
+          ))}
         </Fact>
-        {record && record.other_names.length > 0 && (
+        {added.otherNames.length > 0 && (
           <Fact term="Other names" added>
             <ul className="flex flex-col gap-1">
-              {record.other_names.map((other) => (
-                <li key={other}>
-                  {other}
-                  <Nppes />
+              {added.otherNames.map((item) => (
+                <li key={item.value}>
+                  {item.value}
+                  <Mark sources={item.sources} />
                 </li>
               ))}
             </ul>
           </Fact>
         )}
-        {record?.credential && (
+        {registry?.credential && (
           <Fact term="Credential" added>
-            {record.credential}
-            <Nppes />
+            {registry.credential}
+            <Mark />
           </Fact>
         )}
         <Fact term="NPI">
@@ -160,6 +142,20 @@ export function FactsPanel({
               <CopyValue value={provider.npi} label="NPI" className="-ml-1.5" />
               <RegistryLink npi={provider.npi} />
             </span>
+          ) : added.npis.length > 0 ? (
+            <ul className="flex flex-col gap-1">
+              {added.npis.map((item) => (
+                <motion.li
+                  {...ARRIVE}
+                  key={item.value}
+                  className="flex flex-wrap items-center gap-x-1"
+                >
+                  <CopyValue value={item.value} label="NPI" className="-ml-1.5" />
+                  <RegistryLink npi={item.value} />
+                  <Mark sources={item.sources} prefix="published by " className="" />
+                </motion.li>
+              ))}
+            </ul>
           ) : (
             NONE
           )}
@@ -168,7 +164,7 @@ export function FactsPanel({
           <Fact term="Date of birth on file">{provider.has_date_of_birth ? 'Yes' : 'No'}</Fact>
         )}
         <Fact term="Licences">
-          {provider.licenses.length || licences.length ? (
+          {provider.licenses.length || added.licences.length ? (
             <ul className="flex flex-col gap-1">
               {provider.licenses.map((licence) => (
                 <li
@@ -184,15 +180,15 @@ export function FactsPanel({
                   {licence.kind && <span className="text-ink-muted">{licence.kind}</span>}
                 </li>
               ))}
-              {licences.map((licence) => (
+              {added.licences.map((item) => (
                 <motion.li
                   {...ARRIVE}
-                  key={`nppes-${licence.state}-${licence.number}`}
+                  key={`added-${item.value.state}-${item.value.number}`}
                   className="flex items-center gap-2"
                 >
-                  <CodePill>{licence.state}</CodePill>
-                  <span className="font-mono text-small">{licence.number}</span>
-                  <Nppes className="" />
+                  <CodePill>{item.value.state}</CodePill>
+                  <span className="font-mono text-small">{item.value.number}</span>
+                  <Mark sources={item.sources} className="" />
                 </motion.li>
               ))}
             </ul>
@@ -201,7 +197,7 @@ export function FactsPanel({
           )}
         </Fact>
         <Fact term="Addresses">
-          {provider.addresses.length || place ? (
+          {provider.addresses.length || added.places.length ? (
             <ul className="flex flex-col gap-1">
               {provider.addresses.map((address, index) => (
                 <li key={index}>
@@ -210,25 +206,24 @@ export function FactsPanel({
                     .join(', ')}
                 </li>
               ))}
-              {place && (
-                <motion.li {...ARRIVE}>
-                  <span className="text-ink-muted">Practice place </span>
-                  {place}
-                  <Nppes />
+              {added.places.map((item) => (
+                <motion.li {...ARRIVE} key={item.value}>
+                  {item.value}
+                  <Mark sources={item.sources} />
                 </motion.li>
-              )}
+              ))}
             </ul>
           ) : (
             NONE
           )}
         </Fact>
         <Fact term="Taxonomies">
-          {provider.taxonomy_codes.length || taxonomies.length ? (
+          {provider.taxonomy_codes.length || added.taxonomies.length ? (
             <ul className="flex flex-col gap-1.5">
               {provider.taxonomy_codes.length > 0 && (
                 <li className="font-mono text-small">{provider.taxonomy_codes.join(', ')}</li>
               )}
-              {taxonomies.map((taxonomy, index) => (
+              {added.taxonomies.map((taxonomy, index) => (
                 <motion.li
                   {...ARRIVE}
                   key={`nppes-${taxonomy.code}-${index}`}
@@ -242,7 +237,7 @@ export function FactsPanel({
             NONE
           )}
         </Fact>
-        {record && <RegistryRows record={record} />}
+        {registry && <RegistryRows record={registry} />}
         <Fact term="Added">
           <DateOf at={provider.created_at} />
         </Fact>
@@ -261,7 +256,7 @@ function TaxonomyValue({ taxonomy }: { taxonomy: RegistryTaxonomy }) {
         <span className="font-mono text-small text-ink-muted">{taxonomy.license_number}</span>
       )}
       {taxonomy.primary && <span className="text-caption font-medium text-ink-muted">Primary</span>}
-      <Nppes className="" />
+      <Mark className="" />
     </>
   )
 }
@@ -291,7 +286,7 @@ function RegistryRows({ record }: { record: NpiRecord }) {
             .filter(Boolean)
             .join(', ')}
           {official.title && <span className="text-ink-muted"> · {official.title}</span>}
-          <Nppes />
+          <Mark />
         </Fact>
       )}
       {dates.map(
@@ -299,7 +294,7 @@ function RegistryRows({ record }: { record: NpiRecord }) {
           item.value && (
             <Fact key={item.term} term={item.term} added>
               <CalendarDate value={item.value} />
-              <Nppes />
+              <Mark />
             </Fact>
           ),
       )}
@@ -316,13 +311,13 @@ function RegistryRows({ record }: { record: NpiRecord }) {
               {record.replacement_npi}
             </Link>
           )}
-          <Nppes />
+          <Mark />
         </Fact>
       )}
       {!record.in_file && (
         <Fact term="Currently in NPI registry" added>
           <span className="font-medium text-ink">No</span>
-          <Nppes />
+          <Mark />
         </Fact>
       )}
     </>

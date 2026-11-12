@@ -272,6 +272,16 @@ class AttentionFilter(StrEnum):
         return Attention(self.value)
 
 
+class KindFilter(StrEnum):
+    """The roster's ``kind`` query: only individuals or only organizations."""
+
+    INDIVIDUAL = EntityKind.INDIVIDUAL.value
+    ORGANIZATION = EntityKind.ORGANIZATION.value
+
+    def kind(self) -> EntityKind:
+        return EntityKind(self.value)
+
+
 class StatusSummaryResponse(Schema):
     """Body of ``GET /providers/summary``: providers per attention reason (every reason, and
     ``none`` for those needing nobody), the roster's total and the recheck interval."""
@@ -324,48 +334,6 @@ class ProvenanceResponse(Schema):
     raw_record_ref: str | None
 
 
-class MatchedRecordResponse(Schema):
-    """An exclusion record a result points at. DOB and address are left out on purpose.
-
-    ``aliases`` are other names of the same party; ``related_parties`` name other parties on
-    the same row and ``related_npis`` the row's other NPIs, whose owner the row does not say.
-    """
-
-    id: UUID
-    source_id: str
-    entity_kind: EntityKind
-    person_name: PersonNameResponse | None
-    organization_name: str | None
-    aliases: list[str]
-    related_parties: list[str]
-    npi: str | None
-    related_npis: list[str]
-    action: ExclusionAction
-    action_raw: str | None
-    effective_date: date | None
-    end_date: date | None
-
-    @classmethod
-    def from_domain(cls, record: ExclusionRecord) -> MatchedRecordResponse:
-        """Map a domain record into its HTTP shape."""
-        name = record.person_name
-        return cls(
-            id=record.id,
-            source_id=record.source_id,
-            entity_kind=record.entity_kind,
-            person_name=PersonNameResponse.model_validate(name.model_dump()) if name else None,
-            organization_name=record.organization_name,
-            aliases=list(record.aliases),
-            related_parties=list(record.related_parties),
-            npi=record.npi,
-            related_npis=list(record.related_npis),
-            action=record.action,
-            action_raw=record.action_raw,
-            effective_date=record.effective_date,
-            end_date=record.end_date,
-        )
-
-
 class RecordLicenseResponse(Schema):
     """The licence an exclusion record names, as the source published it."""
 
@@ -381,22 +349,35 @@ class RecordPlaceResponse(Schema):
     state: str | None
 
 
-class LookupRecordResponse(MatchedRecordResponse):
-    """An exclusion record a lookup found. The date of birth and street address are left out.
+class MatchedRecordResponse(Schema):
+    """An exclusion record a result points at. The date of birth and the street address are
+    left out on purpose; the licence and the place (city and state) are the facts about the
+    party the provider page shows beside the roster's (owner, 2026-11-12).
 
-    ``status`` says whether it still stands, has ended, or was removed from its published list
-    (reinstatement not confirmed).
+    ``aliases`` are other names of the same party; ``related_parties`` name other parties on
+    the same row and ``related_npis`` the row's other NPIs, whose owner the row does not say.
     """
 
+    id: UUID
+    source_id: str
+    entity_kind: EntityKind
+    person_name: PersonNameResponse | None
+    organization_name: str | None
+    aliases: list[str]
+    related_parties: list[str]
+    npi: str | None
+    related_npis: list[str]
     license: RecordLicenseResponse | None
     place: RecordPlaceResponse | None
-    raw_provider_type: str | None
-    status: RecordStatus
+    action: ExclusionAction
+    action_raw: str | None
+    effective_date: date | None
+    end_date: date | None
 
     @classmethod
-    def from_lookup(cls, found: LookupRecord) -> LookupRecordResponse:
-        """Map a found record into its HTTP shape."""
-        record = found.record
+    def from_domain(cls, record: ExclusionRecord) -> MatchedRecordResponse:
+        """Map a domain record into its HTTP shape."""
+        name = record.person_name
         license, address = record.license, record.address
         place = (
             RecordPlaceResponse(city=address.city, state=address.state)
@@ -404,9 +385,39 @@ class LookupRecordResponse(MatchedRecordResponse):
             else None
         )
         return cls(
-            **MatchedRecordResponse.from_domain(record).model_dump(),
+            id=record.id,
+            source_id=record.source_id,
+            entity_kind=record.entity_kind,
+            person_name=PersonNameResponse.model_validate(name.model_dump()) if name else None,
+            organization_name=record.organization_name,
+            aliases=list(record.aliases),
+            related_parties=list(record.related_parties),
+            npi=record.npi,
+            related_npis=list(record.related_npis),
             license=RecordLicenseResponse.model_validate(license.model_dump()) if license else None,
             place=place,
+            action=record.action,
+            action_raw=record.action_raw,
+            effective_date=record.effective_date,
+            end_date=record.end_date,
+        )
+
+
+class LookupRecordResponse(MatchedRecordResponse):
+    """An exclusion record a lookup found, with the provider type its source wrote down.
+
+    ``status`` says whether it still stands, has ended, or was removed from its published list
+    (reinstatement not confirmed).
+    """
+
+    raw_provider_type: str | None
+    status: RecordStatus
+
+    @classmethod
+    def from_lookup(cls, found: LookupRecord) -> LookupRecordResponse:
+        """Map a found record into its HTTP shape."""
+        return cls(
+            **MatchedRecordResponse.from_domain(found.record).model_dump(),
             raw_provider_type=found.provider_type,
             status=found.status,
         )

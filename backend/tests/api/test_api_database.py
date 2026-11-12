@@ -120,6 +120,8 @@ async def test_register_check_and_read_history(
     assert record["person_name"]["last"] == "Deltaperson"
     assert "date_of_birth" not in record
     assert "address" not in record
+    # The facts the provider page shows beside the roster's: the licence and the place only.
+    assert {"license", "place"} <= record.keys()
 
     history = await client.get(f"/providers/{provider['id']}/verifications", headers=headers)
     assert history.status_code == 200

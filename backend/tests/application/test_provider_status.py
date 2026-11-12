@@ -18,16 +18,18 @@ from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import (
     Attention,
     CredentialType,
+    EntityKind,
     Finding,
     Freshness,
     Outcome,
+    RosterOrder,
     RosterRole,
     VerificationMethod,
 )
 from credentialing.domain.models import Provenance, Provider, ResultChange, VerificationResult
 from credentialing.domain.policies import STATUS_RULES_VERSION
 from tests.fakes import FixedClock, InMemoryProviders, InMemoryVerifications
-from tests.synthetic import NOW, individual
+from tests.synthetic import NOW, individual, organization
 
 pytestmark = pytest.mark.anyio
 
@@ -130,6 +132,28 @@ async def test_the_roster_filters_by_one_attention_reason() -> None:
 
     assert [item.provider.id for item in page.items] == [listed.id]
     assert page.total == 1
+
+
+async def test_the_roster_keeps_one_kind_and_takes_an_order() -> None:
+    person = _workforce("Clearperson")
+    group = organization("Sampleville Group").model_copy(
+        update={"organization_id": ORG_A, "created_at": NOW + timedelta(minutes=1)}
+    )
+    world = _World(person, group)
+
+    people = await world.list.run(
+        ORG_A, query=None, page=1, page_size=10, kind=EntityKind.INDIVIDUAL
+    )
+    groups = await world.list.run(
+        ORG_A, query=None, page=1, page_size=10, kind=EntityKind.ORGANIZATION
+    )
+    oldest = await world.list.run(ORG_A, query=None, page=1, page_size=10, order=RosterOrder.OLDEST)
+    newest = await world.list.run(ORG_A, query=None, page=1, page_size=10, order=RosterOrder.NEWEST)
+
+    assert [item.provider.id for item in people.items] == [person.id]
+    assert [item.provider.id for item in groups.items] == [group.id]
+    assert [item.provider.id for item in oldest.items] == [person.id, group.id]
+    assert [item.provider.id for item in newest.items] == [group.id, person.id]
 
 
 async def test_missing_statuses_are_derived_and_stored_before_a_roster_read() -> None:

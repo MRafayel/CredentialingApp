@@ -14,7 +14,6 @@ import { plural } from '../../lib/format.ts'
 import { identityLabel, resultLabel } from '../../lib/labels.ts'
 import { providerSteps, type StepAction } from '../../lib/monitoring.ts'
 import { displayName } from '../../lib/provider.ts'
-import { factsSource } from '../../lib/registry.ts'
 import { needsAttention } from '../../lib/results.ts'
 import {
   useHistory,
@@ -32,6 +31,7 @@ import { RecordDetails } from '../lookup/RecordDetails.tsx'
 import { NpiDetails } from '../npi/NpiDetails.tsx'
 import { ProviderMark } from '../providers/ProviderMark.tsx'
 import { Here, type Back } from '../shell/back.ts'
+import { listCaption, listedRecords, type ListedRecord } from './facts.ts'
 import { FactsPanel } from './FactsPanel.tsx'
 import { npiShape } from './npi.ts'
 import { NpiCard, NpiCardSkeleton } from './NpiCard.tsx'
@@ -105,6 +105,7 @@ function Loaded({ provider }: { provider: Provider }) {
   )
   const sourceName = (sourceId: string) => byId.get(sourceId)?.display_name ?? sourceId
   const latest = verdict.data?.results ?? []
+  const listed = listedRecords(latest, (sourceId) => listCaption(byId.get(sourceId), sourceId))
   const shown = latest.filter(needsAttention)
   // A check consults the exclusion lists; the NPI registry files are listed too but not checked.
   const expected = (sources.data ?? []).filter((source) => source.credential_type === 'exclusion')
@@ -305,7 +306,7 @@ function Loaded({ provider }: { provider: Provider }) {
           </div>
         </LayoutGroup>
 
-        <FactsColumn provider={provider} />
+        <FactsColumn provider={provider} listed={listed} />
       </div>
 
       <RegistryModal provider={provider} />
@@ -316,21 +317,27 @@ function Loaded({ provider }: { provider: Provider }) {
 
 /**
  * The right column: one Facts card, the roster's facts with what NPPES records about the NPI
- * merged in (the NPI card's lookup, already cached), its source and date under the heading. The
- * roster's rows show at once; the registry's rise in when the lookup answers, and a failed
- * lookup leaves the roster's card (the NPI card shows the error). The column sticks on desktop
- * only while it is the roster's facts alone: the merged card is taller than the window.
+ * (the NPI card's lookup, already cached) and what the lists that matched the provider say
+ * merged in, each value marked with its sources. The roster's rows show at once; the others
+ * rise in as the lookup and the verdict answer, and a failed lookup leaves the roster's card
+ * (the NPI card shows the error). The column sticks on desktop only while it is the roster's
+ * facts alone: the merged card is taller than the window.
  */
-function FactsColumn({ provider }: { provider: Provider }) {
+function FactsColumn({
+  provider,
+  listed,
+}: {
+  provider: Provider
+  listed: readonly ListedRecord[]
+}) {
   const lookup = useNpi(provider.npi ?? '', provider.npi !== null)
-  const record = lookup.data?.record ?? null
-  const source = lookup.data ? factsSource(lookup.data) : null
-  const registry = record && source ? { record, source: source.block, kind: source.kind } : null
+  const registry = lookup.data?.record ?? null
+  const alone = !registry && listed.length === 0
   return (
     <div
-      className={`lg:row-span-2 lg:grid lg:grid-rows-subgrid ${registry ? '' : 'lg:sticky lg:top-28 lg:self-start'}`}
+      className={`lg:row-span-2 lg:grid lg:grid-rows-subgrid ${alone ? 'lg:sticky lg:top-28 lg:self-start' : ''}`}
     >
-      <FactsPanel provider={provider} registry={registry} />
+      <FactsPanel provider={provider} registry={registry} listed={listed} />
     </div>
   )
 }

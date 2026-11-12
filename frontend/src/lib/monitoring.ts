@@ -6,8 +6,10 @@
 import type {
   Attention,
   AttentionFilter,
+  KindFilter,
   ProviderStatus,
   ProviderVerdict,
+  RosterOrder,
   StatusSummary,
 } from './api.ts'
 import { date, plural, type FormatOptions } from './format.ts'
@@ -31,28 +33,27 @@ export function rosterLine(summary: Pick<StatusSummary, 'counts' | 'total'>): {
   return { lead, total: plural(summary.total, 'provider') }
 }
 
-/** The roster's filter: everyone needing a person (the default), one reason, or everyone. */
-export type RosterFilter = 'needs_you' | 'all' | Attention
+/**
+ * The roster's filter: everyone (the default; the backend puts those needing a person first) or
+ * one reason. No combined "needs you" filter: each reason is its own list (owner, 2026-11-12).
+ */
+export type RosterFilter = 'all' | Attention
 
-/** The filter named in the URL (`?attention=`); anything unknown is the default. */
+/** The filter named in the URL (`?attention=`); anything unknown is everyone. */
 export function parseFilter(value: string | null): RosterFilter {
-  if (value === 'all') return 'all'
-  return (ATTENTION_ORDER as readonly string[]).includes(value ?? '')
-    ? (value as Attention)
-    : 'needs_you'
+  return (ATTENTION_ORDER as readonly string[]).includes(value ?? '') ? (value as Attention) : 'all'
 }
 
-/** The `attention` the list asks the API for: `any` for "Needs you", none for "All". */
+/** The `attention` the list asks the API for: the reason, or none for "All". */
 export function filterAttention(filter: RosterFilter): AttentionFilter | undefined {
-  if (filter === 'needs_you') return 'any'
   return filter === 'all' ? undefined : filter
 }
 
 export type FilterChip = { filter: RosterFilter; word: string; label: Label | null; count: number }
 
 /**
- * "Needs you" with the sum of every reason, one chip per reason that has providers (most
- * serious first), then "All". The chip in use always shows, even at 0.
+ * "All" with the roster's total, then one chip per reason that has providers (most serious
+ * first). The chip in use always shows, even at 0.
  */
 export function filterChips(
   summary: Pick<StatusSummary, 'counts' | 'total'>,
@@ -64,11 +65,55 @@ export function filterChips(
     const label = attentionWord(attention)
     return { filter: attention, word: label.word, label, count: summary.counts[attention] ?? 0 }
   })
-  return [
-    { filter: 'needs_you', word: 'Needs you', label: null, count: needingYou(summary) },
-    ...reasons,
-    { filter: 'all', word: 'All', label: null, count: summary.total },
-  ]
+  return [{ filter: 'all', word: 'All', label: null, count: summary.total }, ...reasons]
+}
+
+// --- The filter menu: kind and order, over whichever chip is in use ---------------------------
+
+/** Who the roster shows: everyone (the default), only individuals or only organizations. */
+export type RosterKind = 'all' | KindFilter
+
+export type Choice<T extends string> = { value: T; word: string }
+
+/**
+ * The menu lists only choices away from the defaults (everyone; needs you first): a choice
+ * pressed again clears it, so the defaults need no line (owner, 2026-11-12).
+ */
+export const KIND_CHOICES: readonly Choice<KindFilter>[] = [
+  { value: 'individual', word: 'Individuals' },
+  { value: 'organization', word: 'Organizations' },
+]
+
+export const ORDER_CHOICES: readonly Choice<Exclude<RosterOrder, 'attention'>>[] = [
+  { value: 'newest', word: 'Newest first' },
+  { value: 'oldest', word: 'Oldest first' },
+]
+
+/** The choice after a press: the pressed one, or the default when it was already in use. */
+export function toggled<T extends string>(current: T, pressed: T, fallback: T): T {
+  return pressed === current ? fallback : pressed
+}
+
+/** The kind named in the URL (`?kind=`); anything unknown is everyone. */
+export function parseKind(value: string | null): RosterKind {
+  return KIND_CHOICES.some((choice) => choice.value === value) ? (value as KindFilter) : 'all'
+}
+
+/** The order named in the URL (`?order=`); anything unknown is the backend's default. */
+export function parseOrder(value: string | null): RosterOrder {
+  return ORDER_CHOICES.some((choice) => choice.value === value)
+    ? (value as RosterOrder)
+    : 'attention'
+}
+
+/** The `kind` the list asks the API for: none for everyone. */
+export function filterKind(kind: RosterKind): KindFilter | undefined {
+  return kind === 'all' ? undefined : kind
+}
+
+/** How many of the menu's choices are not their default: the count on the Filter pill. */
+export function choicesInUse(kind: RosterKind, order: RosterOrder): number {
+  return (kind === 'all' ? 0 : 1) + (order === 'attention' ? 0 : 1)
 }
 
 // --- A provider's steps ---------------------------------------------------------------------

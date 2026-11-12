@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { useLocation, useMatch, useNavigate, useSearchParams } from 'react-router'
+import type { RosterOrder } from '../../lib/api.ts'
 import { ButtonLink, Button } from '../../components/Button.tsx'
 import { SEARCH_INPUT } from '../../components/Field.tsx'
 import { Icon } from '../../components/Icon.tsx'
@@ -16,14 +17,20 @@ import { attentionWord } from '../../lib/labels.ts'
 import {
   filterAttention,
   filterChips,
+  filterKind,
   parseFilter,
+  parseKind,
+  parseOrder,
   rosterLine,
+  toggled,
   type RosterFilter,
+  type RosterKind,
 } from '../../lib/monitoring.ts'
 import { PAGE_SIZE, useProviderList, useProviderSummary, useSourceName } from '../../lib/queries.ts'
 import { useRecedingHero } from '../../lib/scroll.ts'
 import { AddProviderSheet } from './AddProviderSheet.tsx'
 import { FilterChips } from './FilterChips.tsx'
+import { FilterMenu } from './FilterMenu.tsx'
 import { ImportSheet } from './ImportSheet.tsx'
 import { useListState } from './listState.ts'
 import { Pager } from './Pager.tsx'
@@ -38,9 +45,10 @@ const EXAMPLES = ['Sampleperson', '1234567893', 'Sampleville Care Group'] as con
 const LIST = 'flex flex-col gap-2.5'
 
 /**
- * The monitored roster: who needs a person first. The header counts them, the chips filter by
- * reason (kept in the URL as `?attention=`, a reason and never a name), and each row says its
- * one reason in a word and a line. The backend decides and orders; the page only names.
+ * The monitored roster: who needs a person first. The header counts them, the chips keep one
+ * reason (kept in the URL as `?attention=`, a reason and never a name; everyone by default, those
+ * needing a person first), and each row says its one reason in a word and a line. The backend
+ * decides and orders; the page only names.
  */
 export function ProvidersPage() {
   const { q, page, setQ, setPage } = useListState()
@@ -49,7 +57,13 @@ export function ProvidersPage() {
   const typed = useTypedPlaceholder(EXAMPLES, !focused && draft === '')
   const [params, setParams] = useSearchParams()
   const filter = parseFilter(params.get('attention'))
-  const list = useProviderList(q, page, filterAttention(filter))
+  const kind = parseKind(params.get('kind'))
+  const order = parseOrder(params.get('order'))
+  const list = useProviderList(q, page, {
+    attention: filterAttention(filter),
+    kind: filterKind(kind),
+    order: order === 'attention' ? undefined : order,
+  })
   const summary = useProviderSummary()
   const sourceName = useSourceName()
   const adding = useMatch('/providers/new') !== null
@@ -69,10 +83,19 @@ export function ProvidersPage() {
     return () => clearTimeout(timer)
   }, [draft, q, setQ, setPage])
 
-  function choose(next: RosterFilter) {
-    if (next === filter) return
+  /** The URL names only the choices away from their defaults, a reason and never a name. */
+  function choose(next: { filter?: RosterFilter; kind?: RosterKind; order?: RosterOrder }) {
+    const chosen = { filter, kind, order, ...next }
+    if (chosen.filter === filter && chosen.kind === kind && chosen.order === order) return
     setPage(1)
-    setParams(next === 'needs_you' ? {} : { attention: next }, { replace: true })
+    setParams(
+      {
+        ...(chosen.filter === 'all' ? {} : { attention: chosen.filter }),
+        ...(chosen.kind === 'all' ? {} : { kind: chosen.kind }),
+        ...(chosen.order === 'attention' ? {} : { order: chosen.order }),
+      },
+      { replace: true },
+    )
   }
 
   const data = list.data
@@ -110,7 +133,7 @@ export function ProvidersPage() {
           <motion.div
             ref={heroAnchor}
             style={hero.field}
-            className="mt-8 mb-5 flex items-center gap-4 lg:mt-[52px] lg:grid lg:grid-cols-4 lg:gap-0"
+            className="mt-8 mb-5 flex items-center gap-3 lg:mt-[52px] lg:grid lg:grid-cols-4 lg:gap-0"
           >
             <search className="relative block w-full min-w-0 flex-1 lg:col-span-2 lg:col-start-2">
               <Icon
@@ -138,6 +161,15 @@ export function ProvidersPage() {
                 <TypedPlaceholder text={typed.text} className="right-5 left-[53px] text-[17px]" />
               )}
             </search>
+            {/* The other filters (kind, order) beside the search: they apply to every chip. */}
+            <div className="lg:col-start-4 lg:pl-3">
+              <FilterMenu
+                kind={kind}
+                order={order}
+                onKind={(next) => choose({ kind: next })}
+                onOrder={(next) => choose({ order: next })}
+              />
+            </div>
           </motion.div>
         )}
 
@@ -161,7 +193,7 @@ export function ProvidersPage() {
                 <FilterChips
                   chips={filterChips(counts, filter)}
                   current={filter}
-                  onChange={choose}
+                  onChange={(next) => choose({ filter: toggled(filter, next, 'all') })}
                 />
               </div>
               <div className="hidden lg:col-start-3 lg:flex lg:justify-self-end">
@@ -187,16 +219,16 @@ export function ProvidersPage() {
                 <ProviderRowSkeleton key={index} />
               ))}
             </ul>
-          ) : noRoster || (empty && !q && filter === 'all') ? (
+          ) : noRoster || (empty && !q && filter === 'all' && kind === 'all') ? (
             <EmptyRoster />
           ) : empty && q ? (
             <NoMatches query={q} />
           ) : empty ? (
-            <NobodyHere filter={filter} />
+            <NobodyHere filter={filter} kind={kind} />
           ) : (
             <AnimatePresence mode="wait" initial={false}>
               <motion.div
-                key={`${q}|${page}|${filter}`}
+                key={`${q}|${page}|${filter}|${kind}|${order}`}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: list.isPlaceholderData ? 0.6 : 1, y: 0 }}
                 exit={{ opacity: 0 }}
@@ -305,10 +337,14 @@ function EmptyRoster() {
   )
 }
 
-/** A reason with nobody left under it, for instance after the last one was opened. */
-function NobodyHere({ filter }: { filter: RosterFilter }) {
-  const word =
-    filter === 'needs_you' || filter === 'all' ? null : attentionWord(filter).word.toLowerCase()
+/**
+ * A reason with nobody left under it, for instance after the last one was opened, or a kind
+ * the roster has none of.
+ */
+function NobodyHere({ filter, kind }: { filter: RosterFilter; kind: RosterKind }) {
+  const word = filter === 'all' ? null : attentionWord(filter).word.toLowerCase()
+  const who =
+    kind === 'individual' ? 'individuals' : kind === 'organization' ? 'organizations' : null
   return (
     <motion.p
       initial={{ opacity: 0, y: 8 }}
@@ -316,7 +352,13 @@ function NobodyHere({ filter }: { filter: RosterFilter }) {
       transition={{ duration: 0.2 }}
       className="mx-auto mt-10 max-w-sm text-center text-title"
     >
-      {word ? `No providers marked ${word}` : 'Nothing needs you'}
+      {word && who
+        ? `No ${who} marked ${word}`
+        : word
+          ? `No providers marked ${word}`
+          : who
+            ? `No ${who} on the roster`
+            : 'Nothing needs you'}
     </motion.p>
   )
 }

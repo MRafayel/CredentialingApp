@@ -1,79 +1,232 @@
 /**
- * What the registry adds to the provider's Facts once the NPI is known: only what the roster does
- * not already say. The roster's own rows stay as entered; each registry row added here is shown
- * as NPPES's. Nothing here decides a status.
+ * What the registry and the exclusion lists add to the provider's Facts once the NPI is known
+ * and the lists have answered: only what the roster does not already say, each value once
+ * however many sources carry it, and every added value marked with its sources ("NPPES",
+ * "NY list"). The roster's own rows stay as entered. Nothing here decides a status.
  */
-import type { NpiRecord, Provider } from '../../lib/api.ts'
+import type {
+  MatchedRecord,
+  NpiRecord,
+  Provider,
+  SourceStatus,
+  Verification,
+} from '../../lib/api.ts'
 import { registryName, registryPlace } from '../../lib/registry.ts'
 
 export type RegistryTaxonomy = NpiRecord['taxonomies'][number]
-export type RegistryLicence = { state: string; number: string }
+export type Licence = { state: string; number: string }
+
+/** A value a source adds, with the sources that carry it, the first to say it first. */
+export type Added<T> = { value: T; sources: string[] }
+
+/** A matched exclusion record with the caption of its list ("NY list"). */
+export type ListedRecord = { caption: string; record: MatchedRecord }
+
+/** The registry's caption beside a value it adds. */
+export const REGISTRY = 'NPPES'
+
+export type AddedFacts = {
+  /** Names that read differently from the roster's, as a source writes them. */
+  names: Added<string>[]
+  /** Other names of the party (the registry's other names, the lists' aliases). */
+  otherNames: Added<string>[]
+  /** NPIs the lists publish while the roster has none. */
+  npis: Added<string>[]
+  licences: Added<Licence>[]
+  /** Places as "City, ST": the registry's practice place, the lists' city and state. */
+  places: Added<string>[]
+  /** The registry's taxonomies the roster lacks (the lists have none). */
+  taxonomies: RegistryTaxonomy[]
+}
+
+type FactsProvider = Pick<
+  Provider,
+  'person_name' | 'organization_name' | 'npi' | 'licenses' | 'addresses' | 'taxonomy_codes'
+>
+type FactsRegistry = Pick<
+  NpiRecord,
+  | 'person_name'
+  | 'organization_name'
+  | 'other_names'
+  | 'taxonomies'
+  | 'practice_city'
+  | 'practice_state'
+>
 
 /** A state and a licence number as letters and digits only, upper case (as the backend compares). */
 const licenceKey = (state: string, number: string) =>
-  `${state.trim().toUpperCase()}|${number.replace(/[^0-9a-z]/gi, '').toUpperCase()}`
+  `${fold(state)}|${number.replace(/[^0-9a-z]/gi, '').toUpperCase()}`
 
 const fold = (value: string | null | undefined) => (value ?? '').trim().toUpperCase()
 
-/**
- * The registry's name when it reads differently from the roster's ("Last, First Middle Suffix"
- * or the organization), compared without regard to case; null when they agree or either is
- * missing.
- */
-export function registryNameIfDifferent(
-  provider: Pick<Provider, 'person_name' | 'organization_name'>,
-  record: Pick<NpiRecord, 'person_name' | 'organization_name'>,
-): string | null {
-  const theirs = registryName(record)
-  const ours = registryName(provider)
-  if (!theirs || !ours) return null
-  return fold(theirs) === fold(ours) ? null : theirs
-}
+const placeKey = (city: string | null | undefined, state: string | null | undefined) =>
+  `${fold(city)}|${fold(state)}`
 
 /**
- * The licences the registry's taxonomies report (state and number both given) that the roster
- * does not list: same state and the same letters and digits, ignoring case and punctuation.
- * Each licence once, in the registry's order with the primary taxonomy's first.
+ * Values keyed for sameness: a value already known (the roster's) is never added, a value a
+ * second source carries gains that source, in the order the sources spoke.
  */
-export function addedLicences(
-  provider: Pick<Provider, 'licenses'>,
-  record: Pick<NpiRecord, 'taxonomies'>,
-): RegistryLicence[] {
-  // A state-only roster licence covers no numbered registry licence: that one is still added.
-  const seen = new Set(
-    provider.licenses
-      .filter((licence) => licence.number)
-      .map((licence) => licenceKey(licence.state, licence.number ?? '')),
-  )
-  const added: RegistryLicence[] = []
-  for (const taxonomy of primaryFirst(record.taxonomies)) {
-    const state = taxonomy.license_state?.trim()
-    const number = taxonomy.license_number?.trim()
-    if (!state || !number) continue
-    const key = licenceKey(state, number)
-    if (seen.has(key)) continue
-    seen.add(key)
-    added.push({ state, number })
+class Merged<T> {
+  private readonly entries = new Map<string, Added<T>>()
+  private readonly known: ReadonlySet<string>
+
+  constructor(known: ReadonlySet<string>) {
+    this.known = known
   }
-  return added
+
+  add(key: string, value: T, source: string): void {
+    if (this.known.has(key)) return
+    const entry = this.entries.get(key)
+    if (!entry) {
+      this.entries.set(key, { value, sources: [source] })
+    } else if (!entry.sources.includes(source)) {
+      entry.sources.push(source)
+    }
+  }
+
+  has(key: string): boolean {
+    return this.entries.has(key)
+  }
+
+  take(key: string): Added<T> | undefined {
+    const entry = this.entries.get(key)
+    this.entries.delete(key)
+    return entry
+  }
+
+  list(): Added<T>[] {
+    return [...this.entries.values()]
+  }
+}
+
+/** What one source says about the party, in the roster's terms. */
+type Contribution = {
+  source: string
+  name: string | null
+  otherNames: readonly string[]
+  npi: string | null
+  licences: readonly Licence[]
+  place: { key: string; text: string } | null
+}
+
+function fromRegistry(record: FactsRegistry): Contribution {
+  const text = registryPlace(record)
+  return {
+    source: REGISTRY,
+    name: registryName(record),
+    otherNames: record.other_names,
+    npi: null,
+    licences: primaryFirst(record.taxonomies).flatMap((taxonomy) => {
+      const state = taxonomy.license_state?.trim()
+      const number = taxonomy.license_number?.trim()
+      return state && number ? [{ state, number }] : []
+    }),
+    place: text ? { key: placeKey(record.practice_city, record.practice_state), text } : null,
+  }
+}
+
+function fromList({ caption, record }: ListedRecord): Contribution {
+  const place = record.place
+  const text = place ? [place.city, place.state].filter(Boolean).join(', ') : ''
+  const licence = record.license
+  return {
+    source: caption,
+    name: registryName(record),
+    otherNames: record.aliases,
+    npi: record.npi,
+    licences: licence ? [{ state: licence.state, number: licence.number }] : [],
+    place: text ? { key: placeKey(place?.city, place?.state), text } : null,
+  }
 }
 
 /**
- * The registry's practice place ("Austin, TX") when no roster address already has that city and
- * state; null otherwise.
+ * The facts the registry (first, when the NPI is known) and the matched records of the lists
+ * add to the roster's. Sameness: names and other names by their text ignoring case; licences
+ * by state and the letters and digits of the number (so a number the lists pad or prefix
+ * differently stays a row of its own, marked with its list); places by city and state; NPIs
+ * as written. A roster name, licence, address or NPI is never repeated; a name one source
+ * writes that another lists as an alias is one row with both sources.
  */
-export function addedPlace(
-  provider: Pick<Provider, 'addresses'>,
-  record: Pick<NpiRecord, 'practice_city' | 'practice_state'>,
-): string | null {
-  const place = registryPlace(record)
-  if (!place) return null
-  const city = fold(record.practice_city)
-  const state = fold(record.practice_state)
-  const known = provider.addresses.some(
-    (address) => fold(address.city) === city && fold(address.state) === state,
+export function addedFacts(
+  provider: FactsProvider,
+  registry: FactsRegistry | null,
+  listed: readonly ListedRecord[],
+): AddedFacts {
+  const ownName = new Set([fold(registryName(provider))].filter(Boolean))
+  const names = new Merged<string>(ownName)
+  const otherNames = new Merged<string>(ownName)
+  const npis = new Merged<string>(new Set(provider.npi ? [provider.npi] : []))
+  const licences = new Merged<Licence>(
+    new Set(
+      provider.licenses
+        .filter((licence) => licence.number)
+        .map((licence) => licenceKey(licence.state, licence.number ?? '')),
+    ),
   )
-  return known ? null : place
+  const places = new Merged<string>(
+    new Set(provider.addresses.map((address) => placeKey(address.city, address.state))),
+  )
+
+  const contributions = [...(registry ? [fromRegistry(registry)] : []), ...listed.map(fromList)]
+  for (const said of contributions) {
+    if (said.name) names.add(fold(said.name), said.name, said.source)
+    for (const other of said.otherNames) {
+      const key = fold(other)
+      if (names.has(key)) names.add(key, other, said.source)
+      else otherNames.add(key, other, said.source)
+    }
+    if (said.npi) npis.add(said.npi, said.npi, said.source)
+    for (const licence of said.licences) {
+      licences.add(licenceKey(licence.state, licence.number), licence, said.source)
+    }
+    if (said.place) places.add(said.place.key, said.place.text, said.source)
+  }
+  // An alias a source gave before another source wrote it as the party's name joins that name.
+  for (const [key] of names.list().map((entry) => [fold(entry.value)] as const)) {
+    const alias = otherNames.take(key)
+    for (const source of alias?.sources ?? []) names.add(key, alias?.value ?? '', source)
+  }
+
+  return {
+    names: names.list(),
+    otherNames: otherNames.list(),
+    npis: npis.list(),
+    licences: licences.list(),
+    places: places.list(),
+    taxonomies: registry ? addedTaxonomies(provider, registry) : [],
+  }
+}
+
+/**
+ * The records whose facts may stand beside the roster's: those a completed check matched as
+ * the party itself at exact or high confidence. A potential or ambiguous match, or a related
+ * party on a listed party's row, stays in the Results alone, since its facts may be someone
+ * else's.
+ */
+export function listedRecords(
+  results: readonly Verification[],
+  caption: (sourceId: string) => string,
+): ListedRecord[] {
+  return results.flatMap((result) => {
+    const match = result.match
+    if (result.outcome !== 'completed' || !match || match.relation !== 'party') return []
+    if (match.level !== 'exact' && match.level !== 'high') return []
+    return result.matched_records.map((record) => ({ caption: caption(result.source_id), record }))
+  })
+}
+
+/**
+ * A list's short caption beside a fact it adds: "federal list" for the federal list, "NY list"
+ * for a state's, else the list's name.
+ */
+export function listCaption(
+  source: Pick<SourceStatus, 'jurisdictions' | 'display_name'> | undefined,
+  sourceId: string,
+): string {
+  if (!source) return sourceId
+  if (source.jurisdictions.includes('US')) return 'federal list'
+  const [state, ...rest] = source.jurisdictions
+  return state && rest.length === 0 ? `${state} list` : source.display_name
 }
 
 /**

@@ -15,11 +15,13 @@ from credentialing.domain.enums import (
     Attention,
     AttentionScope,
     CredentialType,
+    EntityKind,
     Finding,
     Freshness,
     IdentityState,
     Outcome,
     RecordStatus,
+    RosterOrder,
     RosterRole,
     Verdict,
     VerificationMethod,
@@ -44,7 +46,7 @@ from credentialing.infrastructure.repositories.verifications import (
     PostgresVerificationRepository,
 )
 from tests.fakes import FixedClock, ScriptedConnector, capabilities
-from tests.synthetic import NOW, exclusion, individual
+from tests.synthetic import NOW, exclusion, individual, organization
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -209,6 +211,34 @@ async def test_a_page_keeps_any_attention_or_none_within_one_organization(
     assert ([p.id for p, _ in some], some_total) == ([tenants.a_listed.id], 1)
     assert ([p.id for p, _ in none], none_total) == ([tenants.a_clear.id], 1)
     assert list(theirs) == []
+
+
+async def test_a_page_keeps_one_kind_and_takes_an_order(tenants: _Tenants) -> None:
+    group = organization("Sampleville Group").model_copy(
+        update={"organization_id": tenants.a, "created_at": NOW + timedelta(minutes=1)}
+    )
+    await tenants.providers.add(group)
+
+    people, people_total = await tenants.providers.list_status(
+        tenants.a, query=None, attention=None, kind=EntityKind.INDIVIDUAL, limit=10, offset=0
+    )
+    groups, _ = await tenants.providers.list_status(
+        tenants.a, query=None, attention=None, kind=EntityKind.ORGANIZATION, limit=10, offset=0
+    )
+    oldest, _ = await tenants.providers.list_status(
+        tenants.a, query=None, attention=None, order=RosterOrder.OLDEST, limit=10, offset=0
+    )
+    newest, _ = await tenants.providers.list_status(
+        tenants.a, query=None, attention=None, order=RosterOrder.NEWEST, limit=10, offset=0
+    )
+
+    assert ([p.id for p, _ in people], people_total) == (
+        [tenants.a_listed.id, tenants.a_clear.id],
+        2,
+    )
+    assert [p.id for p, _ in groups] == [group.id]
+    assert [p.id for p, _ in oldest] == [tenants.a_listed.id, tenants.a_clear.id, group.id]
+    assert [p.id for p, _ in newest] == [group.id, tenants.a_clear.id, tenants.a_listed.id]
 
 
 async def test_counts_are_one_organizations(tenants: _Tenants) -> None:

@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderVerdict, StatusSummary } from './api.ts'
 import {
+  choicesInUse,
   filterAttention,
   filterChips,
+  filterKind,
   needingYou,
   parseFilter,
+  parseKind,
+  parseOrder,
   providerSteps,
   rosterLine,
+  toggled,
 } from './monitoring.ts'
 
 const summary = (counts: Record<string, number>, total: number): StatusSummary => ({
@@ -44,34 +49,62 @@ describe('rosterLine', () => {
 })
 
 describe('filters', () => {
-  it('reads the URL value, falling back to "Needs you"', () => {
-    expect(parseFilter(null)).toBe('needs_you')
+  it('reads the URL value, falling back to everyone', () => {
+    expect(parseFilter(null)).toBe('all')
     expect(parseFilter('all')).toBe('all')
     expect(parseFilter('listed')).toBe('listed')
-    expect(parseFilter('none')).toBe('needs_you')
-    expect(parseFilter('anything')).toBe('needs_you')
+    expect(parseFilter('none')).toBe('all')
+    expect(parseFilter('any')).toBe('all')
+    expect(parseFilter('anything')).toBe('all')
   })
 
-  it('asks the API for any reason, one reason, or everyone', () => {
-    expect(filterAttention('needs_you')).toBe('any')
+  it('asks the API for one reason, or everyone', () => {
     expect(filterAttention('all')).toBeUndefined()
     expect(filterAttention('npi_missing')).toBe('npi_missing')
   })
 
-  it('shows "Needs you", the reasons with providers most serious first, then "All"', () => {
-    const chips = filterChips(summary({ npi_missing: 7, listed: 5, none: 1 }, 13), 'needs_you')
+  it('shows "All", then the reasons with providers most serious first, no combined chip', () => {
+    const chips = filterChips(summary({ npi_missing: 7, listed: 5, none: 1 }, 13), 'all')
     expect(chips.map((chip) => [chip.word, chip.count])).toEqual([
-      ['Needs you', 12],
+      ['All', 13],
       ['Listed', 5],
       ['Needs NPI', 7],
-      ['All', 13],
     ])
     expect(chips[1]?.label?.tone).toBe('listed')
   })
 
   it('keeps the chip in use even when its count is 0', () => {
     const chips = filterChips(summary({ listed: 1 }, 1), 'changed')
-    expect(chips.map((chip) => chip.filter)).toEqual(['needs_you', 'listed', 'changed', 'all'])
+    expect(chips.map((chip) => chip.filter)).toEqual(['all', 'listed', 'changed'])
+  })
+})
+
+describe('the filter menu', () => {
+  it('reads the kind and the order from the URL, falling back to the defaults', () => {
+    expect(parseKind(null)).toBe('all')
+    expect(parseKind('individual')).toBe('individual')
+    expect(parseKind('unknown')).toBe('all')
+    expect(parseOrder(null)).toBe('attention')
+    expect(parseOrder('oldest')).toBe('oldest')
+    expect(parseOrder('name')).toBe('attention')
+  })
+
+  it('asks the API for a kind only when one is chosen', () => {
+    expect(filterKind('all')).toBeUndefined()
+    expect(filterKind('organization')).toBe('organization')
+  })
+
+  it('clears a choice pressed a second time', () => {
+    expect(toggled('all', 'individual', 'all')).toBe('individual')
+    expect(toggled('individual', 'individual', 'all')).toBe('all')
+    expect(toggled('newest', 'oldest', 'attention')).toBe('oldest')
+    expect(toggled('all', 'all', 'all')).toBe('all')
+  })
+
+  it('counts the choices away from their defaults', () => {
+    expect(choicesInUse('all', 'attention')).toBe(0)
+    expect(choicesInUse('individual', 'attention')).toBe(1)
+    expect(choicesInUse('organization', 'newest')).toBe(2)
   })
 })
 

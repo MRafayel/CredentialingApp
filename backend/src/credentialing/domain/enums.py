@@ -270,3 +270,15 @@ class AttentionScope(StrEnum):
 
 type AttentionSelection = Attention | AttentionScope
 """What a roster page keeps: one attention reason, or a scope of them."""
+
+
+class RosterOrder(StrEnum):
+    """How a roster page is ordered (owner, 2026-11-12). Every order ends with the newest
+    provider first and its id, so paging is stable."""
+
+    ATTENTION = "attention"
+    """Those needing a person first, by :class:`Attention` order, then newest first."""
+    NEWEST = "newest"
+    """By the date added, newest first."""
+    OLDEST = "oldest"
+    """By the date added, oldest first."""

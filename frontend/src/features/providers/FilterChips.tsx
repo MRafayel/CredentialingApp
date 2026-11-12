@@ -7,8 +7,8 @@ import type { Label } from '../../lib/labels.ts'
 import type { FilterChip, RosterFilter } from '../../lib/monitoring.ts'
 
 /**
- * The roster's filters as one row of outlined pills: "Needs you", each reason with providers
- * (its mark, its word, its count), "All". One row that scrolls sideways on a phone; centred
+ * The roster's filters as one row of outlined pills: "All", then each reason with providers
+ * (its mark, its word, its count); the chip in use pressed again returns to "All". One row that scrolls sideways on a phone; centred
  * under the search on desktop.
  */
 export function FilterChips({

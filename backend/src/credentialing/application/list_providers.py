@@ -1,5 +1,5 @@
-"""Use case: one page of an organization's monitored roster, optionally narrowed by a search or
-by attention (one reason, any reason, or none)."""
+"""Use case: one page of an organization's monitored roster, optionally narrowed by a search,
+by attention (one reason, any reason, or none) or by kind, in the asked order."""
 
 from typing import Final
 from uuid import UUID
@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from credentialing.application.provider_status import ProviderStatusKeeper
-from credentialing.domain.enums import AttentionSelection
+from credentialing.domain.enums import AttentionSelection, EntityKind, RosterOrder
 from credentialing.domain.models import Provider, ProviderStatus
 from credentialing.domain.ports import ProviderRepository
 
@@ -25,8 +25,8 @@ class ProviderWithStatus(BaseModel):
 
 
 class ProviderPage(BaseModel):
-    """One page of providers, those needing attention first (by :class:`Attention` order),
-    then newest first, with the total across all pages."""
+    """One page of providers in the asked order (by default those needing attention first, by
+    :class:`Attention` order, then newest first), with the total across all pages."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -52,10 +52,13 @@ class ListProviders:
         page: int,
         page_size: int,
         attention: AttentionSelection | None = None,
+        kind: EntityKind | None = None,
+        order: RosterOrder = RosterOrder.ATTENTION,
     ) -> ProviderPage:
         """Return page ``page`` (from 1) of ``page_size`` providers, capped at
         ``MAX_PAGE_SIZE``; with ``attention``, only providers with that reason, or with
-        :class:`~credentialing.domain.enums.AttentionScope` any reason or none.
+        :class:`~credentialing.domain.enums.AttentionScope` any reason or none; with ``kind``,
+        only individuals or only organizations; in ``order`` (attention first by default).
 
         Statuses missing or derived by older rules are derived first, so the order and the
         filter rest on current rules; a provider added while the page was read gets its status
@@ -69,6 +72,8 @@ class ListProviders:
             organization_id,
             query=term or None,
             attention=attention,
+            kind=kind,
+            order=order,
             limit=page_size,
             offset=(page - 1) * page_size,
         )

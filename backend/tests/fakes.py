@@ -33,6 +33,7 @@ from credentialing.domain.enums import (
     MatchLevel,
     NpiStatus,
     Outcome,
+    RosterOrder,
     VerificationMethod,
 )
 from credentialing.domain.errors import DatasetShrankError, DuplicateNpiError
@@ -1094,10 +1095,14 @@ class InMemoryProviders:
         *,
         query: str | None,
         attention: AttentionSelection | None,
+        kind: EntityKind | None = None,
+        order: RosterOrder = RosterOrder.ATTENTION,
         limit: int,
         offset: int,
     ) -> tuple[Sequence[tuple[Provider, ProviderStatus | None]], int]:
         newest, _ = await self.list(organization_id, query=query, limit=len(self.stored), offset=0)
+        if kind is not None:
+            newest = [p for p in newest if p.entity_kind is kind]
         pairs = [(p, self._status(organization_id, p.id)) for p in newest]
 
         def kept(status: ProviderStatus | None) -> bool:
@@ -1113,7 +1118,13 @@ class InMemoryProviders:
                     return reason is attention
 
         pairs = [(p, s) for p, s in pairs if kept(s)]
-        pairs.sort(key=lambda pair: attention_rank(pair[1].attention if pair[1] else None))
+        match order:
+            case RosterOrder.ATTENTION:
+                pairs.sort(key=lambda pair: attention_rank(pair[1].attention if pair[1] else None))
+            case RosterOrder.NEWEST:
+                pass
+            case RosterOrder.OLDEST:
+                pairs.reverse()
         return pairs[offset : offset + limit], len(pairs)
 
     async def status_counts(self, organization_id: UUID) -> Mapping[Attention | None, int]:

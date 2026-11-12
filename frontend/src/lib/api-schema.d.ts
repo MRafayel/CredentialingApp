@@ -33,10 +33,11 @@ export interface paths {
     }
     /**
      * List Providers
-     * @description One page of the organization's providers with their monitoring status, those needing
-     *     attention first (most serious first), then newest first; ``q`` searches names or NPI,
-     *     ``attention`` keeps only providers with that reason, ``any`` those with some reason,
-     *     ``none`` those needing nobody.
+     * @description One page of the organization's providers with their monitoring status, in ``order``
+     *     (by default those needing attention first, most serious first, then newest first;
+     *     ``newest`` or ``oldest`` by the date added); ``q`` searches names or NPI, ``attention``
+     *     keeps only providers with that reason, ``any`` those with some reason, ``none`` those
+     *     needing nobody, ``kind`` only individuals or only organizations.
      */
     get: operations['list_providers_providers_get']
     put?: never
@@ -791,6 +792,12 @@ export interface components {
      */
     ImportSeverity: 'error' | 'warning'
     /**
+     * KindFilter
+     * @description The roster's ``kind`` query: only individuals or only organizations.
+     * @enum {string}
+     */
+    KindFilter: 'individual' | 'organization'
+    /**
      * LicenseBody
      * @description A professional license: its state, and its number when known (omitted or null: the
      *     provider is licensed in the state, number unknown).
@@ -840,6 +847,8 @@ export interface components {
       npi: string | null
       /** Related Npis */
       related_npis: string[]
+      license: components['schemas']['RecordLicenseResponse'] | null
+      place: components['schemas']['RecordPlaceResponse'] | null
       action: components['schemas']['ExclusionAction']
       /** Action Raw */
       action_raw: string | null
@@ -847,8 +856,6 @@ export interface components {
       effective_date: string | null
       /** End Date */
       end_date: string | null
-      license: components['schemas']['RecordLicenseResponse'] | null
-      place: components['schemas']['RecordPlaceResponse'] | null
       /** Raw Provider Type */
       raw_provider_type: string | null
       status: components['schemas']['RecordStatus']
@@ -880,7 +887,7 @@ export interface components {
     }
     /**
      * LookupRecordResponse
-     * @description An exclusion record a lookup found. The date of birth and street address are left out.
+     * @description An exclusion record a lookup found, with the provider type its source wrote down.
      *
      *     ``status`` says whether it still stands, has ended, or was removed from its published list
      *     (reinstatement not confirmed).
@@ -905,6 +912,8 @@ export interface components {
       npi: string | null
       /** Related Npis */
       related_npis: string[]
+      license: components['schemas']['RecordLicenseResponse'] | null
+      place: components['schemas']['RecordPlaceResponse'] | null
       action: components['schemas']['ExclusionAction']
       /** Action Raw */
       action_raw: string | null
@@ -912,8 +921,6 @@ export interface components {
       effective_date: string | null
       /** End Date */
       end_date: string | null
-      license: components['schemas']['RecordLicenseResponse'] | null
-      place: components['schemas']['RecordPlaceResponse'] | null
       /** Raw Provider Type */
       raw_provider_type: string | null
       status: components['schemas']['RecordStatus']
@@ -987,7 +994,9 @@ export interface components {
     }
     /**
      * MatchedRecordResponse
-     * @description An exclusion record a result points at. DOB and address are left out on purpose.
+     * @description An exclusion record a result points at. The date of birth and the street address are
+     *     left out on purpose; the licence and the place (city and state) are the facts about the
+     *     party the provider page shows beside the roster's (owner, 2026-11-12).
      *
      *     ``aliases`` are other names of the same party; ``related_parties`` name other parties on
      *     the same row and ``related_npis`` the row's other NPIs, whose owner the row does not say.
@@ -1012,6 +1021,8 @@ export interface components {
       npi: string | null
       /** Related Npis */
       related_npis: string[]
+      license: components['schemas']['RecordLicenseResponse'] | null
+      place: components['schemas']['RecordPlaceResponse'] | null
       action: components['schemas']['ExclusionAction']
       /** Action Raw */
       action_raw: string | null
@@ -1311,6 +1322,8 @@ export interface components {
       npi: string | null
       /** Related Npis */
       related_npis: string[]
+      license: components['schemas']['RecordLicenseResponse'] | null
+      place: components['schemas']['RecordPlaceResponse'] | null
       action: components['schemas']['ExclusionAction']
       /** Action Raw */
       action_raw: string | null
@@ -1318,8 +1331,6 @@ export interface components {
       effective_date: string | null
       /** End Date */
       end_date: string | null
-      license: components['schemas']['RecordLicenseResponse'] | null
-      place: components['schemas']['RecordPlaceResponse'] | null
       /** Raw Provider Type */
       raw_provider_type: string | null
       status: components['schemas']['RecordStatus']
@@ -1671,6 +1682,13 @@ export interface components {
       verified_at: string
     }
     /**
+     * RosterOrder
+     * @description How a roster page is ordered (owner, 2026-11-12). Every order ends with the newest
+     *     provider first and its id, so paging is stable.
+     * @enum {string}
+     */
+    RosterOrder: 'attention' | 'newest' | 'oldest'
+    /**
      * RosterRole
      * @description Why a party is on an organization's roster; decides whether an NPI is expected (only of
      *     practitioners).
@@ -1926,6 +1944,8 @@ export interface operations {
         page?: number
         page_size?: number
         attention?: components['schemas']['AttentionFilter'] | null
+        kind?: components['schemas']['KindFilter'] | null
+        order?: components['schemas']['RosterOrder']
       }
       header?: {
         'x-organization-id'?: string | null

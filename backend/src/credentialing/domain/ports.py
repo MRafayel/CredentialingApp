@@ -16,6 +16,7 @@ from credentialing.domain.enums import (
     EntityKind,
     NpiStatus,
     Outcome,
+    RosterOrder,
 )
 from credentialing.domain.models import (
     ConnectorCapabilities,
@@ -103,16 +104,19 @@ class ProviderRepository(Protocol):
         *,
         query: str | None,
         attention: AttentionSelection | None,
+        kind: EntityKind | None = None,
+        order: RosterOrder = RosterOrder.ATTENTION,
         limit: int,
         offset: int,
     ) -> tuple[Sequence[tuple[Provider, ProviderStatus | None]], int]:
         """One page of the organization's providers with their stored status, and the total.
 
-        Providers needing attention come first, by :class:`Attention` order, then newest
-        first. ``query`` matches as in :meth:`list`; ``attention`` keeps only that reason, or
-        with :class:`AttentionScope` every provider with some reason (``ANY``) or with none
-        (``NONE``, including a status never stored). A provider whose status was never stored
-        comes last with None.
+        ``order`` sorts the page (:class:`RosterOrder`; by default those needing attention
+        first, by :class:`Attention` order, then newest first). ``query`` matches as in
+        :meth:`list`; ``attention`` keeps only that reason, or with :class:`AttentionScope`
+        every provider with some reason (``ANY``) or with none (``NONE``, including a status
+        never stored); ``kind`` keeps only individuals or only organizations. A provider whose
+        status was never stored sorts with those needing nobody, with None.
         """
         ...
 

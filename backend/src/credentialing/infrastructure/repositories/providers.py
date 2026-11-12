@@ -28,6 +28,7 @@ from credentialing.domain.enums import (
     AttentionSelection,
     EntityKind,
     IdentityState,
+    RosterOrder,
     RosterRole,
     Verdict,
 )
@@ -70,6 +71,16 @@ _FROM_JOINED: Final = sql.SQL(
 
 _UNRANKED: Final = attention_rank(None)
 """Where a provider without a stored status sorts: with those needing nobody."""
+
+_ORDER: Final = {
+    RosterOrder.ATTENTION: sql.SQL(
+        "coalesce(s.attention_rank, {unranked}), p.created_at desc, p.id desc"
+    ).format(unranked=sql.Literal(_UNRANKED)),
+    RosterOrder.NEWEST: sql.SQL("p.created_at desc, p.id desc"),
+    RosterOrder.OLDEST: sql.SQL("p.created_at, p.id"),
+}
+"""The ``order by`` of each :class:`RosterOrder`; every one ends with the id, so a page is
+stable between the count and the read."""
 
 
 @asynccontextmanager
@@ -357,13 +368,17 @@ class PostgresProviderRepository:
         *,
         query: str | None,
         attention: AttentionSelection | None,
+        kind: EntityKind | None = None,
+        order: RosterOrder = RosterOrder.ATTENTION,
         limit: int,
         offset: int,
     ) -> tuple[Sequence[tuple[Provider, ProviderStatus | None]], int]:
-        """One page with each provider's stored status, ordered by the stored attention rank,
-        then newest first, and the total; two statements, both scoped to the organization on
-        both tables (the join's condition and the provider filter)."""
+        """One page with each provider's stored status in the asked order (by default the
+        stored attention rank, then newest first), and the total; two statements, both scoped
+        to the organization on both tables (the join's condition and the provider filter)."""
         where = _search(t"p.organization_id = {organization_id}", query)
+        if kind is not None:
+            where = t"{where:q} and p.entity_kind = {kind.value}"
         match attention:
             case AttentionScope.ANY:
                 where = t"{where:q} and s.attention is not null"
@@ -382,7 +397,7 @@ class PostgresProviderRepository:
                 await cursor.execute(
                     t"""
                     select {_JOINED:q} from {_FROM_JOINED:q} where {where:q}
-                    order by coalesce(s.attention_rank, {_UNRANKED}), p.created_at desc, p.id desc
+                    order by {_ORDER[order]:q}
                     limit {limit} offset {offset}
                     """
                 )

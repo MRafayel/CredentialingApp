@@ -2,12 +2,11 @@ import { motion } from 'motion/react'
 import { useId } from 'react'
 import { Link } from 'react-router'
 import { rise } from '../../components/motion.ts'
-import { SourceLine } from '../../components/Provenance.tsx'
 import { CodePill } from '../../components/Status.tsx'
 import { CalendarDate } from '../../components/Time.tsx'
 import type { NpiRecord } from '../../lib/api.ts'
 import { entityKindWord } from '../../lib/provider.ts'
-import { registryPlace, type FactsSource } from '../../lib/registry.ts'
+import { registryPlace } from '../../lib/registry.ts'
 import { Fact } from '../provider/FactsPanel.tsx'
 import { useFrom } from '../shell/back.ts'
 
@@ -25,18 +24,8 @@ export function NpiLink({ npi }: { npi: string }) {
   )
 }
 
-/**
- * What NPPES records about the NPI, as registered; empty facts are left out. `source`, when
- * given, says under the heading where the facts come from and as of when (the stored file or
- * the live registry), so a cached record never reads as live.
- */
-export function RegistryFacts({
-  record,
-  source = null,
-}: {
-  record: NpiRecord
-  source?: FactsSource | null
-}) {
+/** What NPPES records about the NPI, as registered; empty facts are left out. */
+export function RegistryFacts({ record }: { record: NpiRecord }) {
   const headingId = useId()
   const name = record.person_name
   const place = registryPlace(record)
@@ -54,7 +43,6 @@ export function RegistryFacts({
       <h2 id={headingId} className="text-subheading">
         In NPPES
       </h2>
-      {source && <SourceLine block={source.block} kind={source.kind} className="mt-1" />}
       <motion.dl
         variants={rise}
         initial="hidden"

@@ -659,6 +659,36 @@ async def test_the_roster_filters_by_any_attention_or_none(client: httpx2.AsyncC
     assert theirs["total"] == 0
 
 
+async def test_the_roster_keeps_one_kind_and_takes_an_order(client: httpx2.AsyncClient) -> None:
+    person = await _register(client, "Firstperson")
+    group = (
+        await client.post(
+            "/providers",
+            json={"entity_kind": "organization", "organization_name": "Sampleville Group"},
+            headers=HEADERS,
+        )
+    ).json()
+
+    people = (await client.get("/providers", params={"kind": "individual"}, headers=HEADERS)).json()
+    groups = (
+        await client.get("/providers", params={"kind": "organization"}, headers=HEADERS)
+    ).json()
+    oldest = (await client.get("/providers", params={"order": "oldest"}, headers=HEADERS)).json()
+    newest = (await client.get("/providers", params={"order": "newest"}, headers=HEADERS)).json()
+    refused = await client.get("/providers", params={"kind": "unknown"}, headers=HEADERS)
+    unordered = await client.get("/providers", params={"order": "name"}, headers=HEADERS)
+
+    assert [item["id"] for item in people["items"]] == [person["id"]]
+    assert ([item["id"] for item in groups["items"]], groups["total"]) == ([group["id"]], 1)
+    # The test clock gives both the same instant, so the id decides: the two orders mirror.
+    assert {item["id"] for item in newest["items"]} == {person["id"], group["id"]}
+    assert [item["id"] for item in oldest["items"]] == [
+        item["id"] for item in reversed(newest["items"])
+    ]
+    assert refused.status_code == 422
+    assert unordered.status_code == 422
+
+
 def test_the_attention_filter_is_every_reason_plus_any_and_none() -> None:
     values = {item.value for item in AttentionFilter}
 
