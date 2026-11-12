@@ -1,12 +1,15 @@
 """Verification endpoints: run checks and read the append-only history."""
 
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from pydantic import AwareDatetime
 
 from credentialing.api.container import Container
 from credentialing.api.organization import OrganizationId
-from credentialing.api.schemas import VerdictResponse, VerificationResponse
+from credentialing.api.schemas import HistoryPageResponse, VerdictResponse, VerificationResponse
+from credentialing.application.verification_history import DEFAULT_MOMENTS, MAX_MOMENTS
 
 router = APIRouter(prefix="/providers/{provider_id}/verifications", tags=["verifications"])
 
@@ -39,8 +42,31 @@ async def verify_npi(
 
 @router.get("")
 async def verification_history(
+    provider_id: UUID,
+    organization_id: OrganizationId,
+    container: Container,
+    before: Annotated[AwareDatetime | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_MOMENTS)] = DEFAULT_MOMENTS,
+) -> HistoryPageResponse:
+    """The provider's verifications across credential types, newest first, ``limit`` moments
+    at a time.
+
+    A moment is one instant results were stored at: a check run stores one result per list at
+    the same instant, an NPI verification has its own, so a page never splits a run. Pass the
+    page's ``next_before`` as ``before`` for the next one (null: no older history). History
+    goes back ``retention_days``, except each list's and the NPI's newest result.
+    """
+    page = await container.verification_history.page(
+        organization_id, provider_id, before=before, moments=limit
+    )
+    return HistoryPageResponse.from_page(page)
+
+
+@router.get("/npi/latest")
+async def latest_npi_verification(
     provider_id: UUID, organization_id: OrganizationId, container: Container
-) -> list[VerificationResponse]:
-    """Every verification of the provider across credential types, newest first."""
-    views = await container.verification_history.history(organization_id, provider_id)
-    return [VerificationResponse.from_view(view) for view in views]
+) -> VerificationResponse | None:
+    """The provider's newest NPI verification from any source (null: none yet), which can be
+    older than the history's first page."""
+    view = await container.verification_history.latest_npi(organization_id, provider_id)
+    return VerificationResponse.from_view(view) if view else None

@@ -1,6 +1,7 @@
 """The HTTP API end to end against the local database, rolled back after each test."""
 
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import httpx2
@@ -13,6 +14,7 @@ from credentialing.bootstrap import api_container, build_services
 from credentialing.connectors.registry import ConnectorRegistry
 from credentialing.domain.enums import EntityKind, Outcome
 from credentialing.domain.models import FetchResult, SourceSnapshot
+from credentialing.domain.policies import HISTORY_RETENTION
 from credentialing.infrastructure.config import Settings
 from credentialing.infrastructure.database import ConnectionSource
 from tests.fakes import FixedClock, ScriptedConnector, capabilities
@@ -34,7 +36,14 @@ async def organization_id(db_connection: AsyncConnection[TupleRow]) -> UUID:
 
 
 @pytest.fixture
-async def client(database: ConnectionSource) -> AsyncIterator[httpx2.AsyncClient]:
+def clock() -> FixedClock:
+    return FixedClock(NOW)
+
+
+@pytest.fixture
+async def client(
+    database: ConnectionSource, clock: FixedClock
+) -> AsyncIterator[httpx2.AsyncClient]:
     snapshot = SourceSnapshot(
         id=uuid4(),
         source_id=SOURCE,
@@ -61,7 +70,7 @@ async def client(database: ConnectionSource) -> AsyncIterator[httpx2.AsyncClient
             FetchResult(snapshot=snapshot, records=(listed, business)),
         )
     )
-    services = build_services(database, registry, FixedClock(NOW))
+    services = build_services(database, registry, clock)
     await services.sync_source.run(SOURCE)
     app = create_app(expose_docs=False)
     app.state.container = api_container(services, Settings(environment="local"))
@@ -71,7 +80,7 @@ async def client(database: ConnectionSource) -> AsyncIterator[httpx2.AsyncClient
 
 
 async def test_register_check_and_read_history(
-    client: httpx2.AsyncClient, organization_id: UUID
+    client: httpx2.AsyncClient, organization_id: UUID, clock: FixedClock
 ) -> None:
     headers = {"X-Organization-Id": str(organization_id)}
     body = {
@@ -80,11 +89,16 @@ async def test_register_check_and_read_history(
         "licenses": [{"number": "123456", "state": "NY"}],
     }
     provider = (await client.post("/providers", json=body, headers=headers)).json()
+    first = await client.get(f"/providers/{provider['id']}/verifications", headers=headers)
+    clock.current = NOW + timedelta(minutes=1)
 
     checked = await client.post(
         f"/providers/{provider['id']}/verifications/exclusions", headers=headers
     )
 
+    # Adding the provider ran its first check, so it was answered before anyone asked.
+    (added,) = first.json()["items"]
+    assert (added["source_id"], added["finding"]) == (SOURCE, "ambiguous")
     assert checked.status_code == 200
     verdict = checked.json()
     assert verdict["verdict"] == "needs_review"
@@ -109,7 +123,11 @@ async def test_register_check_and_read_history(
 
     history = await client.get(f"/providers/{provider['id']}/verifications", headers=headers)
     assert history.status_code == 200
-    assert history.json() == [result]
+    assert history.json() == {
+        "items": [result, added],
+        "next_before": None,
+        "retention_days": HISTORY_RETENTION.days,
+    }
 
     read = await client.get(f"/providers/{provider['id']}/verdict", headers=headers)
     assert read.status_code == 200

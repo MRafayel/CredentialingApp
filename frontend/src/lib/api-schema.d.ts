@@ -33,15 +33,63 @@ export interface paths {
     }
     /**
      * List Providers
-     * @description One page of the organization's providers, newest first; ``q`` searches names or NPI.
+     * @description One page of the organization's providers with their monitoring status, those needing
+     *     attention first (most serious first), then newest first; ``q`` searches names or NPI,
+     *     ``attention`` keeps only providers with that reason, ``any`` those with some reason,
+     *     ``none`` those needing nobody.
      */
     get: operations['list_providers_providers_get']
     put?: never
     /**
      * Register Provider
-     * @description Add a provider to the organization's roster.
+     * @description Add a provider to the organization's roster. 409 with ``provider_id`` when another
+     *     provider of the roster has the NPI (nothing is stored).
      */
     post: operations['register_provider_providers_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/providers/summary': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Providers Summary
+     * @description How many of the organization's providers have each attention reason (``none``: nothing
+     *     needs a person), for the roster's filters, and the total.
+     */
+    get: operations['providers_summary_providers_summary_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/providers/import': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Import Providers
+     * @description Read a pasted list or a CSV/TSV export into the organization's roster rows, each with
+     *     its problems; with ``dry_run`` false, store the importable rows and run their first check
+     *     now. 422 when the text is over 2 MB or 5,000 rows or cannot be read as delimited text, 409
+     *     when another commit stored one of its NPIs meanwhile (nothing is stored either way).
+     */
+    post: operations['import_providers_providers_import_post']
     delete?: never
     options?: never
     head?: never
@@ -62,6 +110,47 @@ export interface paths {
     get: operations['get_provider_providers__provider_id__get']
     put?: never
     post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/providers/{provider_id}/status': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Provider Status
+     * @description The provider's monitoring status, derived from its latest results now.
+     */
+    get: operations['provider_status_providers__provider_id__status_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/providers/{provider_id}/seen': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Provider Seen
+     * @description Record that the provider's page was opened: results changed before now no longer read
+     *     as changed. 404 when the organization has no such provider.
+     */
+    post: operations['provider_seen_providers__provider_id__seen_post']
     delete?: never
     options?: never
     head?: never
@@ -120,9 +209,11 @@ export interface paths {
     get?: never
     /**
      * Set Provider Npi
-     * @description Set the NPI of a provider that has none, once NPPES knows it, and append the NPI
-     *     verification as the audit record. 422 when NPPES does not know the NPI, 409 when the
-     *     provider has an NPI already, 503 when NPPES could not be checked (nothing is set).
+     * @description Set the NPI of a provider that has none, once NPPES knows it, append the NPI
+     *     verification as the audit record, and recheck the provider against the exclusion lists
+     *     at once (a recheck that fails leaves the NPI set). 422 when NPPES does not know the NPI,
+     *     409 when the provider has an NPI already or another provider of the roster has this one
+     *     (with its ``provider_id``), 503 when NPPES could not be checked (nothing is set).
      */
     put: operations['set_provider_npi_providers__provider_id__npi_put']
     post?: never
@@ -186,9 +277,36 @@ export interface paths {
     }
     /**
      * Verification History
-     * @description Every verification of the provider across credential types, newest first.
+     * @description The provider's verifications across credential types, newest first, ``limit`` moments
+     *     at a time.
+     *
+     *     A moment is one instant results were stored at: a check run stores one result per list at
+     *     the same instant, an NPI verification has its own, so a page never splits a run. Pass the
+     *     page's ``next_before`` as ``before`` for the next one (null: no older history). History
+     *     goes back ``retention_days``, except each list's and the NPI's newest result.
      */
     get: operations['verification_history_providers__provider_id__verifications_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/providers/{provider_id}/verifications/npi/latest': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Latest Npi Verification
+     * @description The provider's newest NPI verification from any source (null: none yet), which can be
+     *     older than the history's first page.
+     */
+    get: operations['latest_npi_verification_providers__provider_id__verifications_npi_latest_get']
     put?: never
     post?: never
     delete?: never
@@ -354,6 +472,40 @@ export interface components {
       postal_code?: string | null
     }
     /**
+     * Attention
+     * @description The one reason a person should open a provider, most serious first (the declared order
+     *     is the priority); a provider with none needs nobody.
+     * @enum {string}
+     */
+    Attention:
+      | 'listed'
+      | 'flagged'
+      | 'needs_review'
+      | 'could_not_check'
+      | 'changed'
+      | 'npi_deactivated'
+      | 'npi_uncertain'
+      | 'npi_missing'
+      | 'not_checked'
+    /**
+     * AttentionFilter
+     * @description The roster's ``attention`` query: one reason, ``any`` (every provider with some reason)
+     *     or ``none`` (every provider needing nobody).
+     * @enum {string}
+     */
+    AttentionFilter:
+      | 'listed'
+      | 'flagged'
+      | 'needs_review'
+      | 'could_not_check'
+      | 'changed'
+      | 'npi_deactivated'
+      | 'npi_uncertain'
+      | 'npi_missing'
+      | 'not_checked'
+      | 'any'
+      | 'none'
+    /**
      * AuthorizedOfficialResponse
      * @description The person an organization named as authorized to act for it.
      */
@@ -469,6 +621,175 @@ export interface components {
        */
       status: 'ok'
     }
+    /**
+     * HistoryPageResponse
+     * @description Body of ``GET /providers/{id}/verifications``: the results of up to ``limit`` moments,
+     *     newest first. A moment is one instant results were stored at: a check run's result per
+     *     list shares one, an NPI verification has its own, so a page never splits a run.
+     *     ``next_before`` is the next page's ``before`` (null: no older history). History goes back
+     *     ``retention_days``; each list's and the NPI's newest result is kept even when older.
+     */
+    HistoryPageResponse: {
+      /** Items */
+      items: components['schemas']['VerificationResponse'][]
+      /** Next Before */
+      next_before: string | null
+      /** Retention Days */
+      retention_days: number
+    }
+    /**
+     * IdentityState
+     * @description What the roster knows about a provider's NPI, decided by the backend.
+     *
+     *     ``NPI_UNCERTAIN``: the latest NPI result is a contradiction to review, "not in NPPES",
+     *     "could not tell", or a check that could not run.
+     * @enum {string}
+     */
+    IdentityState:
+      | 'npi_missing'
+      | 'npi_unverified'
+      | 'npi_active'
+      | 'npi_deactivated'
+      | 'npi_uncertain'
+      | 'not_expected'
+    /**
+     * ImportCheckResponse
+     * @description The first check of the providers an import stored: how many were checked, the results
+     *     appended, those that differ from a previous result, and the providers whose check
+     *     failed.
+     */
+    ImportCheckResponse: {
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string
+      /**
+       * Finished At
+       * Format: date-time
+       */
+      finished_at: string
+      /** Providers */
+      providers: number
+      /** Results */
+      results: number
+      /** Changed */
+      changed: number
+      /** Failures */
+      failures: number
+    }
+    /**
+     * ImportColumn
+     * @description A column of an import the rows are read from. ``NAME`` is a whole name in one cell,
+     *     split into its parts.
+     * @enum {string}
+     */
+    ImportColumn:
+      | 'last'
+      | 'first'
+      | 'middle'
+      | 'suffix'
+      | 'name'
+      | 'organization'
+      | 'npi'
+      | 'date_of_birth'
+      | 'license_number'
+      | 'license_state'
+      | 'role'
+    /**
+     * ImportProblemCode
+     * @description What is wrong with a row; each code has one severity (:data:`SEVERITY`).
+     * @enum {string}
+     */
+    ImportProblemCode:
+      | 'name_missing'
+      | 'npi_invalid'
+      | 'duplicate_in_file'
+      | 'already_on_roster'
+      | 'invalid_row'
+      | 'date_of_birth_unreadable'
+      | 'license_state_invalid'
+      | 'license_incomplete'
+      | 'role_unrecognized'
+    /**
+     * ImportProblemResponse
+     * @description One problem of an import row: an ``error`` keeps the row out, a ``warning`` drops one
+     *     value. ``detail`` says which part, never a value.
+     */
+    ImportProblemResponse: {
+      code: components['schemas']['ImportProblemCode']
+      severity: components['schemas']['ImportSeverity']
+      /** Detail */
+      detail: string | null
+    }
+    /**
+     * ImportReportResponse
+     * @description Body of ``POST /providers/import``: every row with its problems, the columns read and
+     *     ignored, the counts, and on a commit the stored provider ids and their first check.
+     *     ``no_header``: no header was recognized and the rows did not read as a list of names
+     *     and NPIs, so nothing was read.
+     */
+    ImportReportResponse: {
+      /** Rows */
+      rows: components['schemas']['ImportRowResponse'][]
+      /** Columns */
+      columns: components['schemas']['ImportColumn'][]
+      /** Ignored Columns */
+      ignored_columns: string[]
+      /** No Header */
+      no_header: boolean
+      /** Importable */
+      importable: number
+      /** With Warnings */
+      with_warnings: number
+      /** Rejected */
+      rejected: number
+      /** Dry Run */
+      dry_run: boolean
+      /** Imported */
+      imported: string[]
+      recheck: components['schemas']['ImportCheckResponse'] | null
+    }
+    /**
+     * ImportRowResponse
+     * @description One data row of an import, as the preview shows it. ``importable`` is false when an
+     *     error keeps the row out. ``values`` hands back the row's text per recognized column (the
+     *     report's ``columns``, in file order, empty when blank), so the person can correct or drop
+     *     rows and preview the rebuilt text again; it includes the date of birth as typed, the
+     *     caller's own unsaved text, echoed for editing only and never stored from a preview.
+     */
+    ImportRowResponse: {
+      /** Line */
+      line: number
+      /** Display */
+      display: string
+      entity_kind: components['schemas']['EntityKind']
+      /** Npi */
+      npi: string | null
+      role: components['schemas']['RosterRole'] | null
+      /** Has Date Of Birth */
+      has_date_of_birth: boolean
+      /** Name Split */
+      name_split: boolean
+      /** Importable */
+      importable: boolean
+      /** Problems */
+      problems: components['schemas']['ImportProblemResponse'][]
+      /** Duplicate Of Line */
+      duplicate_of_line: number | null
+      /** Existing Provider Id */
+      existing_provider_id: string | null
+      /** Values */
+      values: {
+        [key: string]: string
+      }
+    }
+    /**
+     * ImportSeverity
+     * @description An ``error`` keeps the row out of the import; a ``warning`` drops one value only.
+     * @enum {string}
+     */
+    ImportSeverity: 'error' | 'warning'
     /**
      * LicenseBody
      * @description A professional license.
@@ -1036,6 +1357,53 @@ export interface components {
       addresses?: components['schemas']['AddressBody'][]
       /** Taxonomy Codes */
       taxonomy_codes?: string[]
+      role?: components['schemas']['RosterRole'] | null
+    }
+    /**
+     * ProviderImportBody
+     * @description Request body of ``POST /providers/import``: the pasted list or the CSV/TSV export's
+     *     text, and whether to preview it only (the default) or store it.
+     */
+    ProviderImportBody: {
+      /** Text */
+      text: string
+      /**
+       * Dry Run
+       * @default true
+       */
+      dry_run: boolean
+    }
+    /**
+     * ProviderListItemResponse
+     * @description A roster provider with its monitoring status.
+     */
+    ProviderListItemResponse: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string
+      entity_kind: components['schemas']['EntityKind']
+      person_name: components['schemas']['PersonNameResponse'] | null
+      /** Organization Name */
+      organization_name: string | null
+      /** Npi */
+      npi: string | null
+      /** Has Date Of Birth */
+      has_date_of_birth: boolean
+      /** Licenses */
+      licenses: components['schemas']['LicenseBody'][]
+      /** Addresses */
+      addresses: components['schemas']['AddressBody'][]
+      /** Taxonomy Codes */
+      taxonomy_codes: string[]
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string
+      role: components['schemas']['RosterRole']
+      status: components['schemas']['ProviderStatusResponse']
     }
     /**
      * ProviderNpiBody
@@ -1056,11 +1424,12 @@ export interface components {
     }
     /**
      * ProviderPageResponse
-     * @description Body of ``GET /providers``: one page, newest first, and the total across pages.
+     * @description Body of ``GET /providers``: one page, those needing attention first (by attention
+     *     order), then newest first, and the total across pages.
      */
     ProviderPageResponse: {
       /** Items */
-      items: components['schemas']['ProviderResponse'][]
+      items: components['schemas']['ProviderListItemResponse'][]
       /** Total */
       total: number
       /** Page */
@@ -1097,6 +1466,38 @@ export interface components {
        * Format: date-time
        */
       created_at: string
+      role: components['schemas']['RosterRole']
+    }
+    /**
+     * ProviderStatusResponse
+     * @description A monitored provider's status as the backend decided it.
+     *
+     *     ``attention`` is the one reason a person should open the provider, most serious first
+     *     (null: nothing needs a person); ``changed`` says a result differs from the one before it
+     *     and nobody has opened the provider since; ``changed_at`` is when the newest such result was
+     *     stored, seen or not (null: none). ``next_check_at`` is when the automatic recheck is due
+     *     (null: due now). The source lists name sources by id. The UI shows these as given.
+     */
+    ProviderStatusResponse: {
+      verdict: components['schemas']['Verdict']
+      identity: components['schemas']['IdentityState']
+      /** Changed */
+      changed: boolean
+      /** Changed At */
+      changed_at: string | null
+      attention: components['schemas']['Attention'] | null
+      /** Last Checked At */
+      last_checked_at: string | null
+      /** Next Check At */
+      next_check_at: string | null
+      /** Listed In */
+      listed_in: string[]
+      /** Flagged In */
+      flagged_in: string[]
+      /** Review In */
+      review_in: string[]
+      /** Unchecked */
+      unchecked: string[]
     }
     /**
      * RecordLicenseResponse
@@ -1241,6 +1642,28 @@ export interface components {
      */
     RegistryStatus: 'active' | 'deactivated' | 'not_found' | 'mirror_only_active' | 'unknown'
     /**
+     * ResultChangeResponse
+     * @description What the previous result said, on a result that differs from it.
+     */
+    ResultChangeResponse: {
+      outcome: components['schemas']['Outcome']
+      finding: components['schemas']['Finding'] | null
+      record_status: components['schemas']['RecordStatus'] | null
+      registry_status: components['schemas']['RegistryStatus'] | null
+      /**
+       * Verified At
+       * Format: date-time
+       */
+      verified_at: string
+    }
+    /**
+     * RosterRole
+     * @description Why a party is on an organization's roster; decides whether an NPI is expected (only of
+     *     practitioners).
+     * @enum {string}
+     */
+    RosterRole: 'practitioner' | 'workforce' | 'vendor'
+    /**
      * SearchedSourceResponse
      * @description A list a lookup searched; ``fetched_at`` is null when the list was never loaded.
      *
@@ -1340,6 +1763,21 @@ export interface components {
       problem: string | null
       last_load: components['schemas']['DatasetLoadResponse'] | null
     }
+    /**
+     * StatusSummaryResponse
+     * @description Body of ``GET /providers/summary``: providers per attention reason (every reason, and
+     *     ``none`` for those needing nobody), the roster's total and the recheck interval.
+     */
+    StatusSummaryResponse: {
+      /** Counts */
+      counts: {
+        [key: string]: number
+      }
+      /** Total */
+      total: number
+      /** Recheck Interval Days */
+      recheck_interval_days: number
+    }
     /** ValidationError */
     ValidationError: {
       /** Location */
@@ -1400,6 +1838,9 @@ export interface components {
     /**
      * VerificationResponse
      * @description One verification result with provenance, freshness and the records it matched.
+     *
+     *     ``changed_from`` is the previous result's answer when this one differs from it (null on a
+     *     first result and when nothing changed).
      */
     VerificationResponse: {
       /**
@@ -1433,6 +1874,7 @@ export interface components {
       created_at: string
       /** Matched Records */
       matched_records: components['schemas']['MatchedRecordResponse'][]
+      changed_from: components['schemas']['ResultChangeResponse'] | null
     }
   }
   responses: never
@@ -1469,6 +1911,7 @@ export interface operations {
         q?: string | null
         page?: number
         page_size?: number
+        attention?: components['schemas']['AttentionFilter'] | null
       }
       header?: {
         'x-organization-id'?: string | null
@@ -1533,6 +1976,72 @@ export interface operations {
       }
     }
   }
+  providers_summary_providers_summary_get: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['StatusSummaryResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  import_providers_providers_import_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ProviderImportBody']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ImportReportResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_provider_providers__provider_id__get: {
     parameters: {
       query?: never
@@ -1554,6 +2063,70 @@ export interface operations {
         content: {
           'application/json': components['schemas']['ProviderResponse']
         }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  provider_status_providers__provider_id__status_get: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        provider_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ProviderStatusResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  provider_seen_providers__provider_id__seen_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        provider_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -1739,6 +2312,42 @@ export interface operations {
   }
   verification_history_providers__provider_id__verifications_get: {
     parameters: {
+      query?: {
+        before?: string | null
+        limit?: number
+      }
+      header?: {
+        'x-organization-id'?: string | null
+      }
+      path: {
+        provider_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HistoryPageResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  latest_npi_verification_providers__provider_id__verifications_npi_latest_get: {
+    parameters: {
       query?: never
       header?: {
         'x-organization-id'?: string | null
@@ -1756,7 +2365,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['VerificationResponse'][]
+          'application/json': components['schemas']['VerificationResponse'] | null
         }
       }
       /** @description Validation Error */

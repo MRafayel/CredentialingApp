@@ -3,8 +3,9 @@
 A bulk list replaces the source's exclusion records; a dataset (NPPES) is loaded into the
 NPI mirror by difference, and the load's counts, phase timings and CPU time are stored on the
 snapshot. A sync that changed rows then relinks exclusion records to NPIs (the list's own
-records after a list sync, every record after a mirror load); a linking failure is reported,
-never undoes the sync.
+records after a list sync, every record after a mirror load) and rechecks the monitored
+rosters (against that list after a list sync, the NPI mirror after a mirror load); a linking
+or recheck failure is reported, never undoes the sync.
 """
 
 import logging
@@ -23,11 +24,13 @@ from credentialing.application.link_npis import (
     list_sync_trigger,
 )
 from credentialing.application.measure import cpu_seconds
+from credentialing.application.recheck_providers import ProviderRechecking
 from credentialing.domain.enums import DatasetLoadMode, Outcome
 from credentialing.domain.errors import DatasetShrankError
 from credentialing.domain.models import (
     DatasetLoad,
     ExclusionRecord,
+    MonitoringRun,
     NpiLinkRun,
     SnapshotDiff,
     SourceSnapshot,
@@ -80,7 +83,9 @@ class SyncReport(BaseModel):
     when a new dataset file was loaded, what the load did.
 
     ``linking`` is the NPI linking run the sync triggered (rows changed); ``linking_failed``
-    says, by error class, why that run failed. The sync itself stands either way.
+    says, by error class, why that run failed. ``recheck`` is the roster recheck the sync
+    triggered after it, ``recheck_failed`` why that recheck failed. The sync itself stands
+    either way.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -90,6 +95,8 @@ class SyncReport(BaseModel):
     load: DatasetLoad | None = None
     linking: NpiLinkRun | None = None
     linking_failed: str | None = None
+    recheck: MonitoringRun | None = None
+    recheck_failed: str | None = None
 
 
 class SyncSource:
@@ -97,7 +104,8 @@ class SyncSource:
 
     ``npi_registry`` is the mirror dataset sources load into; a sync of a dataset source
     without it is a wiring error (``TypeError``). ``link_npis`` relinks exclusion records to
-    NPIs after a sync that changed rows; without it no linking runs.
+    NPIs after a sync that changed rows, and ``recheck`` then rechecks the monitored rosters;
+    without them neither runs.
     """
 
     def __init__(
@@ -109,6 +117,7 @@ class SyncSource:
         *,
         npi_registry: NpiRegistryRepository | None = None,
         link_npis: NpiLinking | None = None,
+        recheck: ProviderRechecking | None = None,
     ) -> None:
         self._connectors = connectors
         self._snapshots = snapshots
@@ -116,6 +125,7 @@ class SyncSource:
         self._clock = clock
         self._npi_registry = npi_registry
         self._link_npis = link_npis
+        self._recheck = recheck
 
     async def run(self, source_id: SourceId, *, force: bool = False) -> SyncReport:
         """Fetch ``source_id`` once, store the snapshot, and load the records if new.
@@ -140,7 +150,8 @@ class SyncSource:
         A dataset source is loaded as :meth:`_run_dataset` describes.
 
         A new list that added, changed, re-added or rewritten rows relinks that list's records
-        to NPIs (``list_sync:<source_id>``); see :meth:`_relink`.
+        to NPIs (``list_sync:<source_id>``), see :meth:`_relink`, then rechecks every roster
+        provider against that list, see :meth:`_rechecked`.
 
         Raises:
             UnknownSourceError: No bulk-list or dataset connector is registered as
@@ -174,7 +185,9 @@ class SyncSource:
             raise
         report = SyncReport(snapshot=snapshot, diff=diff)
         if diff.added + diff.changed + diff.readded + diff.rewritten:
-            return await self._relink(report, source_id, list_sync_trigger(source_id))
+            trigger = list_sync_trigger(source_id)
+            report = await self._relink(report, source_id, trigger)
+            return await self._rechecked(report, trigger, source_id=source_id)
         return report
 
     async def _run_dataset(self, connector: DatasetConnector, *, force: bool) -> SyncReport:
@@ -193,7 +206,10 @@ class SyncSource:
         too, and re-raised.
 
         A load that added, changed, deactivated or flagged rows relinks every exclusion record
-        (``nppes_load``): the mirror changed under every link.
+        (``nppes_load``): the mirror changed under every link. It then reverifies the NPI of
+        every roster provider that has one against the mirror: a full file shows a
+        deactivation as a changed row, a deactivation file as a deactivated one, and a new row
+        can answer an NPI the mirror lacked.
         """
         registry = self._npi_registry
         if registry is None:
@@ -245,7 +261,8 @@ class SyncSource:
         stored = snapshot.model_copy(update={"load": load, "row_count": load.scanned})
         report = SyncReport(snapshot=stored, load=load)
         if load.added + load.changed + load.deactivated + load.missing:
-            return await self._relink(report, None, NPPES_LOAD_TRIGGER)
+            report = await self._relink(report, None, NPPES_LOAD_TRIGGER)
+            return await self._rechecked(report, NPPES_LOAD_TRIGGER, npi_only=True)
         return report
 
     async def _relink(
@@ -265,6 +282,31 @@ class SyncSource:
             failed = f"NPI linking failed ({type(error).__name__})"
             return report.model_copy(update={"linking_failed": failed})
         return report.model_copy(update={"linking": run})
+
+    async def _rechecked(
+        self,
+        report: SyncReport,
+        trigger: str,
+        *,
+        source_id: SourceId | None = None,
+        npi_only: bool = False,
+    ) -> SyncReport:
+        """Run the roster recheck a changed sync triggers and add it to the report.
+
+        A failure of the whole recheck is logged and reported by error class
+        (``recheck_failed``); the sync stands, and the next scheduled recheck covers what this
+        one missed.
+        """
+        if self._recheck is None:
+            return report
+        try:
+            run = await self._recheck.run(trigger=trigger, source_id=source_id, npi_only=npi_only)
+        except Exception as error:
+            # By error class only: a recheck touches roster data, which is never logged.
+            logger.error("roster recheck failed trigger=%s error=%s", trigger, type(error).__name__)
+            failed = f"roster recheck failed ({type(error).__name__})"
+            return report.model_copy(update={"recheck_failed": failed})
+        return report.model_copy(update={"recheck": run})
 
     async def _last_full_rows(self, source_id: SourceId, mode: DatasetLoadMode) -> int | None:
         """The distinct NPIs of the source's last full load, when the guard applies to it."""

@@ -15,6 +15,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 from credentialing.domain.enums import (
     AccessPolicy,
+    Attention,
     ChangeSignal,
     CredentialType,
     DatasetLoadMode,
@@ -22,11 +23,15 @@ from credentialing.domain.enums import (
     ExclusionAction,
     Finding,
     Freshness,
+    IdentityState,
     MatchField,
     MatchLevel,
     MatchRelation,
     NpiStatus,
     Outcome,
+    RecordStatus,
+    RegistryStatus,
+    RosterRole,
     Verdict,
     VerificationMethod,
 )
@@ -72,7 +77,12 @@ class License(DomainModel):
 
 
 class Provider(DomainModel):
-    """A provider on an organization's roster: the subject of every verification."""
+    """A provider on an organization's roster: the subject of every verification.
+
+    ``role`` says why the party is on the roster (only a practitioner is expected to have an
+    NPI); ``last_viewed_at`` is when someone last opened the provider's page, which clears
+    "changed" for the results stored before it.
+    """
 
     id: UUID
     organization_id: UUID
@@ -85,6 +95,8 @@ class Provider(DomainModel):
     addresses: tuple[Address, ...] = ()
     taxonomy_codes: tuple[str, ...] = ()
     created_at: AwareDatetime
+    role: RosterRole = RosterRole.PRACTITIONER
+    last_viewed_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def _name_fits_entity_kind(self) -> Self:
@@ -447,11 +459,31 @@ class SnapshotDiff(DomainModel):
     rewritten: int = Field(default=0, ge=0)
 
 
+class ResultChange(DomainModel):
+    """What the previous answer said, kept on a new answer that differs from it.
+
+    Only completed results are answers: the previous answer is the previous ``COMPLETED``
+    result of the same source for the same provider and credential type (exclusions), or the
+    provider's previous ``COMPLETED`` NPI result, whichever NPPES load or request answered it
+    (NPI); a result that could not be checked never carries a change. Absent on a first answer
+    and when nothing compared changed: the finding, the record status of the matched records
+    and, for NPI results, the registry's one-word status. ``outcome`` is therefore always
+    ``COMPLETED``. Built by :func:`~credentialing.domain.policies.result_change`.
+    """
+
+    outcome: Outcome
+    finding: Finding | None = None
+    record_status: RecordStatus | None = None
+    registry_status: RegistryStatus | None = None
+    verified_at: AwareDatetime
+
+
 class VerificationResult(DomainModel):
     """The normalized answer to one check of one provider against one source.
 
     ``finding`` exists only when the source was actually consulted (``COMPLETED``); a check
     that could not run has an outcome but no finding, so it can never look clean.
+    ``changed_from`` is the previous result's answer when this one differs from it.
     """
 
     id: UUID
@@ -468,6 +500,7 @@ class VerificationResult(DomainModel):
     provenance: Provenance
     freshness: Freshness
     created_at: AwareDatetime
+    changed_from: ResultChange | None = None
 
     @model_validator(mode="after")
     def _finding_only_when_completed(self) -> Self:
@@ -498,6 +531,80 @@ class ProviderVerdict(DomainModel):
     source states one."""
     last_checked_at: AwareDatetime | None = None
     results: tuple[VerificationResult, ...] = ()
+
+
+class ProviderStatus(DomainModel):
+    """Where a monitored provider stands, decided by the backend so every screen agrees.
+
+    Built by :func:`~credentialing.domain.policies.derive_status` from the latest exclusion
+    result of each list and the latest NPI result. ``attention`` is the one reason a person
+    should open the provider (None: nothing needs a person); ``changed`` says a result differed
+    from the one before it and nobody has opened the provider since. ``last_checked_at`` is the
+    newest of those results, ``next_check_at`` when the automatic recheck is due (None: due
+    now, since a list or the NPI on file has no result yet). The source tuples are the
+    verdict's, so a roster row can say "in 2 lists".
+    """
+
+    provider_id: UUID
+    verdict: Verdict
+    identity: IdentityState
+    changed: bool
+    attention: Attention | None
+    last_checked_at: AwareDatetime | None = None
+    next_check_at: AwareDatetime | None = None
+    listed_in: tuple[SourceId, ...] = ()
+    flagged_in: tuple[SourceId, ...] = ()
+    review_in: tuple[SourceId, ...] = ()
+    unchecked: tuple[SourceId, ...] = ()
+    changed_at: AwareDatetime | None = None
+    """When the newest result that differs from the one before it was stored (None: none),
+    seen or not; ``changed`` says whether nobody has opened the provider since."""
+
+
+class HistoryPage(DomainModel):
+    """One page of a provider's verification history, by moments: every result stored at each
+    of the newest instants (``created_at``) asked for, newest first, so one check run (a result
+    per list, stored at one instant) is never split across pages. ``next_before`` is the oldest
+    instant on this page when older ones exist (the next page's ``before``), else None."""
+
+    results: tuple[VerificationResult, ...]
+    next_before: AwareDatetime | None = None
+
+
+class MonitoringRun(DomainModel):
+    """One recheck of the rosters: what triggered it, what it found, and what it cost.
+
+    ``trigger`` is ``due`` (the scheduled job), ``list_sync:<source_id>`` (a list sync that
+    changed rows: that list only, ``source_id``), ``nppes_load`` (NPI only), ``cli``, or the
+    first check of providers just added to one organization's roster: ``import`` (a bulk
+    import) or ``add`` (one provider).
+    ``organizations`` and ``providers`` count what was rechecked, ``results`` the results
+    appended, ``changed`` those that differ from the previous result, ``failures`` the
+    providers whose recheck raised and the organizations whose purge raised, ``purged`` the
+    history rows older than the retention window deleted (``due`` and ``cli`` runs only).
+    ``phases`` are wall-clock durations summed over the providers, ``cpu_time`` the process's
+    user plus system time over the run; ``note`` says why a run checked nothing.
+    """
+
+    id: UUID
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    trigger: str = Field(min_length=1)
+    source_id: SourceId | None = None
+    organizations: int = Field(ge=0)
+    providers: int = Field(ge=0)
+    results: int = Field(ge=0)
+    changed: int = Field(ge=0)
+    failures: int = Field(ge=0)
+    purged: int = Field(default=0, ge=0)
+    phases: Mapping[str, timedelta] = Field(default_factory=dict)
+    cpu_time: timedelta | None = None
+    note: str | None = None
+
+    @property
+    def duration(self) -> timedelta:
+        """Wall-clock time from start to finish."""
+        return self.finished_at - self.started_at
 
 
 class ConnectorCapabilities(DomainModel):

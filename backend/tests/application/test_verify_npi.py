@@ -18,6 +18,7 @@ from credentialing.domain.enums import (
     MatchLevel,
     NpiStatus,
     Outcome,
+    RegistryStatus,
     VerificationMethod,
 )
 from credentialing.domain.models import (
@@ -74,7 +75,7 @@ class _World:
         self.registry = InMemoryNpiRegistry(*((mirror,) if mirror else ()))
         self.providers = InMemoryProviders()
         self.verifications = InMemoryVerifications()
-        clock = FixedClock(NOW + timedelta(days=1))
+        self.clock = clock = FixedClock(NOW + timedelta(days=1))
         lookup = NpiLookup(self.registry, self.directory, self.snapshots, DEFAULT_FRESHNESS, clock)
         self.verify = VerifyNpi(
             self.providers,
@@ -274,7 +275,12 @@ async def test_without_a_live_registry_or_a_mirror_row_nothing_could_be_checked(
     result = await world.run(_provider())
 
     assert (result.outcome, result.finding) == (Outcome.SOURCE_UNAVAILABLE, None)
-    assert result.details == {"reason": "no_registry_answer"}
+    assert result.details == {"reason": "not_in_mirror"}
+    assert result.summary == (
+        f"NPPES could not be checked: NPI {NPI} is not in the NPPES files of "
+        f"{FILE_DATE.date().isoformat()} and the live registry was not asked"
+    )
+    assert result.source_id == MONTHLY
 
 
 async def test_an_organization_is_matched_by_its_name() -> None:
@@ -293,3 +299,58 @@ async def test_an_unknown_provider_is_not_found() -> None:
 
     with pytest.raises(ProviderNotFoundError):
         await world.verify.run(UUID(int=1), uuid4())
+
+
+async def test_a_second_verification_records_what_changed_since_the_first() -> None:
+    world = _World(mirror=_active())
+    provider = _provider()
+    await world.providers.add(provider)
+    first = await world.verify.run(provider.organization_id, provider.id)
+    deactivated = _active(status=NpiStatus.DEACTIVATED, deactivation_date=date(2026, 1, 10))
+    world.registry.rows[NPI] = deactivated
+    world.clock.current = NOW + timedelta(days=16)
+
+    second = await world.verify.run(provider.organization_id, provider.id)
+    third = await world.verify.run(provider.organization_id, provider.id)
+
+    assert first.changed_from is None
+    assert second.changed_from is not None
+    assert second.changed_from.registry_status is RegistryStatus.ACTIVE
+    assert second.changed_from.verified_at == first.provenance.verified_at
+    assert third.changed_from is None
+
+
+async def test_a_mirror_only_verification_never_asks_the_live_registry() -> None:
+    world = _World(api_no_result(fetched_at=NOW + timedelta(days=1)))
+    provider = _provider()
+    await world.providers.add(provider)
+
+    result = await world.verify.run(provider.organization_id, provider.id, mirror_only=True)
+
+    assert world.connector.lookups == []
+    assert (result.outcome, result.details["reason"]) == (
+        Outcome.SOURCE_UNAVAILABLE,
+        "not_in_mirror",
+    )
+    with pytest.raises(ValueError, match="live"):
+        await world.verify.run(provider.organization_id, provider.id, live=True, mirror_only=True)
+
+
+async def test_a_failed_npi_check_carries_no_change_and_the_next_answer_looks_past_it() -> None:
+    world = _World(mirror=_active())
+    provider = _provider()
+    await world.providers.add(provider)
+    first = await world.verify.run(provider.organization_id, provider.id)
+    world.registry.rows.clear()  # the mirror cannot answer: could not check
+    world.clock.current = NOW + timedelta(days=16)
+    gap = await world.verify.run(provider.organization_id, provider.id, mirror_only=True)
+    world.registry.rows[NPI] = _active(status=NpiStatus.DEACTIVATED)
+    world.clock.current = NOW + timedelta(days=31)
+
+    after = await world.verify.run(provider.organization_id, provider.id, mirror_only=True)
+
+    assert gap.outcome is Outcome.SOURCE_UNAVAILABLE
+    assert gap.changed_from is None
+    assert after.changed_from is not None
+    assert after.changed_from.registry_status is RegistryStatus.ACTIVE
+    assert after.changed_from.verified_at == first.provenance.verified_at

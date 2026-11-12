@@ -2,14 +2,24 @@
 
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from credentialing.application.list_providers import ProviderPage
+from credentialing.application.import_providers import (
+    ImportColumn,
+    ImportProblem,
+    ImportProblemCode,
+    ImportReport,
+    ImportRow,
+    ImportSeverity,
+)
+from credentialing.application.list_providers import ProviderPage, ProviderWithStatus
 from credentialing.application.lookup_exclusions import LookupRecord, LookupResult, SearchedSource
 from credentialing.application.npi_lookup import LiveCheck, MirrorSource, NpiSearchResult, NpiView
 from credentialing.application.npi_suggestions import NpiSuggestion, NpiSuggestions
+from credentialing.application.provider_status import StatusSummary
 from credentialing.application.record_profile import (
     LinkedRecord,
     ProfileRecord,
@@ -20,9 +30,15 @@ from credentialing.application.record_profile import (
 )
 from credentialing.application.register_provider import ProviderInput
 from credentialing.application.source_status import SourceHealth, SourceStatus
-from credentialing.application.verification_history import VerificationView
+from credentialing.application.verification_history import (
+    VerificationHistoryPage,
+    VerificationView,
+)
 from credentialing.domain.enums import (
     AccessPolicy,
+    Attention,
+    AttentionScope,
+    AttentionSelection,
     ChangeSignal,
     CredentialType,
     DatasetLoadMode,
@@ -30,6 +46,7 @@ from credentialing.domain.enums import (
     ExclusionAction,
     Finding,
     Freshness,
+    IdentityState,
     MatchField,
     MatchLevel,
     MatchRelation,
@@ -38,13 +55,16 @@ from credentialing.domain.enums import (
     RecordLink,
     RecordStatus,
     RegistryStatus,
+    RosterRole,
     Verdict,
     VerificationMethod,
 )
 from credentialing.domain.models import (
     ExclusionRecord,
+    MonitoringRun,
     NpiRecord,
     Provider,
+    ProviderStatus,
     ProviderVerdict,
     SourceSnapshot,
 )
@@ -103,10 +123,14 @@ class ProviderCreate(Schema):
     licenses: list[LicenseBody] = Field(default_factory=list)
     addresses: list[AddressBody] = Field(default_factory=list)
     taxonomy_codes: list[str] = Field(default_factory=list)
+    role: RosterRole | None = None
+    """Why the party is on the roster; omitted or null: a practitioner."""
 
     def to_input(self) -> ProviderInput:
         """The application input model for :class:`RegisterProvider`."""
-        return ProviderInput.model_validate(self.model_dump())
+        return ProviderInput.model_validate(
+            {**self.model_dump(), "role": self.role or RosterRole.PRACTITIONER}
+        )
 
 
 class ProviderResponse(Schema):
@@ -122,6 +146,7 @@ class ProviderResponse(Schema):
     addresses: list[AddressBody]
     taxonomy_codes: list[str]
     created_at: datetime
+    role: RosterRole
 
     @classmethod
     def from_domain(cls, provider: Provider) -> ProviderResponse:
@@ -142,13 +167,57 @@ class ProviderResponse(Schema):
             ],
             taxonomy_codes=list(provider.taxonomy_codes),
             created_at=provider.created_at,
+            role=provider.role,
+        )
+
+
+class ProviderStatusResponse(Schema):
+    """A monitored provider's status as the backend decided it.
+
+    ``attention`` is the one reason a person should open the provider, most serious first
+    (null: nothing needs a person); ``changed`` says a result differs from the one before it
+    and nobody has opened the provider since; ``changed_at`` is when the newest such result was
+    stored, seen or not (null: none). ``next_check_at`` is when the automatic recheck is due
+    (null: due now). The source lists name sources by id. The UI shows these as given.
+    """
+
+    verdict: Verdict
+    identity: IdentityState
+    changed: bool
+    changed_at: datetime | None
+    attention: Attention | None
+    last_checked_at: datetime | None
+    next_check_at: datetime | None
+    listed_in: list[str]
+    flagged_in: list[str]
+    review_in: list[str]
+    unchecked: list[str]
+
+    @classmethod
+    def from_status(cls, status: ProviderStatus) -> ProviderStatusResponse:
+        """Map a domain status into its HTTP shape."""
+        return cls.model_validate(status.model_dump(exclude={"provider_id"}))
+
+
+class ProviderListItemResponse(ProviderResponse):
+    """A roster provider with its monitoring status."""
+
+    status: ProviderStatusResponse
+
+    @classmethod
+    def from_item(cls, item: ProviderWithStatus) -> ProviderListItemResponse:
+        """Map a provider and its status into the HTTP shape."""
+        return cls(
+            **ProviderResponse.from_domain(item.provider).model_dump(),
+            status=ProviderStatusResponse.from_status(item.status),
         )
 
 
 class ProviderPageResponse(Schema):
-    """Body of ``GET /providers``: one page, newest first, and the total across pages."""
+    """Body of ``GET /providers``: one page, those needing attention first (by attention
+    order), then newest first, and the total across pages."""
 
-    items: list[ProviderResponse]
+    items: list[ProviderListItemResponse]
     total: int
     page: int
     page_size: int
@@ -157,10 +226,59 @@ class ProviderPageResponse(Schema):
     def from_page(cls, page: ProviderPage) -> ProviderPageResponse:
         """Map a page of domain providers into its HTTP shape."""
         return cls(
-            items=[ProviderResponse.from_domain(provider) for provider in page.items],
+            items=[ProviderListItemResponse.from_item(item) for item in page.items],
             total=page.total,
             page=page.page,
             page_size=page.page_size,
+        )
+
+
+NO_ATTENTION_KEY = "none"
+"""The ``counts`` key of providers needing nobody in :class:`StatusSummaryResponse`."""
+
+
+class AttentionFilter(StrEnum):
+    """The roster's ``attention`` query: one reason, ``any`` (every provider with some reason)
+    or ``none`` (every provider needing nobody)."""
+
+    LISTED = Attention.LISTED.value
+    FLAGGED = Attention.FLAGGED.value
+    NEEDS_REVIEW = Attention.NEEDS_REVIEW.value
+    COULD_NOT_CHECK = Attention.COULD_NOT_CHECK.value
+    CHANGED = Attention.CHANGED.value
+    NPI_DEACTIVATED = Attention.NPI_DEACTIVATED.value
+    NPI_UNCERTAIN = Attention.NPI_UNCERTAIN.value
+    NPI_MISSING = Attention.NPI_MISSING.value
+    NOT_CHECKED = Attention.NOT_CHECKED.value
+    ANY = AttentionScope.ANY.value
+    NONE = AttentionScope.NONE.value
+
+    def selection(self) -> AttentionSelection:
+        """The use case's filter: the scope for ``any`` and ``none``, else the reason."""
+        if self.value in AttentionScope:
+            return AttentionScope(self.value)
+        return Attention(self.value)
+
+
+class StatusSummaryResponse(Schema):
+    """Body of ``GET /providers/summary``: providers per attention reason (every reason, and
+    ``none`` for those needing nobody), the roster's total and the recheck interval."""
+
+    counts: dict[str, int]
+    total: int
+    recheck_interval_days: int
+    """How often every provider is rechecked, in days (the monitoring policy)."""
+
+    @classmethod
+    def from_summary(cls, summary: StatusSummary) -> StatusSummaryResponse:
+        """Map the summary into its HTTP shape."""
+        return cls(
+            counts={
+                (reason.value if reason is not None else NO_ATTENTION_KEY): count
+                for reason, count in summary.counts.items()
+            },
+            total=summary.total,
+            recheck_interval_days=summary.recheck_interval.days,
         )
 
 
@@ -511,8 +629,22 @@ class RecordProfileResponse(Schema):
         )
 
 
+class ResultChangeResponse(Schema):
+    """What the previous result said, on a result that differs from it."""
+
+    outcome: Outcome
+    finding: Finding | None
+    record_status: RecordStatus | None
+    registry_status: RegistryStatus | None
+    verified_at: datetime
+
+
 class VerificationResponse(Schema):
-    """One verification result with provenance, freshness and the records it matched."""
+    """One verification result with provenance, freshness and the records it matched.
+
+    ``changed_from`` is the previous result's answer when this one differs from it (null on a
+    first result and when nothing changed).
+    """
 
     id: UUID
     provider_id: UUID
@@ -527,6 +659,7 @@ class VerificationResponse(Schema):
     freshness: Freshness
     created_at: datetime
     matched_records: list[MatchedRecordResponse]
+    changed_from: ResultChangeResponse | None
 
     @classmethod
     def from_view(cls, view: VerificationView) -> VerificationResponse:
@@ -546,6 +679,11 @@ class VerificationResponse(Schema):
             freshness=result.freshness,
             created_at=result.created_at,
             matched_records=[MatchedRecordResponse.from_domain(r) for r in view.matched_records],
+            changed_from=(
+                ResultChangeResponse.model_validate(result.changed_from.model_dump())
+                if result.changed_from
+                else None
+            ),
         )
 
 
@@ -914,3 +1052,144 @@ class ProviderNpiResponse(Schema):
 
     provider: ProviderResponse
     verification: VerificationResponse
+
+
+class ProviderImportBody(Schema):
+    """Request body of ``POST /providers/import``: the pasted list or the CSV/TSV export's
+    text, and whether to preview it only (the default) or store it."""
+
+    text: str
+    dry_run: bool = True
+
+
+class ImportProblemResponse(Schema):
+    """One problem of an import row: an ``error`` keeps the row out, a ``warning`` drops one
+    value. ``detail`` says which part, never a value."""
+
+    code: ImportProblemCode
+    severity: ImportSeverity
+    detail: str | None
+
+    @classmethod
+    def from_problem(cls, problem: ImportProblem) -> ImportProblemResponse:
+        """Map an application problem into its HTTP shape."""
+        return cls(code=problem.code, severity=problem.severity, detail=problem.detail)
+
+
+class ImportRowResponse(Schema):
+    """One data row of an import, as the preview shows it. ``importable`` is false when an
+    error keeps the row out. ``values`` hands back the row's text per recognized column (the
+    report's ``columns``, in file order, empty when blank), so the person can correct or drop
+    rows and preview the rebuilt text again; it includes the date of birth as typed, the
+    caller's own unsaved text, echoed for editing only and never stored from a preview."""
+
+    line: int
+    display: str
+    entity_kind: EntityKind
+    npi: str | None
+    role: RosterRole | None
+    has_date_of_birth: bool
+    name_split: bool
+    importable: bool
+    problems: list[ImportProblemResponse]
+    duplicate_of_line: int | None
+    existing_provider_id: UUID | None
+    values: dict[ImportColumn, str]
+
+    @classmethod
+    def from_row(cls, row: ImportRow) -> ImportRowResponse:
+        """Map an application row into its HTTP shape."""
+        return cls(
+            line=row.line,
+            display=row.display,
+            entity_kind=row.entity_kind,
+            npi=row.npi,
+            role=row.role,
+            has_date_of_birth=row.has_date_of_birth,
+            name_split=row.name_split,
+            importable=row.provider is not None,
+            problems=[ImportProblemResponse.from_problem(p) for p in row.problems],
+            duplicate_of_line=row.duplicate_of_line,
+            existing_provider_id=row.existing_provider_id,
+            values=dict(row.values),
+        )
+
+
+class ImportCheckResponse(Schema):
+    """The first check of the providers an import stored: how many were checked, the results
+    appended, those that differ from a previous result, and the providers whose check
+    failed."""
+
+    started_at: datetime
+    finished_at: datetime
+    providers: int
+    results: int
+    changed: int
+    failures: int
+
+    @classmethod
+    def from_run(cls, run: MonitoringRun) -> ImportCheckResponse:
+        """Map a monitoring run into its HTTP shape."""
+        return cls(
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            providers=run.providers,
+            results=run.results,
+            changed=run.changed,
+            failures=run.failures,
+        )
+
+
+class ImportReportResponse(Schema):
+    """Body of ``POST /providers/import``: every row with its problems, the columns read and
+    ignored, the counts, and on a commit the stored provider ids and their first check.
+    ``no_header``: no header was recognized and the rows did not read as a list of names
+    and NPIs, so nothing was read."""
+
+    rows: list[ImportRowResponse]
+    columns: list[ImportColumn]
+    ignored_columns: list[str]
+    no_header: bool
+    importable: int
+    with_warnings: int
+    rejected: int
+    dry_run: bool
+    imported: list[UUID]
+    recheck: ImportCheckResponse | None
+
+    @classmethod
+    def from_report(cls, report: ImportReport, *, dry_run: bool) -> ImportReportResponse:
+        """Map an import report into its HTTP shape."""
+        return cls(
+            rows=[ImportRowResponse.from_row(row) for row in report.rows],
+            columns=list(report.columns),
+            ignored_columns=list(report.ignored_columns),
+            no_header=report.no_header,
+            importable=report.importable,
+            with_warnings=report.with_warnings,
+            rejected=report.rejected,
+            dry_run=dry_run,
+            imported=list(report.imported),
+            recheck=ImportCheckResponse.from_run(report.recheck) if report.recheck else None,
+        )
+
+
+class HistoryPageResponse(Schema):
+    """Body of ``GET /providers/{id}/verifications``: the results of up to ``limit`` moments,
+    newest first. A moment is one instant results were stored at: a check run's result per
+    list shares one, an NPI verification has its own, so a page never splits a run.
+    ``next_before`` is the next page's ``before`` (null: no older history). History goes back
+    ``retention_days``; each list's and the NPI's newest result is kept even when older."""
+
+    items: list[VerificationResponse]
+    next_before: datetime | None
+    retention_days: int
+
+    @classmethod
+    def from_page(cls, page: VerificationHistoryPage) -> HistoryPageResponse:
+        """Map a page of the history into its HTTP shape."""
+        return cls(
+            items=[VerificationResponse.from_view(view) for view in page.views],
+            next_before=page.next_before,
+            retention_days=page.retention.days,
+        )

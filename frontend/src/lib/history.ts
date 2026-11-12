@@ -1,5 +1,6 @@
 /** The verification history as the timeline shows it: grouped into check runs, nothing more. */
 import type { Verification } from './api.ts'
+import { changedFromLabel } from './labels.ts'
 
 export type CheckRun = { at: string; results: Verification[] }
 
@@ -15,4 +16,9 @@ export function checkRuns(history: readonly Verification[]): CheckRun[] {
     runs.set(key, [...(runs.get(key) ?? []), result])
   }
   return [...runs].map(([at, results]) => ({ at, results }))
+}
+
+/** "changed from Record found": what the result said before, on a result that changed. */
+export function changeLine(result: Pick<Verification, 'changed_from'>): string | null {
+  return result.changed_from ? `changed from ${changedFromLabel(result.changed_from).word}` : null
 }

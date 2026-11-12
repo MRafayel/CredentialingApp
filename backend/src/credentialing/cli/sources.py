@@ -2,8 +2,8 @@
 
 A result is always a symbol and a word, so colour only ever repeats what the text says.
 Colour is the caller's decision (a terminal, and ``NO_COLOR`` unset). Under the table, one
-line says where linking exclusion records to NPIs stands, and one how the live NPI registry
-(asked on demand, never polled) has been used.
+line says where linking exclusion records to NPIs stands, one how the live NPI registry
+(asked on demand, never polled) has been used, and one what the last roster recheck did.
 """
 
 import json
@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final, TextIO
 
+from credentialing.application.recheck_providers import MonitoringSummary
 from credentialing.application.source_status import OnDemandUsage, SourceHealth, SourceStatus
 from credentialing.cli.relative_time import ago, span, until
 from credentialing.domain.enums import (
@@ -64,12 +65,13 @@ def show(
     color: bool,
     links: NpiLinkSummary | None = None,
     api: OnDemandUsage | None = None,
+    monitoring: MonitoringSummary | None = None,
 ) -> int:
     """Write the dashboard (or its JSON) to ``out`` and return the process exit code."""
     out.write(
-        render_json(statuses, links, api)
+        render_json(statuses, links, api, monitoring)
         if as_json
-        else render_table(statuses, now, color=color, links=links, api=api)
+        else render_table(statuses, now, color=color, links=links, api=api, monitoring=monitoring)
     )
     return exit_code(statuses, strict=strict)
 
@@ -83,14 +85,17 @@ def render_json(
     statuses: Sequence[SourceStatus],
     links: NpiLinkSummary | None = None,
     api: OnDemandUsage | None = None,
+    monitoring: MonitoringSummary | None = None,
 ) -> str:
-    """``{"sources": [...], "npi_links": {...}, "nppes_api": {...}}``: every status with all
-    its fields, the NPI linking summary and the live registry's usage (each null when not
-    given); timestamps and durations in ISO 8601."""
+    """``{"sources": [...], "npi_links": {...}, "nppes_api": {...}, "monitoring": {...}}``:
+    every status with all its fields, the NPI linking summary, the live registry's usage and
+    the last roster recheck (``{"last_run": ...}``) (each null when not given); timestamps and
+    durations in ISO 8601."""
     payload = {
         "sources": [status.model_dump(mode="json") for status in statuses],
         "npi_links": links.model_dump(mode="json") if links else None,
         "nppes_api": api.model_dump(mode="json") if api else None,
+        "monitoring": monitoring.model_dump(mode="json") if monitoring else None,
     }
     return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
@@ -103,10 +108,11 @@ def render_table(
     width: int = WIDTH,
     links: NpiLinkSummary | None = None,
     api: OnDemandUsage | None = None,
+    monitoring: MonitoringSummary | None = None,
 ) -> str:
     """One row per source, a note line under each failed fetch and under each dataset source's
-    last load, a summary, the freshness policy, and the NPI links and live registry lines when
-    given."""
+    last load, a summary, the freshness policy, and the NPI links, live registry and
+    monitoring lines when given."""
     headers = (
         "Source",
         "Jur.",
@@ -157,7 +163,29 @@ def render_table(
         lines.append(links_line(links, now))
     if api is not None:
         lines.append(api_line(api, now))
+    if monitoring is not None:
+        lines.append(monitoring_line(monitoring, now))
     return "\n".join(lines) + "\n"
+
+
+def monitoring_line(monitoring: MonitoringSummary, now: datetime) -> str:
+    """The last roster recheck: "Monitoring: last run 3 h ago (due) · 1,200 providers · 4
+    changed · 0 failures", then "purged 310" when it purged history rows; "never run" before
+    the first."""
+    run = monitoring.last_run
+    if run is None:
+        return "Monitoring: never run"
+    parts = [
+        f"last run {ago(run.finished_at, now)} ({run.trigger})",
+        f"{run.providers:,} providers",
+        f"{run.changed:,} changed",
+        f"{run.failures:,} failure{'' if run.failures == 1 else 's'}",
+    ]
+    if run.purged:
+        parts.append(f"purged {run.purged:,}")
+    if run.note:
+        parts.append(run.note)
+    return "Monitoring: " + " · ".join(parts)
 
 
 def api_line(usage: OnDemandUsage, now: datetime) -> str:

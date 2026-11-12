@@ -123,8 +123,15 @@ async def test_check_exclusions_end_to_end(
     assert result.match is not None
     assert result.match.level is MatchLevel.EXACT
     assert result.provenance.snapshot_id == snapshot.id
-    (stored,) = await services.verifications.history_all(organization_id, provider.id)
+    # The sync that added the row rechecked the roster against that list first.
+    page = await services.verifications.history_page(
+        organization_id, provider.id, before=None, moments=10
+    )
+    stored, rechecked = page.results
     assert stored == result
+    assert (rechecked.source_id, rechecked.created_at) == (SOURCE, NOW)
+    assert rechecked.finding is Finding.RECORD_FOUND
+    assert result.changed_from is None
     (view,) = await services.verification_history.expand([result])
     assert [record.npi for record in view.matched_records] == [NPI]
 

@@ -31,7 +31,12 @@ run), so a daily cron entry is enough:
 
 ```sh
 0 6 * * * cd /path/to/CredentialingApp && make sync-due
+30 6 * * * cd /path/to/CredentialingApp && make monitor-due
 ```
+
+`make monitor-due` rechecks the roster providers whose last check is 15 days old against every
+list and the NPI mirror. A sync that changes a list already rechecks every provider against
+that list; `make monitor` rechecks everyone now (`SOURCE=ny_omig` for one list).
 
 Until authentication is in place, local API calls name their organization in a header. The
 seeded development organization is `00000000-0000-0000-0000-000000000001`:

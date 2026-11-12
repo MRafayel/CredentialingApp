@@ -138,20 +138,26 @@ class NpiLookup:
         self._clock = clock
         self._writer = MirrorWriter(registry, snapshots, clock)
 
-    async def get(self, npi: Npi, *, live: bool = False) -> NpiView:
+    async def get(self, npi: Npi, *, live: bool = False, mirror_only: bool = False) -> NpiView:
         """``npi`` from the mirror, and from the live registry when ``live`` or when
         :func:`~credentialing.domain.policies.live_check_needed` says so.
 
         A mirror row counts for the conclusion only once a file load is known (a row the live
         registry wrote before any file was loaded has no mirror provenance). A live request
         that fails leaves the mirror's answer in place, with the failure in ``live``; "no
-        result" writes nothing.
+        result" writes nothing. ``mirror_only`` never asks the live registry, whatever the
+        mirror holds (the scheduled recheck): an NPI the mirror lacks is then UNKNOWN.
+
+        Raises:
+            ValueError: Both ``live`` and ``mirror_only``.
         """
+        if live and mirror_only:
+            raise ValueError("a lookup cannot be both live and mirror-only")
         mirrored = await self._registry.get(npi)
         mirror = await self.mirror()
         record = mirrored
         check: LiveCheck | None = None
-        connector = self._live_connector()
+        connector = None if mirror_only else self._live_connector()
         if connector is not None and live_check_needed(
             requested=live,
             mirrored=mirrored is not None,

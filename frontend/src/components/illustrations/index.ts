@@ -4,6 +4,7 @@ export type { IllustrationProps } from './Svg.tsx'
 export { OrganizationMark, PersonMark } from './ProviderMarks.tsx'
 export {
   VerdictBlocked,
+  VerdictChanged,
   VerdictClear,
   VerdictFlagged,
   VerdictListed,

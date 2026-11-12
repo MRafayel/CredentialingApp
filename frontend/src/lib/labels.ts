@@ -4,19 +4,27 @@
  * from the backend and are only named.
  */
 import type {
+  Attention,
   Freshness,
+  IdentityState,
   MatchLevel,
   NpiStatus,
   Outcome,
+  ProviderStatus,
   ProviderVerdict,
   RecordStatus,
   RegistryStatus,
+  ResultChange,
+  RosterRole,
   Verification,
 } from './api.ts'
 import { plural } from './format.ts'
 
-/** The status colours; each always travels with a symbol and a word. */
-export type Tone = 'clear' | 'review' | 'flagged' | 'listed' | 'blocked' | 'neutral'
+/**
+ * The status colours; each always travels with a symbol and a word. `changed` is the accent with
+ * its own mark (a result that differs from the one before it), never the clear shield.
+ */
+export type Tone = 'clear' | 'review' | 'flagged' | 'listed' | 'blocked' | 'neutral' | 'changed'
 
 export type Label = { tone: Tone; word: string; detail?: string }
 
@@ -203,4 +211,115 @@ export function matchLevelLabel(level: MatchLevel): Label {
     case 'none':
       return { tone: 'neutral', word: 'No match' }
   }
+}
+
+// --- Monitoring -----------------------------------------------------------------------------
+
+/** The reasons a provider needs a person, most serious first: the backend's own order. */
+export const ATTENTION_ORDER: readonly Attention[] = [
+  'listed',
+  'flagged',
+  'needs_review',
+  'could_not_check',
+  'changed',
+  'npi_deactivated',
+  'npi_uncertain',
+  'npi_missing',
+  'not_checked',
+]
+
+const ATTENTION_WORDS: Record<Attention, Label> = {
+  listed: { tone: 'listed', word: 'Listed' },
+  flagged: { tone: 'flagged', word: 'Flagged' },
+  needs_review: { tone: 'review', word: 'Review' },
+  could_not_check: { tone: 'blocked', word: 'Could not check' },
+  changed: { tone: 'changed', word: 'Changed' },
+  npi_deactivated: { tone: 'listed', word: 'NPI deactivated' },
+  npi_uncertain: { tone: 'review', word: 'NPI unclear' },
+  npi_missing: { tone: 'review', word: 'Needs NPI' },
+  not_checked: { tone: 'neutral', word: 'Not checked' },
+}
+
+/** One reason for attention as a mark and a word: a roster filter, a row's status. */
+export function attentionWord(attention: Attention): Label {
+  return ATTENTION_WORDS[attention]
+}
+
+/** Sources by name: the first named, the rest counted ("OIG LEIE and 2 more"). */
+export function listNames(ids: readonly string[], name: (id: string) => string): string {
+  const [first] = ids
+  if (first === undefined) return ''
+  return ids.length === 1 ? name(first) : `${name(first)} and ${ids.length - 1} more`
+}
+
+type StatusFigures = Pick<
+  ProviderStatus,
+  'attention' | 'listed_in' | 'flagged_in' | 'review_in' | 'unchecked'
+>
+
+/**
+ * A roster row's one word and its line, from the backend's one reason for attention: what is so
+ * and where ("Listed · OIG LEIE", "Could not check · 3 lists"). A provider with no reason reads
+ * "No records", the verdict's own word (never "Clear": the lists cannot promise more); the row
+ * adds when it was checked.
+ */
+export function attentionLabel(status: StatusFigures, name: (id: string) => string): Label {
+  if (status.attention === null) return { tone: 'clear', word: 'No records' }
+  const label = ATTENTION_WORDS[status.attention]
+  switch (status.attention) {
+    case 'listed':
+      return { ...label, detail: listNames(status.listed_in, name) }
+    case 'flagged':
+      return { ...label, detail: `named in ${listNames(status.flagged_in, name)}` }
+    case 'needs_review':
+      return { ...label, detail: `possible match in ${listNames(status.review_in, name)}` }
+    case 'could_not_check':
+      return { ...label, detail: plural(status.unchecked.length, 'list') }
+    case 'changed':
+      return { ...label, detail: 'since you last looked' }
+    case 'npi_deactivated':
+      return { ...label, detail: 'in NPPES' }
+    case 'npi_uncertain':
+      return { ...label, detail: 'NPPES answer to review' }
+    case 'npi_missing':
+    case 'not_checked':
+      return label
+  }
+}
+
+/** What the roster knows about the provider's NPI, as the backend decided it. */
+export function identityLabel(identity: IdentityState): Label {
+  switch (identity) {
+    case 'npi_active':
+      return { tone: 'clear', word: 'NPI confirmed', detail: 'active' }
+    case 'npi_unverified':
+      return { tone: 'neutral', word: 'NPI not verified' }
+    case 'npi_missing':
+      return { tone: 'review', word: 'Needs NPI' }
+    case 'npi_deactivated':
+      return { tone: 'listed', word: 'NPI deactivated' }
+    case 'npi_uncertain':
+      return { tone: 'review', word: 'NPI unclear', detail: 'NPPES answer to review' }
+    case 'not_expected':
+      return { tone: 'neutral', word: 'Not expected' }
+  }
+}
+
+const ROLE_WORDS: Record<RosterRole, string> = {
+  practitioner: 'Practitioner',
+  workforce: 'Workforce',
+  vendor: 'Vendor',
+}
+
+/** Why the party is on the roster. */
+export function roleWord(role: RosterRole): string {
+  return ROLE_WORDS[role]
+}
+
+/** What a result said before it changed, in the words its own result would use. */
+export function changedFromLabel(change: ResultChange): Label {
+  const details: Record<string, string> = {}
+  if (change.record_status) details.record_status = change.record_status
+  if (change.registry_status) details.npi_status = change.registry_status
+  return resultLabel({ outcome: change.outcome, finding: change.finding, details })
 }

@@ -13,16 +13,25 @@ import { Ago, DateOf } from './Time.tsx'
 export function SourceLine({
   block,
   kind,
+  lead,
   className,
 }: {
   block: MirrorSource | LiveCheck
   kind: 'mirror' | 'live'
+  /** Words before the line, in the same wrap ("Includes NPPES"). */
+  lead?: string
   className?: string
 }) {
   return (
     <span
       className={`inline-flex flex-wrap items-center gap-x-1.5 text-small text-ink-muted ${className ?? ''}`}
     >
+      {lead && (
+        <>
+          <span>{lead}</span>
+          <span aria-hidden="true">·</span>
+        </>
+      )}
       <Freshness label={freshnessLabel(block.freshness)} />
       <span aria-hidden="true">·</span>
       <span>{registrySourceName(block.provenance.source_id)}</span>

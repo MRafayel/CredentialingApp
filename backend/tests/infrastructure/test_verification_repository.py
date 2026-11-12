@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,6 +17,7 @@ from credentialing.domain.enums import (
     VerificationMethod,
 )
 from credentialing.domain.models import (
+    HistoryPage,
     MatchEvidence,
     MatchResult,
     Provenance,
@@ -185,22 +186,148 @@ async def test_schema_rejects_a_finding_on_a_check_that_could_not_run(
             )
 
 
-async def test_history_all_spans_credential_types_newest_first(
+def _at(
+    result: VerificationResult, at: datetime, *, source_id: str | None = None, new_id: bool = True
+) -> VerificationResult:
+    """The result stored (and verified) at ``at``, under a new id unless told otherwise."""
+    source = source_id or result.source_id
+    provenance = result.provenance.model_copy(update={"verified_at": at, "source_id": source})
+    return result.model_copy(
+        update={
+            "id": uuid4() if new_id else result.id,
+            "created_at": at,
+            "source_id": source,
+            "provenance": provenance,
+        }
+    )
+
+
+def _npi(result: VerificationResult, source_id: str = "test_npi_source") -> VerificationResult:
+    provenance = result.provenance.model_copy(update={"source_id": source_id})
+    return result.model_copy(
+        update={
+            "credential_type": CredentialType.NPI,
+            "source_id": source_id,
+            "provenance": provenance,
+        }
+    )
+
+
+async def test_history_page_returns_whole_moments_newest_first(
     database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
 ) -> None:
     repository = PostgresVerificationRepository(database)
     organization_id, provider_id = await _provider(database, db_connection)
-    exclusion_result = _result(organization_id, provider_id)
-    license_result = _result(organization_id, provider_id, minutes_later=3).model_copy(
-        update={"credential_type": CredentialType.STATE_LICENSE}
+    other_organization, _ = await _provider(database, db_connection)
+    run_one = [_result(organization_id, provider_id, source_id=s) for s in ("test_a", "test_b")]
+    npi = _npi(_result(organization_id, provider_id, minutes_later=5))
+    run_two = [
+        _result(organization_id, provider_id, minutes_later=9, source_id=s)
+        for s in ("test_a", "test_b")
+    ]
+    await repository.add_many([*run_one, npi, *run_two])
+
+    first = await repository.history_page(organization_id, provider_id, before=None, moments=2)
+    second = await repository.history_page(
+        organization_id, provider_id, before=first.next_before, moments=2
     )
-    for result in (exclusion_result, license_result):
-        await repository.add(result)
+    one = await repository.history_page(organization_id, provider_id, before=None, moments=1)
 
-    history = await repository.history_all(organization_id, provider_id)
+    assert {r.id for r in first.results[:2]} == {r.id for r in run_two}
+    assert first.results[2:] == (npi,)
+    assert first.next_before == npi.created_at
+    assert {r.id for r in second.results} == {r.id for r in run_one}
+    assert second.next_before is None
+    # A check run's results share one instant, so a page never splits them.
+    assert {r.id for r in one.results} == {r.id for r in run_two}
+    assert one.next_before == run_two[0].created_at
+    assert await repository.history_page(
+        other_organization, provider_id, before=None, moments=2
+    ) == HistoryPage(results=())
 
-    assert history == [license_result, exclusion_result]
-    assert await repository.history_all(uuid4(), provider_id) == []
+
+async def test_latest_npi_is_the_newest_npi_result_of_any_source(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresVerificationRepository(database)
+    organization_id, provider_id = await _provider(database, db_connection)
+    other_organization, _ = await _provider(database, db_connection)
+    assert await repository.latest_npi(organization_id, provider_id) is None
+    mirror = _npi(_result(organization_id, provider_id), "test_mirror")
+    live = _npi(_result(organization_id, provider_id, minutes_later=3), "test_live")
+    newer_list = _result(organization_id, provider_id, minutes_later=9)
+    await repository.add_many([mirror, live, newer_list])
+
+    assert await repository.latest_npi(organization_id, provider_id) == live
+    assert await repository.latest_npi(other_organization, provider_id) is None
+
+
+async def test_purge_keeps_each_sources_newest_results_and_other_organizations(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresVerificationRepository(database)
+    organization_id, provider_id = await _provider(database, db_connection)
+    other_organization, other_provider = await _provider(database, db_connection)
+    cutoff = NOW
+    base = _result(organization_id, provider_id)
+    oldest = _at(base, cutoff - timedelta(days=200))
+    last_answer = _at(base, cutoff - timedelta(days=190))
+    blocked = _at(
+        _result(organization_id, provider_id, outcome=Outcome.BLOCKED),
+        cutoff - timedelta(days=185),
+    )
+    lone = _at(base, cutoff - timedelta(days=400), source_id="test_lone")
+    old_npi = _at(_npi(base), cutoff - timedelta(days=300))
+    newest_npi = _at(_npi(base), cutoff - timedelta(days=250))
+    recent = _at(base, cutoff + timedelta(minutes=1), source_id="test_recent")
+    old_recent = _at(base, cutoff - timedelta(days=199), source_id="test_recent")
+    theirs = _at(_result(other_organization, other_provider), cutoff - timedelta(days=300))
+    theirs_newer = _at(_result(other_organization, other_provider), cutoff - timedelta(days=200))
+    await repository.add_many(
+        [oldest, last_answer, blocked, lone, old_npi, newest_npi, recent, old_recent]
+    )
+    await repository.add_many([theirs, theirs_newer])
+
+    purged = await repository.purge(organization_id, before=cutoff)
+
+    assert purged == 3
+    exclusions = await repository.history(organization_id, provider_id, CredentialType.EXCLUSION)
+    # The newest result of each list stays however old, and so does the last answer
+    # (completed) change detection compares the next one with.
+    assert {r.id for r in exclusions} == {last_answer.id, blocked.id, lone.id, recent.id}
+    assert await repository.history(organization_id, provider_id, CredentialType.NPI) == [
+        newest_npi
+    ]
+    assert await repository.latest_npi(organization_id, provider_id) == newest_npi
+    assert {
+        r.id
+        for r in await repository.history(
+            other_organization, other_provider, CredentialType.EXCLUSION
+        )
+    } == {theirs.id, theirs_newer.id}
+    assert await repository.purge(organization_id, before=cutoff) == 0
+
+
+async def test_only_the_purge_may_delete_and_nothing_may_update(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresVerificationRepository(database)
+    organization_id, provider_id = await _provider(database, db_connection)
+    old = _at(_result(organization_id, provider_id), NOW - timedelta(days=200))
+    new = _result(organization_id, provider_id, minutes_later=1)
+    await repository.add_many([old, new])
+
+    # Before any purge in this transaction: a plain delete is rejected by the trigger.
+    with pytest.raises(RaiseException, match="append-only: DELETE"):
+        async with db_connection.transaction():
+            await db_connection.execute(t"delete from verifications where id = {old.id}")
+    assert await repository.purge(organization_id, before=NOW) == 1
+    with pytest.raises(RaiseException, match="append-only: UPDATE"):
+        async with db_connection.transaction():
+            await db_connection.execute(
+                t"update verifications set summary = 'changed' where id = {new.id}"
+            )
+    assert await repository.history(organization_id, provider_id, CredentialType.EXCLUSION) == [new]
 
 
 async def test_latest_per_source_keeps_the_newest_result_of_each_source(

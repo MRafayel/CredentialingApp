@@ -17,12 +17,20 @@ from fastapi import FastAPI
 from credentialing.api.app import create_app
 from credentialing.api.container import AppContainer
 from credentialing.application.check_exclusions import CheckExclusions
+from credentialing.application.import_providers import ImportProviders
 from credentialing.application.link_npis import LinkNpis
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.application.npi_lookup import NpiLookup
 from credentialing.application.npi_suggestions import SuggestNpis
+from credentialing.application.provider_status import (
+    MarkViewed,
+    ProviderStatusKeeper,
+    ProviderStatusQuery,
+    ProviderStatusSummary,
+)
 from credentialing.application.provider_verdict import ProviderVerdictQuery
+from credentialing.application.recheck_providers import RecheckProviders
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
 from credentialing.application.set_provider_npi import SetProviderNpi
@@ -78,6 +86,9 @@ from credentialing.infrastructure.logging import configure_logging
 from credentialing.infrastructure.repositories.exclusion_records import (
     PostgresExclusionRecordRepository,
 )
+from credentialing.infrastructure.repositories.monitoring_runs import (
+    PostgresMonitoringRunRepository,
+)
 from credentialing.infrastructure.repositories.npi_links import PostgresNpiLinkRepository
 from credentialing.infrastructure.repositories.npi_registry import (
     PostgresNpiRegistryRepository,
@@ -108,6 +119,7 @@ class Services:
     npi_registry: PostgresNpiRegistryRepository
     npi_links: PostgresNpiLinkRepository
     verifications: PostgresVerificationRepository
+    monitoring_runs: PostgresMonitoringRunRepository
     link_npis: LinkNpis
     npi_lookup: NpiLookup
     sync_source: SyncSource
@@ -116,12 +128,17 @@ class Services:
     lookup_exclusions: LookupExclusions
     record_profile: RecordProfileQuery
     register_provider: RegisterProvider
+    import_providers: ImportProviders
     list_providers: ListProviders
     verification_history: VerificationHistory
     provider_verdict: ProviderVerdictQuery
+    provider_status: ProviderStatusQuery
+    provider_status_summary: ProviderStatusSummary
+    mark_viewed: MarkViewed
     verify_npi: VerifyNpi
     suggest_npis: SuggestNpis
     set_provider_npi: SetProviderNpi
+    recheck_providers: RecheckProviders
 
 
 def create_http_client(settings: Settings) -> httpx2.AsyncClient:
@@ -209,6 +226,8 @@ def build_services(
     npi_registry = PostgresNpiRegistryRepository(database)
     npi_links = PostgresNpiLinkRepository(database)
     verifications = PostgresVerificationRepository(database)
+    monitoring_runs = PostgresMonitoringRunRepository(database)
+    keeper = ProviderStatusKeeper(providers, verifications, registry)
     link_npis = LinkNpis(registry, snapshots, npi_links, clock)
     npi_lookup = NpiLookup(npi_registry, registry, snapshots, DEFAULT_FRESHNESS, clock)
     live_registry = NppesApiConnector.CAPABILITIES
@@ -219,6 +238,26 @@ def build_services(
         clock,
         source_id=live_registry.source_id,
         source_url=live_registry.source_url,
+        status=keeper,
+    )
+    check_exclusions = CheckExclusions(
+        registry,
+        providers,
+        records,
+        snapshots,
+        verifications,
+        DEFAULT_FRESHNESS,
+        clock,
+        status=keeper,
+    )
+    recheck_providers = RecheckProviders(
+        providers,
+        check_exclusions,
+        verify_npi,
+        keeper,
+        monitoring_runs,
+        clock,
+        verifications=verifications,
     )
     return Services(
         registry=registry,
@@ -229,6 +268,7 @@ def build_services(
         npi_registry=npi_registry,
         npi_links=npi_links,
         verifications=verifications,
+        monitoring_runs=monitoring_runs,
         link_npis=link_npis,
         npi_lookup=npi_lookup,
         sync_source=SyncSource(
@@ -238,13 +278,12 @@ def build_services(
             clock,
             npi_registry=npi_registry,
             link_npis=link_npis,
+            recheck=recheck_providers,
         ),
         source_status=SourceStatusReport(
             registry, snapshots, records, DEFAULT_FRESHNESS, clock, npi_registry=npi_registry
         ),
-        check_exclusions=CheckExclusions(
-            registry, providers, records, snapshots, verifications, DEFAULT_FRESHNESS, clock
-        ),
+        check_exclusions=check_exclusions,
         lookup_exclusions=LookupExclusions(records, snapshots, registry, clock),
         record_profile=RecordProfileQuery(
             records,
@@ -255,13 +294,20 @@ def build_services(
             npi_links=npi_links,
             npi_registry=npi_registry,
         ),
-        register_provider=RegisterProvider(providers, clock),
-        list_providers=ListProviders(providers),
+        register_provider=RegisterProvider(providers, clock, first_check=recheck_providers),
+        import_providers=ImportProviders(providers, recheck_providers, clock),
+        list_providers=ListProviders(providers, keeper),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),
+        provider_status=ProviderStatusQuery(providers, keeper),
+        provider_status_summary=ProviderStatusSummary(providers, keeper),
+        mark_viewed=MarkViewed(providers, keeper, clock),
         verify_npi=verify_npi,
         suggest_npis=SuggestNpis(providers, npi_links, npi_lookup, clock),
-        set_provider_npi=SetProviderNpi(providers, npi_lookup, verify_npi, clock),
+        set_provider_npi=SetProviderNpi(
+            providers, npi_lookup, verify_npi, clock, recheck=recheck_providers
+        ),
+        recheck_providers=recheck_providers,
     )
 
 
@@ -269,6 +315,7 @@ def api_container(services: Services, settings: Settings) -> AppContainer:
     """What the API's route handlers see."""
     return AppContainer(
         register_provider=services.register_provider,
+        import_providers=services.import_providers,
         list_providers=services.list_providers,
         source_status=services.source_status,
         check_exclusions=services.check_exclusions,
@@ -276,6 +323,9 @@ def api_container(services: Services, settings: Settings) -> AppContainer:
         record_profile=services.record_profile,
         verification_history=services.verification_history,
         provider_verdict=services.provider_verdict,
+        provider_status=services.provider_status,
+        provider_status_summary=services.provider_status_summary,
+        mark_viewed=services.mark_viewed,
         npi_lookup=services.npi_lookup,
         verify_npi=services.verify_npi,
         suggest_npis=services.suggest_npis,

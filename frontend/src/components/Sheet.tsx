@@ -16,11 +16,14 @@ export function Sheet({
   onClose,
   children,
   footer,
+  wide = false,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
+  /** A wider drawer on desktop (760 px), for a table such as an import preview. */
+  wide?: boolean
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const desktop = useMedia(DESKTOP)
@@ -83,7 +86,7 @@ export function Sheet({
         }}
         className={
           desktop
-            ? 'absolute inset-y-3 right-3 flex w-[min(500px,calc(100%-24px))] flex-col overflow-hidden rounded-hero bg-surface shadow-float'
+            ? `absolute inset-y-3 right-3 flex flex-col overflow-hidden rounded-hero bg-surface shadow-float ${wide ? 'w-[min(760px,calc(100%-24px))]' : 'w-[min(500px,calc(100%-24px))]'}`
             : 'absolute inset-x-0 bottom-0 flex max-h-[94dvh] flex-col rounded-t-hero bg-surface shadow-float'
         }
       >

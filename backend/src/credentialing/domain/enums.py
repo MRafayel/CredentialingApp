@@ -213,3 +213,60 @@ class DatasetLoadMode(StrEnum):
     FULL = "full"
     INCREMENTAL = "incremental"
     DEACTIVATIONS = "deactivations"
+
+
+class RosterRole(StrEnum):
+    """Why a party is on an organization's roster; decides whether an NPI is expected (only of
+    practitioners)."""
+
+    PRACTITIONER = "practitioner"
+    WORKFORCE = "workforce"
+    """Employees, volunteers and managers, who usually have no NPI."""
+    VENDOR = "vendor"
+    """Contractors, suppliers and affiliated organizations."""
+
+
+class IdentityState(StrEnum):
+    """What the roster knows about a provider's NPI, decided by the backend.
+
+    ``NPI_UNCERTAIN``: the latest NPI result is a contradiction to review, "not in NPPES",
+    "could not tell", or a check that could not run.
+    """
+
+    NPI_MISSING = "npi_missing"
+    """A practitioner without an NPI."""
+    NPI_UNVERIFIED = "npi_unverified"
+    """An NPI on file that no NPI verification has checked yet."""
+    NPI_ACTIVE = "npi_active"
+    NPI_DEACTIVATED = "npi_deactivated"
+    NPI_UNCERTAIN = "npi_uncertain"
+    NOT_EXPECTED = "not_expected"
+    """A workforce member or vendor without an NPI: none is expected."""
+
+
+class Attention(StrEnum):
+    """The one reason a person should open a provider, most serious first (the declared order
+    is the priority); a provider with none needs nobody."""
+
+    LISTED = "listed"
+    FLAGGED = "flagged"
+    NEEDS_REVIEW = "needs_review"
+    COULD_NOT_CHECK = "could_not_check"
+    CHANGED = "changed"
+    NPI_DEACTIVATED = "npi_deactivated"
+    NPI_UNCERTAIN = "npi_uncertain"
+    NPI_MISSING = "npi_missing"
+    NOT_CHECKED = "not_checked"
+
+
+class AttentionScope(StrEnum):
+    """A roster filter wider than one attention reason."""
+
+    ANY = "any"
+    """Every provider with some attention reason."""
+    NONE = "none"
+    """Every provider needing nobody (a status never stored counts here, as in the counts)."""
+
+
+type AttentionSelection = Attention | AttentionScope
+"""What a roster page keeps: one attention reason, or a scope of them."""

@@ -73,6 +73,7 @@ export function PageHeader({
   action,
   lead,
   centered = false,
+  titleId,
 }: {
   title: ReactNode
   subtitle?: ReactNode
@@ -81,6 +82,8 @@ export function PageHeader({
   /** Something drawn before the title, such as the provider's kind mark. */
   lead?: ReactNode
   centered?: boolean
+  /** The title's id, for a dialog the header names. */
+  titleId?: string
 }) {
   if (centered) {
     return (
@@ -105,7 +108,9 @@ export function PageHeader({
         <div className="flex min-w-0 flex-1 items-center gap-4">
           {lead}
           <div className="min-w-0 flex-1">
-            <h1 className="text-heading break-words lg:text-display">{title}</h1>
+            <h1 id={titleId} className="text-heading break-words lg:text-display">
+              {title}
+            </h1>
             {subtitle && <div className="mt-1.5 text-body text-ink-muted lg:mt-2">{subtitle}</div>}
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Verification } from './api.ts'
-import { checkRuns } from './history.ts'
+import { changeLine, checkRuns } from './history.ts'
 
 let counter = 0
 
@@ -27,6 +27,7 @@ function result(overrides: Partial<Verification> & Pick<Verification, 'source_id
     freshness: 'cached',
     created_at: '2026-10-26T15:00:00Z',
     matched_records: [],
+    changed_from: null,
     ...overrides,
   }
 }
@@ -53,5 +54,37 @@ describe('checkRuns', () => {
 
   it('is empty without history', () => {
     expect(checkRuns([])).toEqual([])
+  })
+})
+
+const change = (overrides: Partial<NonNullable<Verification['changed_from']>> = {}) => ({
+  outcome: 'completed' as const,
+  finding: 'no_record' as const,
+  record_status: null,
+  registry_status: null,
+  verified_at: '2026-10-01T10:00:00Z',
+  ...overrides,
+})
+
+describe('changeLine', () => {
+  it('names what the result said before, in its own words', () => {
+    expect(changeLine({ changed_from: change() })).toBe('changed from No record')
+    expect(
+      changeLine({
+        changed_from: change({ finding: 'record_found', record_status: 'active' }),
+      }),
+    ).toBe('changed from Record found')
+    expect(
+      changeLine({
+        changed_from: change({ finding: 'record_found', record_status: 'ended' }),
+      }),
+    ).toBe('changed from Previously listed')
+    expect(changeLine({ changed_from: change({ finding: null, registry_status: 'active' }) })).toBe(
+      'changed from Active',
+    )
+  })
+
+  it('says nothing on a result that did not change', () => {
+    expect(changeLine({ changed_from: null })).toBeNull()
   })
 })

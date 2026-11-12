@@ -1,6 +1,6 @@
 /**
  * How the NPI registry reads on screen: names, places and provenance of mirror rows, the
- * words for match evidence, and which rows of a history or a link list matter. Nothing here
+ * words for match evidence, and which row of a link list matters. Nothing here
  * decides a status: statuses, levels and freshness arrive from the backend and are only named.
  */
 import type {
@@ -8,8 +8,8 @@ import type {
   MatchEvidence,
   MirrorSource,
   NpiLink,
+  NpiLookup,
   NpiSummary,
-  Verification,
 } from './api.ts'
 
 /** Ten digits: the only shape a query can take to be an NPI. */
@@ -60,6 +60,21 @@ export function asOf(block: Pick<MirrorSource | LiveCheck, 'provenance'>): strin
   return block.provenance.source_updated_at ?? block.provenance.verified_at
 }
 
+/** Where a lookup's registry facts come from, with the kind of line that names it. */
+export type FactsSource =
+  { kind: 'live'; block: LiveCheck } | { kind: 'mirror'; block: MirrorSource }
+
+/**
+ * The block a lookup's record was read from: the live answer when the registry returned the NPI
+ * (the backend then sends that answer as the record), else the stored file. A live request that
+ * failed or found nothing leaves the facts on the file, never "live".
+ */
+export function factsSource(lookup: Pick<NpiLookup, 'live' | 'mirror'>): FactsSource | null {
+  const live = lookup.live
+  if (live?.outcome === 'completed' && live.found === true) return { kind: 'live', block: live }
+  return lookup.mirror ? { kind: 'mirror', block: lookup.mirror } : null
+}
+
 const FIELD_WORDS: Record<MatchEvidence['field'], string> = {
   npi: 'NPI',
   last_name: 'last name',
@@ -90,16 +105,6 @@ export function evidenceWords(evidence: readonly MatchEvidence[]): EvidenceWords
     }
   }
   return { matched, differs }
-}
-
-/** The newest NPI verification in a history (newest first or not), or null. */
-export function latestNpiVerification(history: readonly Verification[]): Verification | null {
-  let newest: Verification | null = null
-  for (const result of history) {
-    if (result.credential_type !== 'npi') continue
-    if (!newest || Date.parse(result.created_at) > Date.parse(newest.created_at)) newest = result
-  }
-  return newest
 }
 
 /**

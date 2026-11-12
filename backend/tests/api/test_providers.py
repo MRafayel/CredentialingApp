@@ -10,12 +10,21 @@ import pytest
 
 from credentialing.api.app import create_app
 from credentialing.api.container import AppContainer
+from credentialing.api.schemas import AttentionFilter
 from credentialing.application.check_exclusions import CheckExclusions
+from credentialing.application.import_providers import ImportProviders
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
 from credentialing.application.npi_lookup import NpiLookup
 from credentialing.application.npi_suggestions import SuggestNpis
+from credentialing.application.provider_status import (
+    MarkViewed,
+    ProviderStatusKeeper,
+    ProviderStatusQuery,
+    ProviderStatusSummary,
+)
 from credentialing.application.provider_verdict import ProviderVerdictQuery
+from credentialing.application.recheck_providers import RecheckProviders
 from credentialing.application.record_profile import RecordProfileQuery
 from credentialing.application.register_provider import RegisterProvider
 from credentialing.application.set_provider_npi import SetProviderNpi
@@ -23,12 +32,13 @@ from credentialing.application.source_status import SourceStatusReport
 from credentialing.application.verification_history import VerificationHistory
 from credentialing.application.verify_npi import VerifyNpi
 from credentialing.connectors.registry import ConnectorRegistry
-from credentialing.domain.enums import DatasetLoadMode, Outcome
+from credentialing.domain.enums import Attention, AttentionScope, DatasetLoadMode, Outcome
 from credentialing.domain.models import Address, DatasetLoad, NpiAnswer, NpiRecord, SourceSnapshot
-from credentialing.domain.policies import DEFAULT_FRESHNESS
+from credentialing.domain.policies import DEFAULT_FRESHNESS, MONITORING_INTERVAL
 from tests.fakes import (
     API_SOURCE,
     FixedClock,
+    InMemoryMonitoringRuns,
     InMemoryNpiLinks,
     InMemoryNpiRegistry,
     InMemoryProviders,
@@ -74,6 +84,7 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
     )
     npi_registry = InMemoryNpiRegistry()
     npi_lookup = NpiLookup(npi_registry, registry, snapshots, DEFAULT_FRESHNESS, clock)
+    keeper = ProviderStatusKeeper(providers, verifications, registry)
     verify_npi = VerifyNpi(
         providers,
         npi_lookup,
@@ -81,24 +92,40 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
         clock,
         source_id=API_SOURCE,
         source_url="https://example.test/registry",
+        status=keeper,
+    )
+    check_exclusions = CheckExclusions(
+        ConnectorRegistry(),
+        providers,
+        records,
+        snapshots,
+        verifications,
+        DEFAULT_FRESHNESS,
+        clock,
+        status=keeper,
+    )
+    recheck = RecheckProviders(
+        providers,
+        check_exclusions,
+        verify_npi,
+        keeper,
+        InMemoryMonitoringRuns(),
+        clock,
+        verifications=verifications,
     )
     return AppContainer(
         register_provider=RegisterProvider(providers, clock),
-        list_providers=ListProviders(providers),
+        import_providers=ImportProviders(providers, recheck, clock),
+        list_providers=ListProviders(providers, keeper),
         source_status=SourceStatusReport(registry, snapshots, records, DEFAULT_FRESHNESS, clock),
-        check_exclusions=CheckExclusions(
-            ConnectorRegistry(),
-            providers,
-            records,
-            snapshots,
-            verifications,
-            DEFAULT_FRESHNESS,
-            clock,
-        ),
+        check_exclusions=check_exclusions,
         lookup_exclusions=LookupExclusions(records, snapshots, registry, clock),
         record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),
+        provider_status=ProviderStatusQuery(providers, keeper),
+        provider_status_summary=ProviderStatusSummary(providers, keeper),
+        mark_viewed=MarkViewed(providers, keeper, clock),
         npi_lookup=npi_lookup,
         verify_npi=verify_npi,
         suggest_npis=SuggestNpis(
@@ -231,6 +258,32 @@ async def _add(client: httpx2.AsyncClient, last: str, *, npi: str | None = None)
     response = await client.post("/providers", json=body, headers=HEADERS)
     assert response.status_code == 201
     return str(response.json()["id"])
+
+
+async def test_an_npi_already_on_the_roster_is_409_naming_its_holder(
+    client: httpx2.AsyncClient,
+) -> None:
+    npi = make_npi("100000001")
+    holder = await _add(client, "Testperson", npi=npi)
+
+    response = await client.post(
+        "/providers",
+        json={
+            "entity_kind": "individual",
+            "person_name": {"last": "Sampleperson", "first": "Blake"},
+            "npi": npi,
+        },
+        headers=HEADERS,
+    )
+    roster = await client.get("/providers", headers=HEADERS)
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "a provider with this NPI is already on the roster",
+        "provider_id": holder,
+    }
+    assert npi not in response.text
+    assert roster.json()["total"] == 1
 
 
 async def test_list_pages_through_the_roster(client: httpx2.AsyncClient) -> None:
@@ -401,7 +454,7 @@ async def test_confirming_an_npi_sets_it_once_and_appends_the_verification() -> 
     assert verification["details"]["npi_set_by"] == "user"
     assert verification["details"]["npi_status"] == "active"
     assert verification["match"]["level"] == "exact"
-    assert [entry["id"] for entry in history.json()] == [verification["id"]]
+    assert [entry["id"] for entry in history.json()["items"]] == [verification["id"]]
     assert again.status_code == 409
     assert again.json()["detail"] == "the provider already has an NPI; changing it is not offered"
     assert suggestions.json()["suggestions"] == []
@@ -446,7 +499,7 @@ async def test_confirming_an_npi_nppes_could_not_check_is_503_and_sets_nothing()
     assert response.status_code == 503
     assert response.json()["detail"] == "NPPES could not be checked: HTTP 503"
     assert after.json()["npi"] is None
-    assert history.json() == []
+    assert history.json()["items"] == []
 
 
 async def test_confirming_an_npi_for_another_organizations_provider_is_404() -> None:
@@ -461,3 +514,283 @@ async def test_confirming_an_npi_for_another_organizations_provider_is_404() -> 
 
     assert response.status_code == 404
     assert after.json()["npi"] is None
+
+
+async def test_confirming_an_npi_another_provider_holds_is_409_and_sets_nothing() -> None:
+    async for client in _client(_npi_container(_registered())):
+        holder = await _add(client, "Testperson", npi=SUGGESTED)
+        provider_id = await _add(client, "Sampleperson")
+        response = await client.put(
+            f"/providers/{provider_id}/npi", json={"npi": SUGGESTED}, headers=HEADERS
+        )
+        after = await client.get(f"/providers/{provider_id}", headers=HEADERS)
+        history = await client.get(f"/providers/{provider_id}/verifications", headers=HEADERS)
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "a provider with this NPI is already on the roster",
+        "provider_id": holder,
+    }
+    assert after.json()["npi"] is None
+    assert history.json()["items"] == []
+
+
+# --- Monitoring -----------------------------------------------------------------------------
+
+
+async def _register(
+    client: httpx2.AsyncClient, last: str, *, role: str | None = None, npi: str | None = None
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "entity_kind": "individual",
+        "person_name": {"last": last, "first": "Avery"},
+    }
+    if role is not None:
+        body["role"] = role
+    if npi is not None:
+        body["npi"] = npi
+    response = await client.post("/providers", json=body, headers=HEADERS)
+    assert response.status_code == 201
+    payload: dict[str, object] = response.json()
+    return payload
+
+
+async def test_a_provider_is_registered_with_its_roster_role(client: httpx2.AsyncClient) -> None:
+    practitioner = await _register(client, "Practiceperson")
+    worker = await _register(client, "Workperson", role="workforce")
+    refused = await client.post(
+        "/providers",
+        json={"entity_kind": "individual", "person_name": {"last": "X", "first": "Y"}, "role": "x"},
+        headers=HEADERS,
+    )
+
+    assert practitioner["role"] == "practitioner"
+    assert worker["role"] == "workforce"
+    assert refused.status_code == 422
+
+
+async def test_the_roster_carries_each_status_and_filters_by_attention(
+    client: httpx2.AsyncClient,
+) -> None:
+    missing = await _register(client, "Missingperson")
+    worker = await _register(client, "Workperson", role="workforce")
+
+    listed = (await client.get("/providers", headers=HEADERS)).json()
+    filtered = (
+        await client.get("/providers", params={"attention": "not_checked"}, headers=HEADERS)
+    ).json()
+    refused = await client.get("/providers", params={"attention": "bogus"}, headers=HEADERS)
+
+    assert [item["id"] for item in listed["items"]] == [missing["id"], worker["id"]]
+    status = listed["items"][0]["status"]
+    assert status == {
+        "verdict": "not_checked",
+        "identity": "npi_missing",
+        "changed": False,
+        "changed_at": None,
+        "attention": "npi_missing",
+        "last_checked_at": None,
+        "next_check_at": None,
+        "listed_in": [],
+        "flagged_in": [],
+        "review_in": [],
+        "unchecked": [],
+    }
+    assert listed["items"][1]["status"]["identity"] == "not_expected"
+    assert [item["id"] for item in filtered["items"]] == [worker["id"]]
+    assert filtered["total"] == 1
+    assert refused.status_code == 422
+
+
+async def test_the_roster_filters_by_any_attention_or_none(client: httpx2.AsyncClient) -> None:
+    missing = await _register(client, "Missingperson")
+    worker = await _register(client, "Workperson", role="workforce")
+    other = {"X-Organization-Id": str(uuid4())}
+
+    some = (await client.get("/providers", params={"attention": "any"}, headers=HEADERS)).json()
+    none = (await client.get("/providers", params={"attention": "none"}, headers=HEADERS)).json()
+    theirs = (await client.get("/providers", params={"attention": "any"}, headers=other)).json()
+
+    # Missing NPI ranks before not checked: the attention order holds within "any".
+    assert [item["id"] for item in some["items"]] == [missing["id"], worker["id"]]
+    assert some["total"] == 2
+    assert (none["items"], none["total"]) == ([], 0)
+    assert theirs["total"] == 0
+
+
+def test_the_attention_filter_is_every_reason_plus_any_and_none() -> None:
+    values = {item.value for item in AttentionFilter}
+
+    assert values == {*(reason.value for reason in Attention), "any", "none"}
+    assert AttentionFilter.ANY.selection() is AttentionScope.ANY
+    assert AttentionFilter.NONE.selection() is AttentionScope.NONE
+    assert AttentionFilter.LISTED.selection() is Attention.LISTED
+
+
+async def test_the_summary_counts_the_callers_roster_only(client: httpx2.AsyncClient) -> None:
+    await _register(client, "Missingperson")
+    await _register(client, "Workperson", role="vendor")
+
+    summary = (await client.get("/providers/summary", headers=HEADERS)).json()
+    other = await client.get("/providers/summary", headers={"X-Organization-Id": str(uuid4())})
+
+    assert summary["total"] == 2
+    assert summary["counts"]["npi_missing"] == 1
+    assert summary["counts"]["not_checked"] == 1
+    assert summary["counts"]["none"] == 0
+    assert set(summary["counts"]) == {"none", *(reason.value for reason in Attention)}
+    assert summary["recheck_interval_days"] == MONITORING_INTERVAL.days == 15
+    assert other.json()["total"] == 0
+
+
+async def test_a_providers_status_and_seen_are_scoped_to_its_organization(
+    client: httpx2.AsyncClient,
+) -> None:
+    created = await _register(client, "Statusperson", npi=make_npi("100000001"))
+    other = {"X-Organization-Id": str(uuid4())}
+
+    status = await client.get(f"/providers/{created['id']}/status", headers=HEADERS)
+    seen = await client.post(f"/providers/{created['id']}/seen", headers=HEADERS)
+
+    assert status.status_code == 200
+    assert status.json()["identity"] == "npi_unverified"
+    assert status.json()["attention"] == "not_checked"
+    assert seen.status_code == 204
+    assert seen.content == b""
+    for response in (
+        await client.get(f"/providers/{created['id']}/status", headers=other),
+        await client.post(f"/providers/{created['id']}/seen", headers=other),
+        await client.get(f"/providers/{uuid4()}/status", headers=HEADERS),
+        await client.post(f"/providers/{uuid4()}/seen", headers=HEADERS),
+    ):
+        assert response.status_code == 404
+
+
+async def test_an_npi_verification_carries_its_change_and_moves_the_status(
+    client: httpx2.AsyncClient,
+) -> None:
+    created = await _register(client, "Statusperson", npi=make_npi("100000001"))
+
+    verified = await client.post(f"/providers/{created['id']}/verifications/npi", headers=HEADERS)
+    status = (await client.get(f"/providers/{created['id']}/status", headers=HEADERS)).json()
+
+    assert verified.json()["changed_from"] is None
+    assert status["identity"] == "npi_uncertain"
+    assert status["attention"] == "npi_uncertain"
+
+
+IMPORT_TEXT = (
+    "Last Name\tFirst Name\tNPI\tDOB\tDepartment\n"
+    f"Testperson\tAvery\t{make_npi('100000001')}\t1970-02-03\tCardiology\n"
+    "Sampleperson\tBlake\t\tsomeday\tFront desk\n"
+    "\tCasey\t\t\t\n"
+)
+
+
+async def test_an_import_preview_shows_every_row_and_stores_nothing(
+    client: httpx2.AsyncClient,
+) -> None:
+    response = await client.post("/providers/import", json={"text": IMPORT_TEXT}, headers=HEADERS)
+    roster = (await client.get("/providers", headers=HEADERS)).json()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["columns"] == ["last", "first", "npi", "date_of_birth"]
+    assert payload["ignored_columns"] == ["Department"]
+    assert (payload["importable"], payload["with_warnings"], payload["rejected"]) == (2, 1, 1)
+    assert (payload["dry_run"], payload["imported"], payload["recheck"]) == (True, [], None)
+    assert payload["no_header"] is False
+    first, second, third = payload["rows"]
+    assert first == {
+        "line": 1,
+        "display": "Testperson, Avery",
+        "entity_kind": "individual",
+        "npi": make_npi("100000001"),
+        "role": "practitioner",
+        "has_date_of_birth": True,
+        "name_split": False,
+        "importable": True,
+        "problems": [],
+        "duplicate_of_line": None,
+        "existing_provider_id": None,
+        "values": {
+            "last": "Testperson",
+            "first": "Avery",
+            "npi": make_npi("100000001"),
+            "date_of_birth": "1970-02-03",
+        },
+    }
+    assert third["values"] == {"last": "", "first": "Casey", "npi": "", "date_of_birth": ""}
+    assert second["problems"] == [
+        {"code": "date_of_birth_unreadable", "severity": "warning", "detail": None}
+    ]
+    assert (second["importable"], second["role"]) == (True, "workforce")
+    assert third["importable"] is False
+    assert third["problems"][0]["code"] == "name_missing"
+    assert roster["total"] == 0
+
+
+async def test_an_import_commit_stores_the_rows_for_the_caller_only(
+    client: httpx2.AsyncClient,
+) -> None:
+    other = {"X-Organization-Id": str(uuid4())}
+
+    response = await client.post(
+        "/providers/import", json={"text": IMPORT_TEXT, "dry_run": False}, headers=HEADERS
+    )
+    again = await client.post("/providers/import", json={"text": IMPORT_TEXT}, headers=HEADERS)
+    theirs = await client.post("/providers/import", json={"text": IMPORT_TEXT}, headers=other)
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["dry_run"] is False
+    assert len(payload["imported"]) == 2
+    recheck = payload["recheck"]
+    assert (recheck["providers"], recheck["failures"]) == (2, 0)
+    roster = (await client.get("/providers", headers=HEADERS)).json()
+    assert {item["id"] for item in roster["items"]} == set(payload["imported"])
+    assert (await client.get("/providers", headers=other)).json()["total"] == 0
+    # A second import of the same text finds them on the caller's roster, not on another's.
+    assert [row["existing_provider_id"] for row in again.json()["rows"][:2]] == payload["imported"]
+    assert [row["existing_provider_id"] for row in theirs.json()["rows"]] == [None, None, None]
+
+
+async def test_an_unrecognized_text_reports_no_header(client: httpx2.AsyncClient) -> None:
+    response = await client.post(
+        "/providers/import", json={"text": "Testperson,Avery\n"}, headers=HEADERS
+    )
+
+    assert response.status_code == 200
+    assert (response.json()["no_header"], response.json()["rows"]) == (True, [])
+
+
+@pytest.mark.parametrize(
+    ("body", "detail"),
+    [
+        ({"text": "Last,First\n" + "x" * (2 * 1024 * 1024)}, "larger than 2 MB"),
+        ({"text": "Last,First\n" + "Testperson,Avery\n" * 5_001}, "more than 5,000 rows"),
+        ({"text": "Last,First\nTestperson," + "y" * 200_000}, "could not be read"),
+    ],
+)
+async def test_an_import_over_the_limits_is_422(
+    client: httpx2.AsyncClient, body: dict[str, object], detail: str
+) -> None:
+    response = await client.post("/providers/import", json=body, headers=HEADERS)
+
+    assert response.status_code == 422
+    assert detail in response.json()["detail"]
+
+
+@pytest.mark.parametrize("body", [{}, {"text": 3}, {"text": "x", "dry_run": "maybe"}, {"rows": []}])
+async def test_an_unreadable_import_body_is_422(
+    client: httpx2.AsyncClient, body: dict[str, object]
+) -> None:
+    response = await client.post("/providers/import", json=body, headers=HEADERS)
+
+    assert response.status_code == 422
+
+
+async def test_an_import_needs_the_organization_header(client: httpx2.AsyncClient) -> None:
+    response = await client.post("/providers/import", json={"text": IMPORT_TEXT})
+
+    assert response.status_code == 401

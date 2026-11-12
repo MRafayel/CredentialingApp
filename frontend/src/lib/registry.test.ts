@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { NpiLink, Verification } from './api.ts'
+import type { NpiLink } from './api.ts'
 import {
   asOf,
   bestLink,
   evidenceWords,
+  factsSource,
   isNpi,
-  latestNpiVerification,
   registryName,
   registryPlace,
   registrySourceName,
@@ -61,6 +61,41 @@ describe('registryPlace and sources', () => {
   })
 })
 
+describe('factsSource', () => {
+  const provenance = {
+    source_id: 'nppes_monthly',
+    source_url: 'https://example.test',
+    method: 'bulk_dataset' as const,
+    verified_at: '2026-11-06T10:00:00Z',
+    source_updated_at: '2026-11-03T03:29:06Z',
+    snapshot_id: null,
+    raw_record_ref: null,
+  }
+  const mirror = { provenance, freshness: 'cached' as const }
+  const live = (outcome: 'completed' | 'failed', found: boolean | null) => ({
+    provenance: { ...provenance, source_id: 'nppes_api', method: 'official_api' as const },
+    freshness: 'live' as const,
+    outcome,
+    found,
+    note: null,
+  })
+
+  it('names the live registry only when it returned the NPI, else the stored file', () => {
+    expect(factsSource({ mirror, live: null })).toEqual({ kind: 'mirror', block: mirror })
+    const answered = live('completed', true)
+    expect(factsSource({ mirror, live: answered })).toEqual({ kind: 'live', block: answered })
+    expect(factsSource({ mirror, live: live('completed', false) })).toEqual({
+      kind: 'mirror',
+      block: mirror,
+    })
+    expect(factsSource({ mirror, live: live('failed', null) })).toEqual({
+      kind: 'mirror',
+      block: mirror,
+    })
+    expect(factsSource({ mirror: null, live: live('failed', null) })).toBeNull()
+  })
+})
+
 describe('evidenceWords', () => {
   it('names what agreed and what differed, letting an address detail stand alone', () => {
     expect(
@@ -78,48 +113,7 @@ describe('evidenceWords', () => {
   })
 })
 
-const verification = (overrides: Partial<Verification>): Verification =>
-  ({
-    id: 'v',
-    provider_id: 'p',
-    credential_type: 'exclusion',
-    source_id: 'oig_leie',
-    outcome: 'completed',
-    finding: 'no_record',
-    match: null,
-    summary: '',
-    details: {},
-    provenance: {
-      source_id: 'oig_leie',
-      source_url: 'https://example.test',
-      method: 'bulk_dataset',
-      verified_at: '2026-01-01T00:00:00Z',
-      source_updated_at: null,
-      snapshot_id: null,
-      raw_record_ref: null,
-    },
-    freshness: 'cached',
-    created_at: '2026-01-01T00:00:00Z',
-    matched_records: [],
-    ...overrides,
-  }) as Verification
-
-describe('latestNpiVerification and bestLink', () => {
-  it('finds the newest NPI result whatever the order, or null', () => {
-    const older = verification({
-      id: 'a',
-      credential_type: 'npi',
-      created_at: '2026-01-01T00:00:00Z',
-    })
-    const newer = verification({
-      id: 'b',
-      credential_type: 'npi',
-      created_at: '2026-02-01T00:00:00Z',
-    })
-    expect(latestNpiVerification([older, verification({}), newer])).toBe(newer)
-    expect(latestNpiVerification([verification({})])).toBeNull()
-  })
-
+describe('bestLink', () => {
   it('leads with the first link that points at an NPI, never the "nothing" row', () => {
     const none: NpiLink = {
       npi: null,

@@ -1,5 +1,5 @@
-"""Domain policies: freshness windows, provider-to-record matching, record-to-NPI linking and
-the verdict roll-up.
+"""Domain policies: freshness windows, provider-to-record matching, record-to-NPI linking, the
+verdict roll-up and the monitored provider's status.
 
 Freshness numbers live only here. Matching is deterministic and explainable: every rule that
 fires leaves a piece of evidence, and the explanation is built from that evidence. The verdict
@@ -7,18 +7,20 @@ is decided here once, so no screen ever derives a status of its own.
 """
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Final, NamedTuple, Self
 
 from pydantic import Field, model_validator
 
 from credentialing.domain.enums import (
+    Attention,
     CredentialType,
     EntityKind,
     ExclusionAction,
     Finding,
     Freshness,
+    IdentityState,
     MatchField,
     MatchLevel,
     MatchRelation,
@@ -26,6 +28,7 @@ from credentialing.domain.enums import (
     Outcome,
     RecordStatus,
     RegistryStatus,
+    RosterRole,
     Verdict,
     VerificationMethod,
 )
@@ -41,7 +44,9 @@ from credentialing.domain.models import (
     NpiTaxonomy,
     PersonName,
     Provider,
+    ProviderStatus,
     ProviderVerdict,
+    ResultChange,
     SourceSnapshot,
     VerificationResult,
 )
@@ -1306,3 +1311,214 @@ def derive_verdict(latest_per_source: Sequence[VerificationResult]) -> ProviderV
 def _not_standing(result: VerificationResult) -> bool:
     """Whether the result's records no longer stand: ended or removed from the list."""
     return result.details.get(RECORD_STATUS_DETAIL) in _NOT_STANDING
+
+
+# --- Monitoring ----------------------------------------------------------------------------
+
+MONITORING_INTERVAL: Final = timedelta(days=15)
+"""How often every provider is rechecked against the exclusion lists and the NPI mirror."""
+
+MONITORING_DUE_TOLERANCE: Final = timedelta(hours=1)
+"""How early a recheck counts as due, so a daily job is not skipped because the previous one
+finished a few minutes after this one started."""
+
+HISTORY_RETENTION: Final = timedelta(days=183)
+"""How far back a provider's verification history goes: six months (owner, 2026-11-12), so
+the database does not grow without end. Older results are purged by the ``due`` and ``cli``
+rechecks, except each provider's newest result per source and newest NPI result, whatever
+their age: a verdict never disappears and change detection keeps its previous answer."""
+
+
+def history_cutoff(now: datetime) -> datetime:
+    """The instant before which results are purged: :data:`HISTORY_RETENTION` before ``now``."""
+    return now - HISTORY_RETENTION
+
+
+STATUS_RULES_VERSION: Final = 2
+"""The version of :func:`derive_status`'s rules. Stored statuses of another version are
+derived again before they are read; bump it whenever the rules change."""
+
+NPI_STATUS_DETAIL: Final = "npi_status"
+"""The NPI result detail holding the registry's one-word status (:class:`RegistryStatus`)."""
+
+NO_NPI_REASON: Final = "no_npi"
+"""The ``reason`` detail of an NPI result for a provider that had no NPI on file."""
+
+_ATTENTION_RANK: Final = {attention: rank for rank, attention in enumerate(Attention)}
+
+_VERDICT_ATTENTION: Final = {
+    Verdict.LISTED: Attention.LISTED,
+    Verdict.FLAGGED: Attention.FLAGGED,
+    Verdict.NEEDS_REVIEW: Attention.NEEDS_REVIEW,
+    Verdict.COULD_NOT_CHECK: Attention.COULD_NOT_CHECK,
+    Verdict.NOT_CHECKED: Attention.NOT_CHECKED,
+}
+
+_IDENTITY_ATTENTION: Final = {
+    IdentityState.NPI_DEACTIVATED: Attention.NPI_DEACTIVATED,
+    IdentityState.NPI_UNCERTAIN: Attention.NPI_UNCERTAIN,
+    IdentityState.NPI_MISSING: Attention.NPI_MISSING,
+}
+
+
+def attention_rank(attention: Attention | None) -> int:
+    """The attention's priority, 0 the most serious (the enum's declared order); None (nothing
+    needs a person) ranks after every reason. Storage orders the roster by this number."""
+    return len(_ATTENTION_RANK) if attention is None else _ATTENTION_RANK[attention]
+
+
+def result_change(
+    previous: VerificationResult | None, new: VerificationResult
+) -> ResultChange | None:
+    """How the answer ``new`` differs from the previous answer ``previous``, described by it.
+
+    Only answers are compared: a result that could not be checked (any outcome but
+    ``COMPLETED``) never carries a change, and ``previous`` must be the previous *completed*
+    result (of the same list; for NPI, of any NPPES source), so a change across a gap of
+    could-not-check results is still caught (no record, unavailable, record found: changed from
+    no record), while an outage or a list's first load is not a change. None for a first
+    answer and when the finding, the matched records' status and the registry status (NPI
+    results) are all the same.
+    """
+    if new.outcome is not Outcome.COMPLETED:
+        return None
+    if previous is None or previous.outcome is not Outcome.COMPLETED:
+        return None
+    before = _compared(previous)
+    if before == _compared(new):
+        return None
+    finding, status, registry = before
+    return ResultChange(
+        outcome=previous.outcome,
+        finding=finding,
+        record_status=status,
+        registry_status=registry,
+        verified_at=previous.provenance.verified_at,
+    )
+
+
+def _compared(
+    result: VerificationResult,
+) -> tuple[Finding | None, RecordStatus | None, RegistryStatus | None]:
+    """What :func:`result_change` compares: unknown detail values (none stored today) read as
+    absent rather than fail."""
+    status = result.details.get(RECORD_STATUS_DETAIL)
+    registry = (
+        result.details.get(NPI_STATUS_DETAIL)
+        if result.credential_type is CredentialType.NPI
+        else None
+    )
+    return (
+        result.finding,
+        RecordStatus(status) if status is not None and status in RecordStatus else None,
+        RegistryStatus(registry) if registry is not None and registry in RegistryStatus else None,
+    )
+
+
+def derive_status(
+    provider: Provider,
+    exclusion_latest: Sequence[VerificationResult],
+    npi_latest: VerificationResult | None,
+    *,
+    lists: Collection[SourceId] | None = None,
+    last_change_at: datetime | None = None,
+) -> ProviderStatus:
+    """The provider's monitoring status from the latest exclusion result of each list and the
+    latest NPI result.
+
+    The verdict is :func:`derive_verdict`'s; the identity comes from the role, the NPI on file
+    and the latest NPI result (:func:`identity_state`). ``changed`` holds while a result that
+    differs from the one before it (``changed_from``) is newer than ``provider.last_viewed_at``:
+    ``last_change_at`` is the newest such result in the provider's whole history, so a later
+    recheck that finds nothing new does not hide a change nobody has seen; ``changed_at`` is
+    that newest change, seen or not. ``attention`` is
+    the first reason in :class:`Attention` order that applies.
+
+    ``last_checked_at`` is the newest result. The recheck is due (``next_check_at``)
+    :data:`MONITORING_INTERVAL` after the *oldest* result it would renew: each list's (only the
+    connected ``lists`` when any are given, so a disconnected list's last answer does not keep
+    the provider due forever) and the NPI's when one is on file; None (due now) when one of them
+    has no result yet. A recheck of one list after its sync renews that list only, so it never
+    postpones the full recheck.
+    """
+    verdict = derive_verdict(exclusion_latest)
+    identity = identity_state(provider, npi_latest)
+    results = [*verdict.results, *([npi_latest] if npi_latest is not None else [])]
+    change_times = [r.created_at for r in results if r.changed_from is not None]
+    if last_change_at is not None:
+        change_times.append(last_change_at)
+    changed_at = max(change_times, default=None)
+    changed = changed_at is not None and (
+        provider.last_viewed_at is None or changed_at > provider.last_viewed_at
+    )
+    reasons = {
+        _VERDICT_ATTENTION.get(verdict.verdict),
+        Attention.CHANGED if changed else None,
+        _IDENTITY_ATTENTION.get(identity),
+    }
+    attention = next((reason for reason in Attention if reason in reasons), None)
+    last_checked_at = max((r.created_at for r in results), default=None)
+    return ProviderStatus(
+        provider_id=provider.id,
+        verdict=verdict.verdict,
+        identity=identity,
+        changed=changed,
+        attention=attention,
+        last_checked_at=last_checked_at,
+        next_check_at=_next_check(provider, verdict.results, npi_latest, lists),
+        listed_in=verdict.listed_in,
+        flagged_in=verdict.flagged_in,
+        review_in=verdict.review_in,
+        unchecked=verdict.unchecked,
+        changed_at=changed_at,
+    )
+
+
+def _next_check(
+    provider: Provider,
+    exclusion_latest: Sequence[VerificationResult],
+    npi_latest: VerificationResult | None,
+    lists: Collection[SourceId] | None,
+) -> datetime | None:
+    """:data:`MONITORING_INTERVAL` after the oldest result a recheck renews; None when one of
+    them is missing (or nothing was ever checked)."""
+    by_list = {r.source_id: r.created_at for r in exclusion_latest}
+    wanted = set(lists) if lists else set(by_list)
+    if not by_list or not wanted <= set(by_list):
+        return None
+    renewed = [by_list[source_id] for source_id in wanted]
+    if provider.npi is not None:
+        if npi_latest is None:
+            return None
+        renewed.append(npi_latest.created_at)
+    return min(renewed) + MONITORING_INTERVAL if renewed else None
+
+
+def identity_state(provider: Provider, npi_latest: VerificationResult | None) -> IdentityState:
+    """What the roster knows about the provider's NPI.
+
+    Without an NPI: missing for a practitioner, not expected for a workforce member or vendor.
+    With one: unverified until an NPI result checked it (a result from before the NPI was set
+    does not count); active or deactivated as the registry's status says; uncertain for any
+    other answer (a contradiction to review, not in NPPES, could not tell, or a check that
+    could not run).
+    """
+    if provider.npi is None:
+        if provider.role is RosterRole.PRACTITIONER:
+            return IdentityState.NPI_MISSING
+        return IdentityState.NOT_EXPECTED
+    if npi_latest is None or npi_latest.details.get("reason") == NO_NPI_REASON:
+        return IdentityState.NPI_UNVERIFIED
+    if npi_latest.outcome is Outcome.COMPLETED:
+        match npi_latest.details.get(NPI_STATUS_DETAIL):
+            case RegistryStatus.ACTIVE.value:
+                return IdentityState.NPI_ACTIVE
+            case RegistryStatus.DEACTIVATED.value:
+                return IdentityState.NPI_DEACTIVATED
+    return IdentityState.NPI_UNCERTAIN
+
+
+def recheck_due(next_check_at: datetime | None, now: datetime) -> bool:
+    """Whether a provider whose recheck is due at ``next_check_at`` is due at ``now``: never
+    checked (None), or due within :data:`MONITORING_DUE_TOLERANCE`."""
+    return next_check_at is None or next_check_at - MONITORING_DUE_TOLERANCE <= now

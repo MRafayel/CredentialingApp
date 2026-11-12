@@ -23,6 +23,9 @@ from credentialing.connectors.framework.http import (
 )
 from credentialing.domain.enums import (
     AccessPolicy,
+    Attention,
+    AttentionScope,
+    AttentionSelection,
     ChangeSignal,
     CredentialType,
     DatasetLoadMode,
@@ -32,19 +35,22 @@ from credentialing.domain.enums import (
     Outcome,
     VerificationMethod,
 )
-from credentialing.domain.errors import DatasetShrankError
+from credentialing.domain.errors import DatasetShrankError, DuplicateNpiError
 from credentialing.domain.models import (
     ConnectorCapabilities,
     DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    HistoryPage,
     LinkParty,
+    MonitoringRun,
     NpiAnswer,
     NpiLink,
     NpiLinkRun,
     NpiLinkSummary,
     NpiRecord,
     Provider,
+    ProviderStatus,
     SnapshotDiff,
     SourceSnapshot,
     VerificationResult,
@@ -52,6 +58,7 @@ from credentialing.domain.models import (
 from credentialing.domain.names import normalize_name, normalize_organization_name
 from credentialing.domain.policies import (
     CANDIDATE_CAP,
+    attention_rank,
     candidate_keys,
     level_rank,
     license_key,
@@ -664,6 +671,90 @@ def _same_name(party: LinkParty, row: NpiRecord) -> bool:
     return False
 
 
+class InMemoryMonitoringRuns:
+    def __init__(self) -> None:
+        self.stored: list[MonitoringRun] = []
+
+    async def add_run(self, run: MonitoringRun) -> None:
+        self.stored.append(run)
+
+    async def last_run(self) -> MonitoringRun | None:
+        runs = await self.runs(1)
+        return runs[0] if runs else None
+
+    async def runs(self, limit: int) -> Sequence[MonitoringRun]:
+        return sorted(self.stored, key=lambda run: run.finished_at, reverse=True)[:limit]
+
+
+class FakeRechecker:
+    """Stands in for :class:`~credentialing.application.recheck_providers.RecheckProviders` in
+    a sync: records each call and returns a fixed run, or raises ``fail``."""
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.fail = fail
+
+    async def run(
+        self,
+        *,
+        trigger: str,
+        source_id: SourceId | None = None,
+        due_only: bool = False,
+        npi_only: bool = False,
+    ) -> MonitoringRun:
+        self.calls.append(
+            {"trigger": trigger, "source_id": source_id, "due_only": due_only, "npi_only": npi_only}
+        )
+        if self.fail is not None:
+            raise self.fail
+        return MonitoringRun(
+            id=uuid4(),
+            started_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 1, 15, 12, 1, tzinfo=UTC),
+            trigger=trigger,
+            source_id=source_id,
+            organizations=1,
+            providers=2,
+            results=2,
+            changed=1,
+            failures=0,
+        )
+
+
+class FakeFirstChecker:
+    """Stands in for :meth:`~credentialing.application.recheck_providers.RecheckProviders.run_for`
+    (a provider's first check, or the lists' recheck after an NPI is set): records each call
+    as (organization id, provider ids, trigger, npi) and returns a fixed run, or raises
+    ``fail``."""
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.calls: list[tuple[UUID, tuple[UUID, ...], str, bool]] = []
+        self.fail = fail
+
+    async def run_for(
+        self,
+        organization_id: UUID,
+        provider_ids: Sequence[UUID],
+        *,
+        trigger: str,
+        npi: bool = True,
+    ) -> MonitoringRun:
+        self.calls.append((organization_id, tuple(provider_ids), trigger, npi))
+        if self.fail is not None:
+            raise self.fail
+        return MonitoringRun(
+            id=uuid4(),
+            started_at=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 1, 15, 12, 1, tzinfo=UTC),
+            trigger=trigger,
+            organizations=1,
+            providers=len(provider_ids),
+            results=1,
+            changed=0,
+            failures=0,
+        )
+
+
 class FakeLinker:
     """Stands in for :class:`~credentialing.application.link_npis.LinkNpis` in a sync: records
     each call and returns a fixed run, or raises ``fail``."""
@@ -897,11 +988,44 @@ class InMemoryRecords:
 
 
 class InMemoryProviders:
-    def __init__(self, *providers: Provider) -> None:
+    """Providers and their stored statuses; every read filters by organization, as the
+    database's statements do, and a roster holds each NPI once, as the database's unique
+    index does (here the error names the holder). ``organizations`` lists organizations
+    without providers too."""
+
+    def __init__(self, *providers: Provider, organizations: Sequence[UUID] = ()) -> None:
         self.stored = {provider.id: provider for provider in providers}
+        self.statuses: dict[UUID, tuple[UUID, ProviderStatus, int]] = {}
+        self.organizations = set(organizations)
+
+    def _refuse_held_npi(self, provider: Provider, batch: Sequence[Provider] = ()) -> None:
+        """Raise :class:`DuplicateNpiError` when another stored provider of the organization,
+        or an earlier one of ``batch``, has the provider's NPI."""
+        if provider.npi is None:
+            return
+        holder = next(
+            (
+                other
+                for other in (*self.stored.values(), *batch)
+                if other.id != provider.id
+                and other.organization_id == provider.organization_id
+                and other.npi == provider.npi
+            ),
+            None,
+        )
+        if holder is not None:
+            raise DuplicateNpiError(provider.organization_id, holder.id)
 
     async def add(self, provider: Provider) -> None:
+        self._refuse_held_npi(provider)
         self.stored[provider.id] = provider
+
+    async def add_many(self, organization_id: UUID, providers: Sequence[Provider]) -> None:
+        if any(provider.organization_id != organization_id for provider in providers):
+            raise ValueError("every provider must belong to the organization")
+        for position, provider in enumerate(providers):
+            self._refuse_held_npi(provider, providers[:position])
+        self.stored.update({provider.id: provider for provider in providers})
 
     async def get(self, organization_id: UUID, provider_id: UUID) -> Provider | None:
         provider = self.stored.get(provider_id)
@@ -922,6 +1046,7 @@ class InMemoryProviders:
         if provider is None or provider.npi is not None:
             return None
         updated = provider.model_copy(update={"npi": npi})
+        self._refuse_held_npi(updated)
         self.stored[provider_id] = updated
         return updated
 
@@ -950,6 +1075,86 @@ class InMemoryProviders:
         )
         return own[offset : offset + limit], len(own)
 
+    def _status(self, organization_id: UUID, provider_id: UUID) -> ProviderStatus | None:
+        stored = self.statuses.get(provider_id)
+        return stored[1] if stored and stored[0] == organization_id else None
+
+    async def list_status(
+        self,
+        organization_id: UUID,
+        *,
+        query: str | None,
+        attention: AttentionSelection | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[Sequence[tuple[Provider, ProviderStatus | None]], int]:
+        newest, _ = await self.list(organization_id, query=query, limit=len(self.stored), offset=0)
+        pairs = [(p, self._status(organization_id, p.id)) for p in newest]
+
+        def kept(status: ProviderStatus | None) -> bool:
+            reason = status.attention if status else None
+            match attention:
+                case AttentionScope.ANY:
+                    return reason is not None
+                case AttentionScope.NONE:
+                    return reason is None
+                case None:
+                    return True
+                case _:
+                    return reason is attention
+
+        pairs = [(p, s) for p, s in pairs if kept(s)]
+        pairs.sort(key=lambda pair: attention_rank(pair[1].attention if pair[1] else None))
+        return pairs[offset : offset + limit], len(pairs)
+
+    async def status_counts(self, organization_id: UUID) -> Mapping[Attention | None, int]:
+        counts: dict[Attention | None, int] = {}
+        for provider in self.stored.values():
+            if provider.organization_id == organization_id:
+                status = self._status(organization_id, provider.id)
+                key = status.attention if status else None
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    async def save_statuses(
+        self, organization_id: UUID, statuses: Sequence[ProviderStatus], *, rules_version: int
+    ) -> None:
+        for status in statuses:
+            provider = self.stored.get(status.provider_id)
+            if provider is None or provider.organization_id != organization_id:
+                raise ValueError("a status of a provider of another organization")
+            self.statuses[status.provider_id] = (organization_id, status, rules_version)
+
+    async def stale_statuses(self, organization_id: UUID, rules_version: int) -> Sequence[Provider]:
+        return [
+            p
+            for p in sorted(self.stored.values(), key=lambda p: (p.created_at, p.id))
+            if p.organization_id == organization_id
+            and self.statuses.get(p.id, (None, None, None))[2] != rules_version
+        ]
+
+    async def mark_viewed(
+        self, organization_id: UUID, provider_id: UUID, at: datetime
+    ) -> Provider | None:
+        provider = await self.get(organization_id, provider_id)
+        if provider is None:
+            return None
+        updated = provider.model_copy(update={"last_viewed_at": at})
+        self.stored[provider_id] = updated
+        return updated
+
+    async def organization_ids(self) -> Sequence[UUID]:
+        return sorted(self.organizations | {p.organization_id for p in self.stored.values()})
+
+    async def list_all(
+        self, organization_id: UUID
+    ) -> Sequence[tuple[Provider, ProviderStatus | None]]:
+        return [
+            (p, self._status(organization_id, p.id))
+            for p in sorted(self.stored.values(), key=lambda p: (p.created_at, p.id))
+            if p.organization_id == organization_id
+        ]
+
 
 class InMemoryVerifications:
     def __init__(self) -> None:
@@ -958,26 +1163,60 @@ class InMemoryVerifications:
     async def add(self, result: VerificationResult) -> None:
         self.stored.append(result)
 
+    async def add_many(self, results: Sequence[VerificationResult]) -> None:
+        self.stored.extend(results)
+
+    async def latest_per_source_many(
+        self, organization_id: UUID, provider_ids: Sequence[UUID], credential_type: CredentialType
+    ) -> Mapping[UUID, Sequence[VerificationResult]]:
+        latest = {
+            provider_id: await self.latest_per_source(organization_id, provider_id, credential_type)
+            for provider_id in provider_ids
+        }
+        return {provider_id: found for provider_id, found in latest.items() if found}
+
+    async def last_changes(
+        self, organization_id: UUID, provider_ids: Sequence[UUID]
+    ) -> Mapping[UUID, datetime]:
+        changes: dict[UUID, datetime] = {}
+        for result in self.stored:
+            if (
+                result.organization_id == organization_id
+                and result.provider_id in provider_ids
+                and result.changed_from is not None
+            ):
+                kept = changes.get(result.provider_id)
+                changes[result.provider_id] = max(result.created_at, kept or result.created_at)
+        return changes
+
     async def latest(
         self,
         organization_id: UUID,
         provider_id: UUID,
         credential_type: CredentialType,
         source_id: SourceId,
+        *,
+        completed_only: bool = False,
     ) -> VerificationResult | None:
         history = [
             r
             for r in await self.history(organization_id, provider_id, credential_type)
-            if r.source_id == source_id
+            if r.source_id == source_id and (not completed_only or r.outcome is Outcome.COMPLETED)
         ]
         return history[0] if history else None
 
     async def latest_per_source(
-        self, organization_id: UUID, provider_id: UUID, credential_type: CredentialType
+        self,
+        organization_id: UUID,
+        provider_id: UUID,
+        credential_type: CredentialType,
+        *,
+        completed_only: bool = False,
     ) -> Sequence[VerificationResult]:
         newest: dict[str, VerificationResult] = {}
         for result in await self.history(organization_id, provider_id, credential_type):
-            newest.setdefault(result.source_id, result)
+            if not completed_only or result.outcome is Outcome.COMPLETED:
+                newest.setdefault(result.source_id, result)
         return [newest[source_id] for source_id in sorted(newest)]
 
     async def history(
@@ -985,13 +1224,58 @@ class InMemoryVerifications:
     ) -> Sequence[VerificationResult]:
         return [
             r
-            for r in await self.history_all(organization_id, provider_id)
+            for r in self._own(organization_id, provider_id)
             if r.credential_type is credential_type
         ]
 
-    async def history_all(
+    async def history_page(
+        self, organization_id: UUID, provider_id: UUID, *, before: datetime | None, moments: int
+    ) -> HistoryPage:
+        own = [
+            r
+            for r in self._own(organization_id, provider_id)
+            if before is None or r.created_at < before
+        ]
+        instants = sorted({r.created_at for r in own}, reverse=True)
+        kept = set(instants[:moments])
+        return HistoryPage(
+            results=tuple(r for r in own if r.created_at in kept),
+            next_before=instants[moments - 1] if len(instants) > moments else None,
+        )
+
+    async def latest_npi(
         self, organization_id: UUID, provider_id: UUID
-    ) -> Sequence[VerificationResult]:
+    ) -> VerificationResult | None:
+        found = await self.history(organization_id, provider_id, CredentialType.NPI)
+        return found[0] if found else None
+
+    async def purge(self, organization_id: UUID, *, before: datetime) -> int:
+        """The repository's rule: per provider, the newest result and newest completed result
+        of each credential type and source (the newest NPI result among them) stay whatever
+        their age."""
+        own = sorted(
+            (r for r in self.stored if r.organization_id == organization_id),
+            key=lambda r: (r.created_at, r.id),
+            reverse=True,
+        )
+        kept: dict[tuple[object, ...], UUID] = {}
+        for r in own:
+            done = r.outcome is Outcome.COMPLETED
+            for key in (
+                (r.provider_id, r.credential_type, r.source_id, False),
+                (r.provider_id, r.credential_type, r.source_id, done),
+            ):
+                kept.setdefault(key, r.id)
+        keep = set(kept.values())
+        gone = [
+            r
+            for r in self.stored
+            if r.organization_id == organization_id and r.created_at < before and r.id not in keep
+        ]
+        self.stored = [r for r in self.stored if r not in gone]
+        return len(gone)
+
+    def _own(self, organization_id: UUID, provider_id: UUID) -> list[VerificationResult]:
         own = [
             r
             for r in self.stored

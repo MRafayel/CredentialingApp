@@ -10,6 +10,7 @@ import { SourceLine } from '../../components/Provenance.tsx'
 import { Sheet } from '../../components/Sheet.tsx'
 import { ApiError, type NpiSearchQuery } from '../../lib/api.ts'
 import { plural } from '../../lib/format.ts'
+import { missing, stateError, useFocusInvalid, without, type FormErrors } from '../../lib/forms.ts'
 import { outcomeWord } from '../../lib/labels.ts'
 import { useNpiSearch } from '../../lib/queries.ts'
 import { liveDraft, liveQuery, type LiveDraft } from './npiSearch.ts'
@@ -37,13 +38,27 @@ export function NpiSearchSheet({ query, onClose }: { query: string; onClose: () 
   const [draft, setDraft] = useState<LiveDraft>(() => liveDraft(query))
   const [submitted, setSubmitted] = useState<NpiSearchQuery | null>(null)
   const search = useNpiSearch(submitted ?? {}, submitted !== null)
-  const change = (patch: Partial<LiveDraft>) => setDraft((old) => ({ ...old, ...patch }))
+  // The form's own messages (the browser's bubble is off): checked on submit, cleared as typed.
+  const [errors, setErrors] = useState<FormErrors>({})
+  useFocusInvalid(formId, errors)
+  const change = (patch: Partial<LiveDraft>) => {
+    setDraft((old) => ({ ...old, ...patch }))
+    setErrors((old) => Object.keys(patch).reduce(without, old))
+  }
   const searching = submitted !== null && search.isFetching
   const refused =
     search.error instanceof ApiError && search.error.status === 422 ? search.error.message : null
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    const found: FormErrors =
+      draft.kind === 'individual'
+        ? missing({ last: draft.last })
+        : missing({ organization: draft.organization })
+    const state = stateError(draft.state)
+    if (state) found.state = state
+    setErrors(found)
+    if (Object.keys(found).length > 0) return
     const next = liveQuery(draft, LIVE_LIMIT)
     // The same question again is asked again: a live search never answers from the cache.
     if (submitted && JSON.stringify(next) === JSON.stringify(submitted)) void search.refetch()
@@ -68,7 +83,7 @@ export function NpiSearchSheet({ query, onClose }: { query: string; onClose: () 
         </Button>
       }
     >
-      <form id={formId} onSubmit={submit} className="flex flex-col gap-6 pt-2">
+      <form id={formId} onSubmit={submit} noValidate className="flex flex-col gap-6 pt-2">
         <fieldset>
           <legend className="mb-3 text-label">Kind</legend>
           <div className="grid grid-cols-2 gap-3">
@@ -104,7 +119,7 @@ export function NpiSearchSheet({ query, onClose }: { query: string; onClose: () 
                   label="Last name"
                   value={draft.last}
                   onChange={(event) => change({ last: event.target.value })}
-                  required
+                  warning={errors.last}
                   autoComplete="off"
                   className="col-span-2 sm:col-span-1"
                 />
@@ -121,7 +136,7 @@ export function NpiSearchSheet({ query, onClose }: { query: string; onClose: () 
                 label="Organization name"
                 value={draft.organization}
                 onChange={(event) => change({ organization: event.target.value })}
-                required
+                warning={errors.organization}
                 autoComplete="off"
                 className="col-span-2"
               />
@@ -134,8 +149,7 @@ export function NpiSearchSheet({ query, onClose }: { query: string; onClose: () 
             label="State"
             value={draft.state}
             onChange={(event) => change({ state: stateCode(event.target.value) })}
-            pattern="[A-Z]{2}"
-            title="Two-letter state code"
+            warning={errors.state}
             maxLength={2}
             autoComplete="off"
             inputClassName="font-mono uppercase"

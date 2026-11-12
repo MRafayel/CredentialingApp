@@ -1,11 +1,12 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 
-from credentialing.domain.enums import EntityKind
+from credentialing.domain.enums import EntityKind, RosterRole
+from credentialing.domain.errors import DuplicateNpiError
 from credentialing.domain.models import Address, License, PersonName, Provider
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.providers import PostgresProviderRepository
@@ -74,6 +75,37 @@ async def test_reads_are_scoped_by_organization(
     assert await repository.find_by_npi(other_organization, NPI) is None
 
 
+async def test_add_many_stores_every_provider_within_the_organization(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresProviderRepository(database)
+    organization_id = await _organization(db_connection)
+    other_organization = await _organization(db_connection)
+    person = _provider(organization_id).model_copy(
+        update={"date_of_birth": date(1970, 2, 3), "role": RosterRole.WORKFORCE}
+    )
+    bare = Provider(
+        id=uuid4(),
+        organization_id=organization_id,
+        entity_kind=EntityKind.INDIVIDUAL,
+        person_name=PersonName(last="Sampleperson", first="Blake"),
+        created_at=NOW + timedelta(microseconds=1),
+    )
+    party = organization().model_copy(
+        update={"organization_id": organization_id, "created_at": NOW + timedelta(seconds=1)}
+    )
+
+    await repository.add_many(organization_id, [person, bare, party])
+    await repository.add_many(organization_id, [])
+
+    stored = [provider for provider, _ in await repository.list_all(organization_id)]
+    assert stored == [person, bare, party]
+    assert await repository.list_all(other_organization) == []
+    with pytest.raises(ValueError, match="belong to the organization"):
+        await repository.add_many(other_organization, [_provider(organization_id)])
+    assert len(await repository.list_all(organization_id)) == 3
+
+
 async def test_find_by_npi(
     database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
 ) -> None:
@@ -105,6 +137,66 @@ async def test_set_npi_sets_it_once_within_the_organization(
     assert again is None
     assert await repository.get(organization_id, provider.id) == updated
     assert await repository.set_npi(organization_id, uuid4(), NPI) is None
+
+
+async def test_a_roster_holds_each_npi_once(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresProviderRepository(database)
+    organization_id = await _organization(db_connection)
+    other_organization = await _organization(db_connection)
+    first = _provider(organization_id)
+    await repository.add(first)
+
+    with pytest.raises(DuplicateNpiError) as caught:
+        await repository.add(_provider(organization_id))
+    elsewhere = _provider(other_organization)
+    await repository.add(elsewhere)
+    await repository.add(_provider(organization_id, npi=None))
+    await repository.add(_provider(organization_id, npi=None))
+
+    assert (caught.value.organization_id, caught.value.existing_provider_id) == (
+        organization_id,
+        None,
+    )
+    assert str(caught.value) == "a provider with this NPI is already on the roster"
+    npis = [p.npi for p, _ in await repository.list_all(organization_id)]
+    assert sorted(npis, key=str) == [NPI, None, None]
+    assert await repository.find_by_npi(organization_id, NPI) == first
+    assert await repository.find_by_npi(other_organization, NPI) == elsewhere
+
+
+async def test_add_many_with_a_held_npi_stores_none_of_the_batch(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresProviderRepository(database)
+    organization_id = await _organization(db_connection)
+    await repository.add(_provider(organization_id))
+    fresh = _provider(organization_id, npi=make_npi("100000002"))
+
+    with pytest.raises(DuplicateNpiError):
+        await repository.add_many(organization_id, [fresh, _provider(organization_id)])
+    with pytest.raises(DuplicateNpiError):
+        await repository.add_many(
+            organization_id, [fresh, fresh.model_copy(update={"id": uuid4()})]
+        )
+
+    assert [p.npi for p, _ in await repository.list_all(organization_id)] == [NPI]
+
+
+async def test_set_npi_to_an_npi_another_provider_holds_changes_nothing(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresProviderRepository(database)
+    organization_id = await _organization(db_connection)
+    await repository.add(_provider(organization_id))
+    without = _provider(organization_id, npi=None)
+    await repository.add(without)
+
+    with pytest.raises(DuplicateNpiError):
+        await repository.set_npi(organization_id, without.id, NPI)
+
+    assert await repository.get(organization_id, without.id) == without
 
 
 async def test_list_pages_newest_first_and_searches(

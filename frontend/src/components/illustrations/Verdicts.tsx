@@ -54,3 +54,13 @@ export function VerdictUnchecked(props: IllustrationProps) {
     </Svg>
   )
 }
+
+/** A result that differs from the one before it: two arrows turning round a centre. */
+export function VerdictChanged(props: IllustrationProps) {
+  return (
+    <Svg tone="ill-changed" {...props}>
+      <Draw d="M19.5 9.5A8 8 0 0 0 5.2 7.2M4.5 3.5v4h4" />
+      <Draw d="M4.5 14.5a8 8 0 0 0 14.3 2.3M19.5 20.5v-4h-4" i={1} />
+    </Svg>
+  )
+}

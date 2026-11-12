@@ -21,6 +21,8 @@ _SCHEMA_TABLES = (
     "npi_registry_history",
     "exclusion_npi_links",
     "npi_link_runs",
+    "provider_status",
+    "monitoring_runs",
 )
 
 

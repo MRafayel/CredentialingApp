@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 from credentialing.application.errors import ProviderNotFoundError
 from credentialing.application.npi_lookup import LiveCheck, MirrorSource, NpiLookup, NpiView
+from credentialing.application.provider_status import StatusRefreshing, newest
 from credentialing.domain.enums import (
     CredentialType,
     EntityKind,
@@ -32,7 +33,12 @@ from credentialing.domain.models import (
     Provider,
     VerificationResult,
 )
-from credentialing.domain.policies import match_provider_to_npi
+from credentialing.domain.policies import (
+    NO_NPI_REASON,
+    NPI_STATUS_DETAIL,
+    match_provider_to_npi,
+    result_change,
+)
 from credentialing.domain.ports import Clock, ProviderRepository, VerificationRepository
 from credentialing.domain.types import SourceId
 
@@ -56,7 +62,13 @@ class _Draft:
 
 
 class VerifyNpi:
-    """Checks a provider's NPI in NPPES and appends the result to the history."""
+    """Checks a provider's NPI in NPPES and appends the result to the history.
+
+    An answer carries what changed since the provider's previous NPI answer (its last
+    completed NPI result), whichever NPPES file or request gave it
+    (:func:`~credentialing.domain.policies.result_change`); a result that could not be
+    checked carries none.
+    """
 
     def __init__(
         self,
@@ -67,15 +79,18 @@ class VerifyNpi:
         *,
         source_id: SourceId,
         source_url: str,
+        status: StatusRefreshing | None = None,
     ) -> None:
         """``source_id`` and ``source_url`` name the live registry, for the results that rest
-        on no answer (no NPI on file, no way to ask)."""
+        on no answer (no NPI on file, no way to ask). ``status`` keeps the provider's stored
+        monitoring status in step after each verification."""
         self._providers = providers
         self._lookup = npi_lookup
         self._verifications = verifications
         self._clock = clock
         self._source_id = source_id
         self._source_url = source_url
+        self._status = status
 
     async def run(
         self,
@@ -83,18 +98,22 @@ class VerifyNpi:
         provider_id: UUID,
         *,
         live: bool = False,
+        mirror_only: bool = False,
         details: Mapping[str, str] | None = None,
         view: NpiView | None = None,
     ) -> VerificationResult:
         """Verify the provider's NPI (asking the live registry when ``live``, or when the
         mirror has no row or is stale) and append exactly one result.
 
-        ``details`` are added to the result's own (who set the NPI, when). ``view`` is a
-        lookup of the provider's NPI the caller has just made: the result rests on it instead
-        of a second lookup, so it records the very answer the caller acted on.
+        ``mirror_only`` never asks the live registry (the scheduled recheck): an NPI the
+        mirror lacks is then a check that could not run, never "not in NPPES". ``details``
+        are added to the result's own (who set the NPI, when). ``view`` is a lookup of the
+        provider's NPI the caller has just made: the result rests on it instead of a second
+        lookup, so it records the very answer the caller acted on.
 
         Raises:
             ProviderNotFoundError: The organization has no provider with this id.
+            ValueError: Both ``live`` and ``mirror_only``.
         """
         provider = await self._providers.get(organization_id, provider_id)
         if provider is None:
@@ -108,15 +127,21 @@ class VerifyNpi:
                 summary=_NO_NPI,
                 provenance=self._own_provenance(now),
                 freshness=Freshness.LIVE,
-                details={"reason": "no_npi"},
+                details={"reason": NO_NPI_REASON},
             )
         else:
-            draft = self._draft(await self._lookup.get(provider.npi, live=live), now)
+            found = await self._lookup.get(provider.npi, live=live, mirror_only=mirror_only)
+            draft = self._draft(found, now)
         match = _match(provider, draft.record)
         merged = dict(draft.details)
-        if merged.get("npi_status") == RegistryStatus.ACTIVE.value and match is not None:
+        if merged.get(NPI_STATUS_DETAIL) == RegistryStatus.ACTIVE.value and match is not None:
             merged["name_match"] = match.level.value
         merged.update(details or {})
+        previous = newest(
+            await self._verifications.latest_per_source(
+                organization_id, provider_id, CredentialType.NPI, completed_only=True
+            )
+        )
         result = VerificationResult(
             id=uuid4(),
             organization_id=organization_id,
@@ -132,7 +157,10 @@ class VerifyNpi:
             freshness=draft.freshness,
             created_at=now,
         )
+        result = result.model_copy(update={"changed_from": result_change(previous, result)})
         await self._verifications.add(result)
+        if self._status is not None:
+            await self._status.refresh(provider)
         return result
 
     def _draft(self, view: NpiView, now: datetime) -> _Draft:
@@ -145,7 +173,7 @@ class VerifyNpi:
                 live,
                 finding=Finding.NO_RECORD,
                 summary=f"NPI {npi} is not in NPPES (checked live {checked})",
-                details={"npi_status": status.value, "checked_live": "true"},
+                details={NPI_STATUS_DETAIL: status.value, "checked_live": "true"},
             )
         if status is RegistryStatus.MIRROR_ONLY_ACTIVE and live is not None and mirror:
             return _on_live(
@@ -155,7 +183,7 @@ class VerifyNpi:
                     f"The NPPES file of {_file_date(mirror)} lists NPI {npi} as active, "
                     "but the live registry returned no result: review"
                 ),
-                details={"npi_status": status.value, "checked_live": "true"},
+                details={NPI_STATUS_DETAIL: status.value, "checked_live": "true"},
                 record=view.mirror_record,
             )
         live_found = live is not None and live.outcome is Outcome.COMPLETED and bool(live.found)
@@ -180,6 +208,17 @@ class VerifyNpi:
                 freshness=mirror.freshness,
                 details=_record_details(status, record, live),
                 record=record,
+            )
+        if live is None and mirror is not None and view.mirror_record is None:
+            return _Draft(
+                outcome=Outcome.SOURCE_UNAVAILABLE,
+                summary=(
+                    f"NPPES could not be checked: NPI {npi} is not in the NPPES files of "
+                    f"{_file_date(mirror)} and the live registry was not asked"
+                ),
+                provenance=mirror.provenance,
+                freshness=mirror.freshness,
+                details={"reason": "not_in_mirror"},
             )
         return self._could_not_check(live, now)
 
@@ -240,7 +279,7 @@ def _record_details(
 ) -> dict[str, str]:
     """What a result resting on a record says: the status, the kind, the record's date,
     whether the live registry answered, and a live request's failure when it did not."""
-    details = {"npi_status": status.value, "entity_kind": record.entity_kind.value}
+    details = {NPI_STATUS_DETAIL: status.value, "entity_kind": record.entity_kind.value}
     if record.last_updated is not None:
         details["registry_last_updated"] = record.last_updated.isoformat()
     answered = live is not None and live.outcome is Outcome.COMPLETED

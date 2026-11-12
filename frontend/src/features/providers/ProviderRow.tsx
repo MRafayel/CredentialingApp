@@ -4,9 +4,9 @@ import { CopyValue } from '../../components/CopyValue.tsx'
 import { Icon } from '../../components/Icon.tsx'
 import { rise } from '../../components/motion.ts'
 import { CodePill, StatusLabel } from '../../components/Status.tsx'
-import { DateOf } from '../../components/Time.tsx'
-import type { Provider } from '../../lib/api.ts'
-import type { Label } from '../../lib/labels.ts'
+import { Ago } from '../../components/Time.tsx'
+import type { ProviderListItem } from '../../lib/api.ts'
+import { attentionLabel, type Label } from '../../lib/labels.ts'
 import { displayName, providerStates } from '../../lib/provider.ts'
 import { ProviderMark } from './ProviderMark.tsx'
 
@@ -16,12 +16,23 @@ const NO_NPI: Label = { tone: 'review', word: 'No NPI' }
 const ROW = 'flex items-center gap-3 px-4 py-4 sm:gap-4 sm:px-5'
 
 /**
- * One roster card; the whole card opens the provider. It carries no status: the list does not
- * hold check results, so it shows none rather than a guess.
+ * One roster card; the whole card opens the provider. Under the name, the backend's one reason
+ * for attention as a mark and a word, and where or what in muted text ("Listed · OIG LEIE"); a
+ * provider that needs nobody reads "No records" with when it was checked.
  */
-export function ProviderRow({ provider }: { provider: Provider }) {
+export function ProviderRow({
+  provider,
+  sourceName,
+}: {
+  provider: ProviderListItem
+  sourceName: (id: string) => string
+}) {
   const name = displayName(provider)
   const states = providerStates(provider)
+  const { status } = provider
+  const label = attentionLabel(status, sourceName)
+  // The NPI gap shows in its own column only when the line names a more serious reason.
+  const npiGap = status.identity === 'npi_missing' && status.attention !== 'npi_missing'
   return (
     <motion.li variants={rise} className="relative">
       <div
@@ -37,14 +48,29 @@ export function ProviderRow({ provider }: { provider: Provider }) {
               {name}
             </motion.span>
           </Link>
-          <div className="flex min-w-0 items-center gap-2 text-small text-ink-muted">
-            {provider.npi ? (
-              <CopyValue value={provider.npi} label="NPI" className="relative z-10 -ml-1.5" />
-            ) : (
-              <StatusLabel label={NO_NPI} size={13} className="h-7 text-small" />
+          <p className="mt-1 flex min-w-0 items-center gap-1.5 text-small text-ink-muted">
+            <StatusLabel label={label} chip size={14} />
+            {label.detail && (
+              <span className="min-w-0 truncate">
+                <span aria-hidden="true">· </span>
+                {label.detail}
+              </span>
             )}
-          </div>
+            {status.attention === null && status.last_checked_at && (
+              <span className="min-w-0 truncate md:hidden">
+                <span aria-hidden="true">· </span>
+                checked <Ago at={status.last_checked_at} />
+              </span>
+            )}
+          </p>
         </div>
+        <span className="hidden w-36 shrink-0 items-center text-small text-ink-muted md:flex">
+          {provider.npi ? (
+            <CopyValue value={provider.npi} label="NPI" className="relative z-10 -ml-1.5" />
+          ) : npiGap ? (
+            <StatusLabel label={NO_NPI} size={13} className="h-7 text-small" />
+          ) : null}
+        </span>
         {states.length > 0 && (
           <span className="flex shrink-0 items-center gap-1">
             <span className="sr-only">States {states.join(', ')}</span>
@@ -60,10 +86,16 @@ export function ProviderRow({ provider }: { provider: Provider }) {
             </span>
           </span>
         )}
-        <DateOf
-          at={provider.created_at}
-          className="hidden w-28 shrink-0 text-right text-small text-ink-muted tabular-nums md:block"
-        />
+        <span className="hidden w-28 shrink-0 text-right text-small text-ink-muted tabular-nums md:block">
+          {status.last_checked_at ? (
+            <>
+              <span className="sr-only">Checked </span>
+              <Ago at={status.last_checked_at} />
+            </>
+          ) : (
+            'Never checked'
+          )}
+        </span>
         <Icon
           name="chevronRight"
           size={16}
@@ -80,10 +112,11 @@ export function ProviderRowSkeleton() {
       <span className="skeleton size-10 shrink-0 rounded-full" />
       <span className="flex flex-1 flex-col gap-2">
         <span className="skeleton h-4 w-44 max-w-full rounded-md" />
-        <span className="skeleton h-3 w-28 rounded-md" />
+        <span className="skeleton h-3 w-32 rounded-md" />
       </span>
-      <span className="skeleton hidden h-6 w-10 rounded-full sm:block" />
       <span className="skeleton hidden h-3 w-24 rounded-md md:block" />
+      <span className="skeleton hidden h-6 w-10 rounded-full sm:block" />
+      <span className="skeleton hidden h-3 w-16 rounded-md md:block" />
     </li>
   )
 }

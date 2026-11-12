@@ -1,11 +1,13 @@
-"""Use case: check one provider against every connected exclusion list."""
+"""Use case: check one provider against every connected exclusion list (or one of them)."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Final
 from uuid import UUID, uuid4
 
-from credentialing.application.errors import ProviderNotFoundError
+from credentialing.application.errors import ProviderNotFoundError, UnknownSourceError
+from credentialing.application.provider_status import StatusRefreshing
 from credentialing.domain.enums import (
     CredentialType,
     Finding,
@@ -32,6 +34,7 @@ from credentialing.domain.policies import (
     record_has_ended,
     record_is_removed,
     record_status,
+    result_change,
 )
 from credentialing.domain.ports import (
     BulkListConnector,
@@ -42,6 +45,7 @@ from credentialing.domain.ports import (
     SnapshotRepository,
     VerificationRepository,
 )
+from credentialing.domain.types import SourceId
 
 _STRENGTH: Final = {level: rank for rank, level in enumerate(MatchLevel)}
 """Match levels ranked strongest first, following the enum's declared order."""
@@ -56,8 +60,24 @@ _REMOVED_LEAD: Final = "Removed from published list of"
 """The summary lead of found records that left their list; reinstatement is not confirmed."""
 
 
+@dataclass(frozen=True, slots=True)
+class ListState:
+    """One exclusion list as a check sees it: what it covers, its latest fetch whatever the
+    outcome, and the latest completed fetch (the list the check reads)."""
+
+    capabilities: ConnectorCapabilities
+    latest: SourceSnapshot | None
+    completed: SourceSnapshot | None
+
+
 class CheckExclusions:
-    """Checks a provider against the stored exclusion lists and records each result."""
+    """Checks a provider against the stored exclusion lists and records each result.
+
+    Every appended answer carries what changed since the previous answer of its list
+    (:func:`~credentialing.domain.policies.result_change`); a result that could not be
+    checked carries none. ``status`` keeps the provider's
+    stored monitoring status in step after each check; without it none is stored.
+    """
 
     def __init__(
         self,
@@ -68,6 +88,8 @@ class CheckExclusions:
         verifications: VerificationRepository,
         freshness: FreshnessPolicyTable,
         clock: Clock,
+        *,
+        status: StatusRefreshing | None = None,
     ) -> None:
         self._connectors = connectors
         self._providers = providers
@@ -76,6 +98,7 @@ class CheckExclusions:
         self._verifications = verifications
         self._freshness = freshness
         self._clock = clock
+        self._status = status
 
     async def run(self, organization_id: UUID, provider_id: UUID) -> ProviderVerdict:
         """Check the provider against every connected exclusion list, federal and state.
@@ -94,9 +117,45 @@ class CheckExclusions:
         provider = await self._providers.get(organization_id, provider_id)
         if provider is None:
             raise ProviderNotFoundError(provider_id)
-        connectors = self._exclusion_lists()
-        if not connectors:
+        lists = await self.lists()
+        if not lists:
             return derive_verdict(())
+        return derive_verdict(await self.check(provider, lists))
+
+    async def lists(self, source_id: SourceId | None = None) -> tuple[ListState, ...]:
+        """Every connected exclusion list (or only ``source_id``) with its snapshots, read once
+        so a recheck of many providers does not read them per provider.
+
+        Raises:
+            UnknownSourceError: ``source_id`` is not a connected exclusion list.
+        """
+        connectors = self._exclusion_lists()
+        if source_id is not None:
+            connectors = [c for c in connectors if c.capabilities.source_id == source_id]
+            if not connectors:
+                raise UnknownSourceError(source_id)
+        return tuple(
+            [
+                ListState(
+                    capabilities=connector.capabilities,
+                    latest=await self._snapshots.latest(connector.capabilities.source_id),
+                    completed=await self._snapshots.latest_completed(
+                        connector.capabilities.source_id
+                    ),
+                )
+                for connector in connectors
+            ]
+        )
+
+    async def check(
+        self, provider: Provider, lists: Sequence[ListState]
+    ) -> tuple[VerificationResult, ...]:
+        """Check the provider against ``lists`` and append one result per list, each answer
+        with what changed since that list's previous answer (its last completed result), all
+        in one write; then store the provider's status. Returns the results in the order of
+        ``lists``."""
+        if not lists:
+            return ()
         now = self._clock.now()
         candidates = await self._records.find_candidates(
             provider.npi,
@@ -104,14 +163,21 @@ class CheckExclusions:
             provider.organization_name,
             license_numbers=[license.number for license in provider.licenses],
         )
+        answered = await self._verifications.latest_per_source(
+            provider.organization_id, provider.id, CredentialType.EXCLUSION, completed_only=True
+        )
+        previous = {result.source_id: result for result in answered}
         results: list[VerificationResult] = []
-        for connector in connectors:
-            capabilities = connector.capabilities
-            own = [record for record in candidates if record.source_id == capabilities.source_id]
-            result = await self._check(provider, capabilities, own, now)
-            await self._verifications.add(result)
-            results.append(result)
-        return derive_verdict(results)
+        for state in lists:
+            source_id = state.capabilities.source_id
+            own = [record for record in candidates if record.source_id == source_id]
+            result = self._check(provider, state, own, now)
+            change = result_change(previous.get(source_id), result)
+            results.append(result.model_copy(update={"changed_from": change}))
+        await self._verifications.add_many(results)
+        if self._status is not None:
+            await self._status.refresh(provider)
+        return tuple(results)
 
     def _exclusion_lists(self) -> list[BulkListConnector]:
         """Every connected exclusion list, federal and state, ordered by source id."""
@@ -121,16 +187,15 @@ class CheckExclusions:
             if connector.capabilities.credential_type is CredentialType.EXCLUSION
         ]
 
-    async def _check(
+    def _check(
         self,
         provider: Provider,
-        capabilities: ConnectorCapabilities,
+        state: ListState,
         candidates: Sequence[ExclusionRecord],
         now: datetime,
     ) -> VerificationResult:
+        capabilities, latest, completed = state.capabilities, state.latest, state.completed
         source_id = capabilities.source_id
-        latest = await self._snapshots.latest(source_id)
-        completed = await self._snapshots.latest_completed(source_id)
         policy = self._freshness.policy_for(CredentialType.EXCLUSION, source_id)
 
         def result(

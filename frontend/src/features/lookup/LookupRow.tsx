@@ -85,7 +85,8 @@ export function LookupRow({
 }: {
   record: LookupRecord
   sourceName: string
-  onCheck: () => void
+  /** "Check as provider"; left out where the person already looks at the provider. */
+  onCheck?: () => void
 }) {
   const label = recordLabel(record)
   const place = placeText(record)
@@ -160,11 +161,13 @@ export function LookupRow({
             </span>
           )}
         </div>
-        <div className="relative z-10 self-start lg:self-auto">
-          <Button variant="primary" icon="plus" spinIconOnHover onClick={onCheck}>
-            Check as provider
-          </Button>
-        </div>
+        {onCheck && (
+          <div className="relative z-10 self-start lg:self-auto">
+            <Button variant="primary" icon="plus" spinIconOnHover onClick={onCheck}>
+              Check as provider
+            </Button>
+          </div>
+        )}
       </div>
     </motion.li>
   )

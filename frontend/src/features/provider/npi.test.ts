@@ -32,6 +32,7 @@ const verification = (details: Record<string, string>): Verification =>
     freshness: 'cached',
     created_at: '2026-01-01T00:00:00Z',
     matched_records: [],
+    changed_from: null,
   }) as Verification
 
 const suggestion = (npi: string | null): NpiSuggestion => ({

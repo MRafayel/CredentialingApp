@@ -34,9 +34,14 @@ function ScrollToTop() {
   return null
 }
 
-/** Pages that share a key do not transition: the add sheet opens over the list. */
+/**
+ * Pages that share a key do not transition: the add and import sheets open over the list, and
+ * the registry dialog over a provider's page.
+ */
 function pageKey(pathname: string): string {
-  return pathname === '/providers/new' ? '/providers' : pathname
+  if (pathname === '/providers/new' || pathname === '/providers/import') return '/providers'
+  const registry = /^(\/providers\/[^/]+)\/registry\/?$/.exec(pathname)
+  return registry?.[1] ?? pathname
 }
 
 export default function App() {
@@ -74,7 +79,9 @@ export default function App() {
                     <Route path="/npi/:npi" element={<NpiPage />} />
                     <Route path="/providers" element={<ProvidersPage />} />
                     <Route path="/providers/new" element={<ProvidersPage />} />
+                    <Route path="/providers/import" element={<ProvidersPage />} />
                     <Route path="/providers/:id" element={<ProviderPage />} />
+                    <Route path="/providers/:id/registry" element={<ProviderPage />} />
                     <Route path="/sources" element={<SourcesPage />} />
                     <Route path="*" element={<NotFoundPage />} />
                   </Routes>

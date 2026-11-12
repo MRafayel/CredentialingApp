@@ -41,18 +41,40 @@ export function Field({
       <input
         id={id}
         aria-describedby={message ? hintId : undefined}
+        aria-invalid={warning ? true : undefined}
         className={`${INPUT} w-full ${warning ? 'border-status-review' : ''} ${inputClassName ?? ''}`}
         {...input}
       />
       {message && (
-        <p
-          id={hintId}
-          className={`flex items-center gap-1.5 text-small ${warning ? 'font-medium text-ink' : 'text-ink-muted'}`}
-        >
-          {warning && <VerdictReview size={14} className="shrink-0" />}
+        <FieldMessage id={hintId} warning={warning !== undefined}>
           {message}
-        </p>
+        </FieldMessage>
       )}
     </div>
+  )
+}
+
+/**
+ * The line under a field: a hint in muted text, or a warning in ink with the review mark. The
+ * same line serves inputs that are not a `Field` (a repeated row), so every form's messages
+ * look alike and never the browser's bubble.
+ */
+export function FieldMessage({
+  id,
+  warning,
+  children,
+}: {
+  id?: string
+  warning: boolean
+  children: ReactNode
+}) {
+  return (
+    <p
+      id={id}
+      className={`flex items-center gap-1.5 text-small ${warning ? 'font-medium text-ink' : 'text-ink-muted'}`}
+    >
+      {warning && <VerdictReview size={14} className="shrink-0" />}
+      {children}
+    </p>
   )
 }

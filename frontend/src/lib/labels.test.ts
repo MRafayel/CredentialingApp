@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderVerdict } from './api.ts'
 import {
+  ATTENTION_ORDER,
+  attentionLabel,
+  attentionWord,
+  changedFromLabel,
   freshnessLabel,
+  identityLabel,
+  listNames,
   matchLevelLabel,
   npiStatusLabel,
   outcomeWord,
   recordStatusLabel,
   registryStatusLabel,
   resultLabel,
+  roleWord,
   verdictLabel,
 } from './labels.ts'
 
@@ -181,5 +188,100 @@ describe('the NPI registry labels', () => {
     expect(matchLevelLabel('potential')).toEqual({ tone: 'review', word: 'Potential' })
     expect(matchLevelLabel('ambiguous')).toEqual({ tone: 'review', word: 'Ambiguous' })
     expect(matchLevelLabel('none')).toEqual({ tone: 'neutral', word: 'No match' })
+  })
+})
+
+describe('monitoring labels', () => {
+  const status = {
+    attention: null,
+    listed_in: [],
+    flagged_in: [],
+    review_in: [],
+    unchecked: [],
+  }
+  const name = (id: string) => ({ oig_leie: 'OIG LEIE', ny_omig: 'NY OMIG' })[id] ?? id
+
+  it('gives every reason for attention a word and its line', () => {
+    const line = (overrides: Partial<Parameters<typeof attentionLabel>[0]>) => {
+      const label = attentionLabel({ ...status, ...overrides }, name)
+      return [label.tone, label.word, label.detail]
+    }
+    expect(line({ attention: 'listed', listed_in: ['oig_leie'] })).toEqual([
+      'listed',
+      'Listed',
+      'OIG LEIE',
+    ])
+    expect(line({ attention: 'flagged', flagged_in: ['oig_leie', 'ny_omig'] })).toEqual([
+      'flagged',
+      'Flagged',
+      'named in OIG LEIE and 1 more',
+    ])
+    expect(line({ attention: 'needs_review', review_in: ['ny_omig'] })).toEqual([
+      'review',
+      'Review',
+      'possible match in NY OMIG',
+    ])
+    expect(line({ attention: 'could_not_check', unchecked: ['a', 'b', 'c'] })).toEqual([
+      'blocked',
+      'Could not check',
+      '3 lists',
+    ])
+    expect(line({ attention: 'changed' })).toEqual(['changed', 'Changed', 'since you last looked'])
+    expect(line({ attention: 'npi_deactivated' })).toEqual([
+      'listed',
+      'NPI deactivated',
+      'in NPPES',
+    ])
+    expect(line({ attention: 'npi_uncertain' })).toEqual([
+      'review',
+      'NPI unclear',
+      'NPPES answer to review',
+    ])
+    expect(line({ attention: 'npi_missing' })).toEqual(['review', 'Needs NPI', undefined])
+    expect(line({ attention: 'not_checked' })).toEqual(['neutral', 'Not checked', undefined])
+    expect(line({ attention: null })).toEqual(['clear', 'No records', undefined])
+  })
+
+  it('never reads a reason for attention as clear', () => {
+    for (const attention of ATTENTION_ORDER) {
+      expect(attentionWord(attention).tone).not.toBe('clear')
+    }
+  })
+
+  it('names one or two lists and counts more', () => {
+    expect(listNames(['oig_leie', 'ny_omig', 'x'], name)).toBe('OIG LEIE and 2 more')
+  })
+
+  it('names every identity state', () => {
+    expect(identityLabel('npi_active')).toEqual({
+      tone: 'clear',
+      word: 'NPI confirmed',
+      detail: 'active',
+    })
+    expect(identityLabel('npi_unverified')).toEqual({ tone: 'neutral', word: 'NPI not verified' })
+    expect(identityLabel('npi_missing')).toEqual({ tone: 'review', word: 'Needs NPI' })
+    expect(identityLabel('npi_deactivated')).toEqual({ tone: 'listed', word: 'NPI deactivated' })
+    expect(identityLabel('npi_uncertain').tone).toBe('review')
+    expect(identityLabel('not_expected')).toEqual({ tone: 'neutral', word: 'Not expected' })
+  })
+
+  it('names every role', () => {
+    expect(roleWord('practitioner')).toBe('Practitioner')
+    expect(roleWord('workforce')).toBe('Workforce')
+    expect(roleWord('vendor')).toBe('Vendor')
+  })
+
+  it('reads what a changed result said before', () => {
+    const before = {
+      outcome: 'source_unavailable' as const,
+      finding: null,
+      record_status: null,
+      registry_status: null,
+      verified_at: '2026-10-01T00:00:00Z',
+    }
+    expect(changedFromLabel(before).word).toBe('Source unavailable')
+    expect(
+      changedFromLabel({ ...before, outcome: 'completed', registry_status: 'deactivated' }),
+    ).toEqual({ tone: 'listed', word: 'Deactivated' })
   })
 })

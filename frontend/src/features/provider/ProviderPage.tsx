@@ -1,34 +1,47 @@
-import { AnimatePresence, LayoutGroup, motion } from 'motion/react'
-import { useParams } from 'react-router'
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'motion/react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { Navigate, useMatch, useNavigate, useParams } from 'react-router'
 import { ButtonLink } from '../../components/Button.tsx'
 import { CopyValue } from '../../components/CopyValue.tsx'
+import { Modal } from '../../components/Modal.tsx'
 import { ErrorNote } from '../../components/Note.tsx'
 import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
 import { Skeleton } from '../../components/Skeleton.tsx'
+import { useNow } from '../../components/useNow.ts'
 import { StatusLabel } from '../../components/Status.tsx'
 import { ApiError, type Provider, type SourceStatus } from '../../lib/api.ts'
 import { plural } from '../../lib/format.ts'
 import { resultLabel } from '../../lib/labels.ts'
+import { providerSteps, type StepAction } from '../../lib/monitoring.ts'
 import { displayName } from '../../lib/provider.ts'
-import { latestNpiVerification } from '../../lib/registry.ts'
+import { factsSource } from '../../lib/registry.ts'
 import { needsAttention } from '../../lib/results.ts'
 import {
+  useHistory,
+  useLatestNpiVerification,
+  useMarkSeen,
+  useNpi,
   useProvider,
+  useProviderStatus,
+  useProviderSummary,
   useRunCheck,
   useSources,
   useVerdict,
-  useVerifications,
 } from '../../lib/queries.ts'
+import { NpiDetails } from '../npi/NpiDetails.tsx'
 import { ProviderMark } from '../providers/ProviderMark.tsx'
 import { FactsPanel } from './FactsPanel.tsx'
 import { npiShape } from './npi.ts'
 import { NpiCard, NpiCardSkeleton } from './NpiCard.tsx'
 import { ResultCard, ResultCardSkeleton } from './ResultCard.tsx'
+import { Steps, StepsSkeleton } from './Steps.tsx'
 import { Timeline } from './Timeline.tsx'
 import { timelineEntries } from './timeline.ts'
 import { VerdictHero } from './VerdictHero.tsx'
 
 const BACK = { to: '/providers', label: 'Providers' }
+/** The NPI card, where every Identity action leads. */
+const NPI_CARD_ID = 'npi-card'
 const CARD_STAGGER = 0.08
 /** The sections under the NPI card glide when it changes shape. */
 const FOLLOW = { layout: { duration: 0.36, ease: [0.22, 1, 0.36, 1] as const } }
@@ -67,7 +80,8 @@ export function ProviderPage() {
 
 function Loaded({ provider }: { provider: Provider }) {
   const verdict = useVerdict(provider.id)
-  const history = useVerifications(provider.id)
+  const history = useHistory(provider.id)
+  const latestNpi = useLatestNpiVerification(provider.id)
   const sources = useSources()
   const run = useRunCheck(provider.id)
 
@@ -80,7 +94,21 @@ function Loaded({ provider }: { provider: Provider }) {
   // A check consults the exclusion lists; the NPI registry files are listed too but not checked.
   const expected = (sources.data ?? []).filter((source) => source.credential_type === 'exclusion')
   const running = run.isPending
-  const npi = npiShape(provider.npi, latestNpiVerification(history.data ?? []))
+  const npi = npiShape(provider.npi, latestNpi.data ?? null)
+  const status = useProviderStatus(provider.id)
+  // The recheck interval is the backend's policy; the roster's summary carries it.
+  const intervalDays = useProviderSummary().data?.recheck_interval_days
+  const now = useNow()
+  const changedOnOpen = useSeenOnOpen(provider.id, status)
+  const changedAt = changedOnOpen ? (status.data?.changed_at ?? null) : null
+  const reduced = useReducedMotion() ?? false
+
+  // Every step action is the NPI card's: find, verify or review the NPI there.
+  function act(_action: StepAction) {
+    const card = document.getElementById(NPI_CARD_ID)
+    card?.scrollIntoView({ behavior: reduced ? 'instant' : 'smooth', block: 'start' })
+    card?.focus({ preventScroll: true })
+  }
 
   return (
     <div className="flex flex-col gap-10 lg:gap-14">
@@ -119,42 +147,57 @@ function Loaded({ provider }: { provider: Provider }) {
         }
       />
 
-      <div className="flex flex-col gap-3">
-        {verdict.data ? (
-          <VerdictHero
-            verdict={verdict.data}
-            expected={expected.length}
-            running={running}
-            onRun={() => run.mutate()}
-          />
-        ) : (
-          !verdict.isError && <Skeleton className="h-[260px] w-full rounded-hero" />
-        )}
-        <AnimatePresence>
-          {run.isError && (
-            <motion.div
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-            >
-              <ErrorNote>{run.error.message}</ErrorNote>
-            </motion.div>
+      <div className="flex flex-col gap-8 lg:gap-10">
+        <div className="flex flex-col gap-3">
+          {status.data && verdict.data && intervalDays !== undefined ? (
+            <Steps
+              steps={providerSteps(status.data, verdict.data, { now, intervalDays })}
+              onAction={act}
+            />
+          ) : (
+            !(status.isError || verdict.isError) && <StepsSkeleton />
           )}
-        </AnimatePresence>
-        {verdict.isError && <ErrorNote>{verdict.error.message}</ErrorNote>}
+          {status.isError && <ErrorNote>{status.error.message}</ErrorNote>}
+        </div>
+
+        <div className="flex flex-col gap-3">
+          {verdict.data ? (
+            <VerdictHero
+              verdict={verdict.data}
+              expected={expected.length}
+              changedAt={changedAt}
+              running={running}
+              onRun={() => run.mutate()}
+            />
+          ) : (
+            !verdict.isError && <Skeleton className="h-[260px] w-full rounded-hero" />
+          )}
+          <AnimatePresence>
+            {run.isError && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+              >
+                <ErrorNote>{run.error.message}</ErrorNote>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {verdict.isError && <ErrorNote>{verdict.error.message}</ErrorNote>}
+        </div>
       </div>
 
       <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
         <LayoutGroup>
           <div className="flex min-w-0 flex-col gap-12 lg:gap-14">
-            {provider.npi && !history.data ? (
-              history.isError ? (
-                <ErrorNote>{history.error.message}</ErrorNote>
+            {provider.npi && latestNpi.data === undefined ? (
+              latestNpi.isError ? (
+                <ErrorNote>{latestNpi.error.message}</ErrorNote>
               ) : (
                 <NpiCardSkeleton />
               )
             ) : (
-              <NpiCard provider={provider} history={history.data ?? []} />
+              <NpiCard id={NPI_CARD_ID} provider={provider} latest={latestNpi.data ?? null} />
             )}
             <motion.section
               layout="position"
@@ -211,20 +254,90 @@ function Loaded({ provider }: { provider: Provider }) {
             <motion.div layout="position" transition={FOLLOW} className="flex flex-col gap-3">
               {history.isError && <ErrorNote>{history.error.message}</ErrorNote>}
               <Timeline
-                entries={timelineEntries(history.data ?? [])}
+                entries={timelineEntries(history.data?.pages.flatMap((page) => page.items) ?? [])}
                 provider={provider}
                 sourceName={sourceName}
+                older={{
+                  more: history.hasNextPage,
+                  loading: history.isFetchingNextPage,
+                  load: () => void history.fetchNextPage(),
+                  retentionDays: history.data?.pages[0]?.retention_days ?? null,
+                }}
               />
             </motion.div>
           </div>
         </LayoutGroup>
 
-        <div className="lg:sticky lg:top-28 lg:self-start">
-          <FactsPanel provider={provider} />
-        </div>
+        <FactsColumn provider={provider} />
       </div>
+
+      <RegistryModal provider={provider} />
     </div>
   )
+}
+
+/**
+ * The right column: one Facts card, the roster's facts with what NPPES records about the NPI
+ * merged in (the NPI card's lookup, already cached), its source and date under the heading. The
+ * roster's rows show at once; the registry's rise in when the lookup answers, and a failed
+ * lookup leaves the roster's card (the NPI card shows the error). The column sticks on desktop
+ * only while it is the roster's facts alone: the merged card is taller than the window.
+ */
+function FactsColumn({ provider }: { provider: Provider }) {
+  const lookup = useNpi(provider.npi ?? '', provider.npi !== null)
+  const record = lookup.data?.record ?? null
+  const source = lookup.data ? factsSource(lookup.data) : null
+  const registry = record && source ? { record, source: source.block, kind: source.kind } : null
+  return (
+    <div className={registry ? '' : 'lg:sticky lg:top-28 lg:self-start'}>
+      <FactsPanel provider={provider} registry={registry} />
+    </div>
+  )
+}
+
+/**
+ * The registry over the provider's page at `/providers/:id/registry`: the whole registry page in
+ * a dialog, closed with its X, Escape, the scrim or the browser's back. Opening and closing it
+ * never leaves the page (the route shares the page's key). Without an NPI there is no registry
+ * to show, so the route leads back to the page.
+ */
+function RegistryModal({ provider }: { provider: Provider }) {
+  const open = useMatch('/providers/:id/registry') !== null
+  const navigate = useNavigate()
+  const titleId = useId()
+  const close = useCallback(
+    () => navigate(`/providers/${provider.id}`, { replace: true }),
+    [navigate, provider.id],
+  )
+  if (open && !provider.npi) return <Navigate to={`/providers/${provider.id}`} replace />
+  return (
+    <AnimatePresence>
+      {open && provider.npi && (
+        <Modal labelledBy={titleId} onClose={close}>
+          <NpiDetails npi={provider.npi} embedded titleId={titleId} />
+        </Modal>
+      )}
+    </AnimatePresence>
+  )
+}
+
+/**
+ * Whether a result had changed since the person last looked, as it stood when the page opened,
+ * and then, once, the visit itself: `POST /seen`, so the roster stops reading "Changed" (its
+ * list, counts and this status are refetched). Rendering never waits for it.
+ */
+function useSeenOnOpen(id: string, status: ReturnType<typeof useProviderStatus>): boolean | null {
+  const [changed, setChanged] = useState<boolean | null>(null)
+  const loaded = status.data && !status.isPlaceholderData ? status.data : null
+  if (changed === null && (loaded || status.isError)) setChanged(loaded?.changed ?? false)
+  const { mutate: markSeen } = useMarkSeen(id)
+  const marked = useRef(false)
+  useEffect(() => {
+    if (changed === null || marked.current) return
+    marked.current = true
+    markSeen()
+  }, [changed, markSeen])
+  return changed
 }
 
 function HeaderSkeleton() {

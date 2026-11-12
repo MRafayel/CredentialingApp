@@ -11,6 +11,7 @@ export type Provider = Schemas['ProviderResponse']
 export type ProviderPage = Schemas['ProviderPageResponse']
 export type ProviderCreate = Schemas['ProviderCreate']
 export type Verification = Schemas['VerificationResponse']
+export type HistoryPage = Schemas['HistoryPageResponse']
 export type ProviderVerdict = Schemas['VerdictResponse']
 export type MatchedRecord = Schemas['MatchedRecordResponse']
 export type SourceStatus = Schemas['SourceStatusResponse']
@@ -44,6 +45,20 @@ export type MatchLevel = Schemas['MatchLevel']
 export type MatchEvidence = Schemas['MatchEvidenceResponse']
 export type NpiStatus = NpiSummary['status']
 export type ProviderNpi = Schemas['ProviderNpiResponse']
+// Monitoring: the roster's status, its reasons for attention and the provider's role.
+export type ProviderListItem = Schemas['ProviderListItemResponse']
+export type ProviderStatus = Schemas['ProviderStatusResponse']
+export type StatusSummary = Schemas['StatusSummaryResponse']
+export type Attention = Schemas['Attention']
+export type AttentionFilter = Schemas['AttentionFilter']
+export type IdentityState = Schemas['IdentityState']
+export type RosterRole = Schemas['RosterRole']
+export type ResultChange = Schemas['ResultChangeResponse']
+// Importing a roster: the preview's rows with their problems, and the commit's first check.
+export type ImportReport = Schemas['ImportReportResponse']
+export type ImportRow = Schemas['ImportRowResponse']
+export type ImportProblem = Schemas['ImportProblemResponse']
+export type ImportColumn = Schemas['ImportColumn']
 
 /** The seeded development organization; override with VITE_ORGANIZATION_ID. */
 const DEFAULT_ORGANIZATION_ID = '00000000-0000-0000-0000-000000000001'

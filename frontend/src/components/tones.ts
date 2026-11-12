@@ -3,6 +3,7 @@ import type { ComponentType } from 'react'
 import {
   type IllustrationProps,
   VerdictBlocked,
+  VerdictChanged,
   VerdictClear,
   VerdictFlagged,
   VerdictListed,
@@ -51,6 +52,12 @@ export const TONES: Record<Tone, ToneStyle> = {
     tint: 'bg-tint-blocked',
     wash: '[--tone-wash:var(--wash-blocked)]',
     Mark: VerdictBlocked,
+  },
+  changed: {
+    text: 'text-accent',
+    tint: 'bg-accent-soft',
+    wash: '[--tone-wash:var(--wash-clear)]',
+    Mark: VerdictChanged,
   },
   neutral: {
     text: 'text-ink-muted',

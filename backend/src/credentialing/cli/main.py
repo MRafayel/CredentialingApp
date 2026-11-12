@@ -17,6 +17,14 @@ list), then prints the run's counts, phase timings and CPU time. A sync that cha
 the same linking by itself and prints its line under the source's; a linking failure makes it
 exit with 1 without undoing the sync.
 
+``monitor`` rechecks the monitored rosters, one organization at a time: every provider
+against every exclusion list and, with an NPI, the NPI mirror (never the live registry).
+``--due`` skips providers rechecked within the monitoring interval (the cron entry);
+``--source`` rechecks every provider against one list. It prints the run's counts, phase
+timings and CPU time, and exits with 1 when any provider's recheck failed. A sync that changed
+rows runs the same recheck for that list (an NPPES load: for the NPI mirror) and prints its
+line.
+
 ``openapi`` prints the HTTP API's OpenAPI schema as JSON, without a server or a database;
 the frontend's API types are generated from it.
 """
@@ -32,12 +40,14 @@ from datetime import datetime
 from credentialing.api.app import create_app
 from credentialing.application.errors import UnknownSourceError
 from credentialing.application.link_npis import CLI_TRIGGER
+from credentialing.application.recheck_providers import CLI_TRIGGER as MONITOR_CLI_TRIGGER
+from credentialing.application.recheck_providers import DUE_TRIGGER
 from credentialing.application.sync_source import SyncReport
 from credentialing.bootstrap import runtime
 from credentialing.cli.relative_time import until
 from credentialing.cli.sources import show
 from credentialing.domain.enums import DatasetLoadMode, MatchLevel, Outcome
-from credentialing.domain.models import DatasetLoad, NpiLinkRun
+from credentialing.domain.models import DatasetLoad, MonitoringRun, NpiLinkRun
 from credentialing.domain.ports import BulkListConnector
 from credentialing.infrastructure.config import Settings, get_settings
 from credentialing.infrastructure.logging import configure_logging
@@ -76,6 +86,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "link-npis", help="link exclusion records to NPIs of the registry mirror"
     )
     link.add_argument("--source", help="only this list's records, such as ny_omig")
+    monitor = commands.add_parser(
+        "monitor", help="recheck every organization's providers against the lists and NPPES"
+    )
+    scope = monitor.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--due", action="store_true", help="only providers whose recheck is due (for cron)"
+    )
+    scope.add_argument("--source", help="every provider against this list only, such as ny_omig")
     commands.add_parser("openapi", help="print the HTTP API's OpenAPI schema as JSON")
     args = parser.parse_args(argv)
 
@@ -88,6 +106,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_sources(settings, as_json=args.as_json, strict=args.strict))
     if args.command == "link-npis":
         return asyncio.run(_link_npis(settings, args.source))
+    if args.command == "monitor":
+        return asyncio.run(_monitor(settings, due=args.due, source_id=args.source))
     return asyncio.run(
         _sync(settings, args.source_id, every=args.all, force=args.force, only_due=args.due)
     )
@@ -105,6 +125,7 @@ async def _sources(settings: Settings, *, as_json: bool, strict: bool) -> int:
         statuses = await services.source_status.run()
         links = await services.link_npis.summary()
         api = await services.source_status.npi_api_usage()
+        monitoring = await services.recheck_providers.summary()
     color = not as_json and not settings.no_color and sys.stdout.isatty()
     return show(
         statuses,
@@ -115,7 +136,23 @@ async def _sources(settings: Settings, *, as_json: bool, strict: bool) -> int:
         color=color,
         links=links,
         api=api,
+        monitoring=monitoring,
     )
+
+
+async def _monitor(settings: Settings, *, due: bool, source_id: str | None) -> int:
+    async with runtime(settings) as services:
+        try:
+            run = await services.recheck_providers.run(
+                trigger=DUE_TRIGGER if due else MONITOR_CLI_TRIGGER,
+                source_id=source_id,
+                due_only=due,
+            )
+        except UnknownSourceError:
+            sys.stderr.write(f"no exclusion list is registered as {source_id!r}\n")
+            return 2
+    sys.stdout.write(monitor_summary(run) + "\n")
+    return 1 if run.failures else 0
 
 
 async def _link_npis(settings: Settings, source_id: str | None) -> int:
@@ -155,10 +192,15 @@ async def _sync(
                 sys.stdout.write(f"{current} npi links: {link_summary(report.linking)}\n")
             if report.linking_failed is not None:
                 sys.stdout.write(f"{current} {report.linking_failed}\n")
+            if report.recheck is not None:
+                sys.stdout.write(f"{current} recheck: {monitor_summary(report.recheck)}\n")
+            if report.recheck_failed is not None:
+                sys.stdout.write(f"{current} {report.recheck_failed}\n")
             failed = (
                 failed
                 or report.snapshot.outcome is not Outcome.COMPLETED
                 or report.linking_failed is not None
+                or report.recheck_failed is not None
             )
         return 1 if failed else 0
 
@@ -216,6 +258,30 @@ def link_summary(run: NpiLinkRun) -> str:
     counts = " ".join(f"{level.value}={run.by_level.get(level, 0):,}" for level in MatchLevel)
     parts = [f"linked {run.records:,} records: {counts}"]
     parts.append(f"duration={run.duration.total_seconds():.1f}s")
+    if run.cpu_time is not None:
+        parts.append(f"cpu={run.cpu_time.total_seconds():.1f}s")
+    phases = " ".join(f"{name} {spent.total_seconds():.0f}s" for name, spent in run.phases.items())
+    return " ".join(parts) + (f" phases: {phases}" if phases else "")
+
+
+def monitor_summary(run: MonitoringRun) -> str:
+    """A recheck run on one line: "rechecked 1,200 providers in 3 organizations: results=36,000
+    changed=4 failures=0 duration=95.3s cpu=60.1s phases: lists 0s providers 1s exclusions 80s
+    npi 14s", or the note when it checked nothing; "purged=310" (history rows past the
+    retention window) when it purged any."""
+    scope = f" against {run.source_id}" if run.source_id else ""
+    if run.note:
+        purged = f", purged={run.purged:,}" if run.purged else ""
+        return f"rechecked {run.providers:,} providers{scope} ({run.note}{purged})"
+    parts = [
+        f"rechecked {run.providers:,} providers{scope} in {run.organizations:,} "
+        f"organization{'' if run.organizations == 1 else 's'}:",
+        f"results={run.results:,}",
+        f"changed={run.changed:,}",
+        f"failures={run.failures:,}",
+        *([f"purged={run.purged:,}"] if run.purged else []),
+        f"duration={run.duration.total_seconds():.1f}s",
+    ]
     if run.cpu_time is not None:
         parts.append(f"cpu={run.cpu_time.total_seconds():.1f}s")
     phases = " ".join(f"{name} {spent.total_seconds():.0f}s" for name, spent in run.phases.items())

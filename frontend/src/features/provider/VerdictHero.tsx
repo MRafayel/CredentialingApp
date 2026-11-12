@@ -12,22 +12,27 @@ const WASH_DRIFT = 6
 
 /**
  * The answer first: the backend's verdict as a large mark on a soft circle in its tint and the
- * word in ink, the figures it gives, and the one action. The card sits on --shadow-card over a
- * faint wash in the verdict's colour, which drifts a few pixels slower than the page scrolls.
+ * word in ink, the figures it gives, and the one action ("Run check", then "Check again").
+ * `changedAt` (a result changed since the person last looked, as it stood when the page opened)
+ * adds one line with the changed mark. The card sits on --shadow-card over a faint wash in the
+ * verdict's colour, which drifts a few pixels slower than the page scrolls.
  */
 export function VerdictHero({
   verdict,
   expected,
+  changedAt = null,
   running,
   onRun,
 }: {
   verdict: ProviderVerdict
   expected: number
+  changedAt?: string | null
   running: boolean
   onRun: () => void
 }) {
   const label = verdictLabel(verdict)
   const tone = TONES[label.tone]
+  const Changed = TONES.changed.Mark
   const checked = verdict.verdict !== 'not_checked'
   // A list was read when any check completed; a list date missing then is one no source states.
   const listRead = verdict.results.some((result) => result.outcome === 'completed')
@@ -86,6 +91,16 @@ export function VerdictHero({
                   </p>
                 </motion.div>
               </AnimatePresence>
+              {changedAt && (
+                <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-body text-ink">
+                  <Changed size={16} className={`shrink-0 ${TONES.changed.text}`} />
+                  Changed since you last looked
+                  <span className="text-ink-muted">
+                    <span aria-hidden="true">· </span>
+                    <DateOf at={changedAt} />
+                  </span>
+                </p>
+              )}
             </div>
           </div>
           <Button

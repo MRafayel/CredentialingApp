@@ -4,6 +4,7 @@
  * what the backend recorded; nothing here decides a status.
  */
 import type { Verification } from '../../lib/api.ts'
+import { plural } from '../../lib/format.ts'
 import { checkRuns } from '../../lib/history.ts'
 
 export type TimelineEntry =
@@ -41,4 +42,17 @@ export function npiStepTitle(result: Pick<Verification, 'details'>): string {
       return 'NPI needs review in NPPES'
   }
   return result.details.reason === 'no_npi' ? 'No NPI on file' : 'NPI check could not run'
+}
+
+/** Days in an average month, for saying the backend's retention in months. */
+const MONTH_DAYS = 30.5
+
+/**
+ * The line under the oldest page: how far back the backend keeps history, from its
+ * `retention_days`. Whole months when it is at least about one ("6 months" for 183 days), else
+ * the days.
+ */
+export function retentionLine(days: number): string {
+  const months = Math.round(days / MONTH_DAYS)
+  return `History is kept for ${months >= 1 ? plural(months, 'month') : plural(days, 'day')}`
 }

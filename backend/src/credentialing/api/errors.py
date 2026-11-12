@@ -10,13 +10,15 @@ from credentialing.application.errors import (
     RecordNotFoundError,
     RegistryUnavailableError,
 )
+from credentialing.domain.errors import DuplicateNpiError
 
 
 def register_error_handlers(app: FastAPI) -> None:
     """404 for an unknown provider or record, 422 for provider data that breaks a domain
-    rule, 409 for setting an NPI on a provider that has one, 503 when NPPES could not be
-    checked for an NPI to set. A well-formed NPI is never 404: "not found" and "could not
-    check" are answers."""
+    rule, 409 for setting an NPI on a provider that has one and for an NPI another provider
+    of the roster holds (with ``provider_id``, that provider or null when not known), 503 when
+    NPPES could not be checked for an NPI to set. A well-formed NPI is never 404: "not found"
+    and "could not check" are answers."""
 
     @app.exception_handler(ProviderNotFoundError)
     async def provider_not_found(_request: Request, error: ProviderNotFoundError) -> JSONResponse:
@@ -35,6 +37,14 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ProviderHasNpiError)
     async def provider_has_npi(_request: Request, error: ProviderHasNpiError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(error)})
+
+    @app.exception_handler(DuplicateNpiError)
+    async def duplicate_npi(_request: Request, error: DuplicateNpiError) -> JSONResponse:
+        holder = error.existing_provider_id
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(error), "provider_id": str(holder) if holder else None},
+        )
 
     @app.exception_handler(RegistryUnavailableError)
     async def registry_unavailable(

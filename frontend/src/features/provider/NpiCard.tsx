@@ -31,7 +31,6 @@ import { entityKindWord } from '../../lib/provider.ts'
 import { useNpi, useNpiSuggestions, useSetProviderNpi, useVerifyNpi } from '../../lib/queries.ts'
 import {
   evidenceWords,
-  latestNpiVerification,
   registryName,
   registryPlace,
   registrySourceName,
@@ -70,16 +69,28 @@ const ACTIONS = 'flex flex-wrap items-center gap-2 pt-1'
  * suggestions, each set only through "Use this NPI" and a confirm). Nothing is verified or set
  * without the user.
  */
-export function NpiCard({ provider, history }: { provider: Provider; history: Verification[] }) {
-  const shape = npiShape(provider.npi, latestNpiVerification(history))
+export function NpiCard({
+  id,
+  provider,
+  latest,
+}: {
+  /** Where the provider's Identity step leads; the card takes focus from it. */
+  id?: string
+  provider: Provider
+  /** The provider's newest NPI verification from any source, as the backend gives it. */
+  latest: Verification | null
+}) {
+  const shape = npiShape(provider.npi, latest)
   const titleId = useId()
   return (
     <motion.article
+      id={id}
+      tabIndex={-1}
       layout
       transition={{ layout: MORPH }}
       style={{ borderRadius: 16 }}
       aria-labelledby={titleId}
-      className="rounded-card bg-surface shadow-card"
+      className="scroll-mt-28 rounded-card bg-surface shadow-card lg:scroll-mt-32"
     >
       <AnimatePresence mode="popLayout" initial={false}>
         <motion.div
@@ -718,7 +729,7 @@ function BlockedMark({ size = 14 }: { size?: number }) {
   return <Mark size={size} className={`shrink-0 ${TONES.blocked.text}`} />
 }
 
-/** The card's shape while the history it depends on loads. */
+/** The card's shape while the latest NPI verification it depends on loads. */
 export function NpiCardSkeleton() {
   return (
     <div className="rounded-card bg-surface p-5 shadow-card sm:p-6">

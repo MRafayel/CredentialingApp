@@ -9,6 +9,8 @@ from typing import Final, NamedTuple, Protocol, runtime_checkable
 from uuid import UUID
 
 from credentialing.domain.enums import (
+    Attention,
+    AttentionSelection,
     CredentialType,
     DatasetLoadMode,
     EntityKind,
@@ -20,13 +22,16 @@ from credentialing.domain.models import (
     DatasetLoad,
     ExclusionRecord,
     FetchResult,
+    HistoryPage,
     LinkParty,
+    MonitoringRun,
     NpiAnswer,
     NpiLink,
     NpiLinkRun,
     NpiLinkSummary,
     NpiRecord,
     Provider,
+    ProviderStatus,
     SnapshotDiff,
     SourceSnapshot,
     VerificationResult,
@@ -46,7 +51,22 @@ class ProviderRepository(Protocol):
     """Providers on organizations' rosters. Every call is scoped to one organization."""
 
     async def add(self, provider: Provider) -> None:
-        """Store a new provider."""
+        """Store a new provider.
+
+        Raises:
+            DuplicateNpiError: Another provider of the organization has this NPI (nothing is
+                stored).
+        """
+        ...
+
+    async def add_many(self, organization_id: UUID, providers: Sequence[Provider]) -> None:
+        """Store new providers of one organization, all or none.
+
+        Raises:
+            ValueError: A provider belongs to another organization (nothing is stored).
+            DuplicateNpiError: Another provider of the organization, stored or in the batch,
+                has a provider's NPI (nothing is stored).
+        """
         ...
 
     async def get(self, organization_id: UUID, provider_id: UUID) -> Provider | None:
@@ -59,7 +79,12 @@ class ProviderRepository(Protocol):
 
     async def set_npi(self, organization_id: UUID, provider_id: UUID, npi: Npi) -> Provider | None:
         """Give the organization's provider this NPI when it has none; the provider as now
-        stored, or None when no row changed (no such provider, or it has an NPI already)."""
+        stored, or None when no row changed (no such provider, or it has an NPI already).
+
+        Raises:
+            DuplicateNpiError: Another provider of the organization has this NPI (nothing is
+                changed).
+        """
         ...
 
     async def list(
@@ -70,6 +95,60 @@ class ProviderRepository(Protocol):
         ``query`` matches last, first or organization name (case-insensitive substring) or
         the exact NPI; ``None`` or blank lists everyone.
         """
+        ...
+
+    async def list_status(
+        self,
+        organization_id: UUID,
+        *,
+        query: str | None,
+        attention: AttentionSelection | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[Sequence[tuple[Provider, ProviderStatus | None]], int]:
+        """One page of the organization's providers with their stored status, and the total.
+
+        Providers needing attention come first, by :class:`Attention` order, then newest
+        first. ``query`` matches as in :meth:`list`; ``attention`` keeps only that reason, or
+        with :class:`AttentionScope` every provider with some reason (``ANY``) or with none
+        (``NONE``, including a status never stored). A provider whose status was never stored
+        comes last with None.
+        """
+        ...
+
+    async def status_counts(self, organization_id: UUID) -> Mapping[Attention | None, int]:
+        """How many of the organization's providers have each stored attention reason; None
+        counts those needing nobody (and any whose status was never stored)."""
+        ...
+
+    async def save_statuses(
+        self, organization_id: UUID, statuses: Sequence[ProviderStatus], *, rules_version: int
+    ) -> None:
+        """Store these derived statuses of the organization's providers, replacing earlier
+        ones; ``rules_version`` is the version of the rules that derived them."""
+        ...
+
+    async def stale_statuses(self, organization_id: UUID, rules_version: int) -> Sequence[Provider]:
+        """The organization's providers whose status was never stored or was derived by
+        another version of the rules."""
+        ...
+
+    async def mark_viewed(
+        self, organization_id: UUID, provider_id: UUID, at: datetime
+    ) -> Provider | None:
+        """Record that the organization's provider was opened at ``at``; the provider as now
+        stored, or None when the organization has no such provider."""
+        ...
+
+    async def organization_ids(self) -> Sequence[UUID]:
+        """Every organization, by id: what the system job iterates, one at a time."""
+        ...
+
+    async def list_all(
+        self, organization_id: UUID
+    ) -> Sequence[tuple[Provider, ProviderStatus | None]]:
+        """Every provider of one organization with its stored status (None when never
+        stored), oldest first."""
         ...
 
 
@@ -230,10 +309,29 @@ class ExclusionRecordRepository(Protocol):
 
 
 class VerificationRepository(Protocol):
-    """Verification history: append-only, scoped to one organization."""
+    """Verification history: append-only (earlier results are never changed; the only delete
+    is :meth:`purge`, the retention policy's), scoped to one organization."""
 
     async def add(self, result: VerificationResult) -> None:
         """Append a verification result; earlier results are never changed."""
+        ...
+
+    async def add_many(self, results: Sequence[VerificationResult]) -> None:
+        """Append several results at once, all or none."""
+        ...
+
+    async def latest_per_source_many(
+        self, organization_id: UUID, provider_ids: Sequence[UUID], credential_type: CredentialType
+    ) -> Mapping[UUID, Sequence[VerificationResult]]:
+        """:meth:`latest_per_source` for several providers of the organization in one query, by
+        provider id; providers without results are absent."""
+        ...
+
+    async def last_changes(
+        self, organization_id: UUID, provider_ids: Sequence[UUID]
+    ) -> Mapping[UUID, datetime]:
+        """The newest ``created_at`` of a result with ``changed_from``, any credential type,
+        per provider of the organization; providers without one are absent."""
         ...
 
     async def latest(
@@ -242,17 +340,26 @@ class VerificationRepository(Protocol):
         provider_id: UUID,
         credential_type: CredentialType,
         source_id: SourceId,
+        *,
+        completed_only: bool = False,
     ) -> VerificationResult | None:
-        """Return the most recent result for this provider, credential type and source."""
+        """Return the most recent result for this provider, credential type and source (with
+        ``completed_only``, the most recent ``COMPLETED`` one: the last answer)."""
         ...
 
     async def latest_per_source(
-        self, organization_id: UUID, provider_id: UUID, credential_type: CredentialType
+        self,
+        organization_id: UUID,
+        provider_id: UUID,
+        credential_type: CredentialType,
+        *,
+        completed_only: bool = False,
     ) -> Sequence[VerificationResult]:
         """Return the most recent result of each source for this provider and credential type.
 
         One result per source, ordered by source id; results stored at the same moment are
-        settled by id, so the answer is stable.
+        settled by id, so the answer is stable. With ``completed_only``, the most recent
+        ``COMPLETED`` result of each source (the last answer, skipping could-not-check ones).
         """
         ...
 
@@ -262,10 +369,43 @@ class VerificationRepository(Protocol):
         """Return every result for this provider and credential type, newest first."""
         ...
 
-    async def history_all(
+    async def history_page(
+        self, organization_id: UUID, provider_id: UUID, *, before: datetime | None, moments: int
+    ) -> HistoryPage:
+        """Every result of the provider, any credential type, stored at the newest ``moments``
+        distinct instants (``created_at``) older than ``before`` (any instant when None),
+        newest first; a check run's results share an instant, so a page never splits one.
+        ``next_before`` is the oldest instant returned when older instants exist, else None."""
+        ...
+
+    async def latest_npi(
         self, organization_id: UUID, provider_id: UUID
-    ) -> Sequence[VerificationResult]:
-        """Return every result for this provider across credential types, newest first."""
+    ) -> VerificationResult | None:
+        """The provider's newest NPI result from any source, completed or not."""
+        ...
+
+    async def purge(self, organization_id: UUID, *, before: datetime) -> int:
+        """Delete the organization's results stored before ``before``, except, per provider,
+        the newest result and the newest completed result of each credential type and source
+        (so the newest NPI result of any source too), whatever their age: a verdict never
+        disappears and change detection keeps its previous answer. Returns the number deleted.
+        The one delete the history allows (the retention policy)."""
+        ...
+
+
+class MonitoringRunRepository(Protocol):
+    """Recheck runs of the system job (system data: counts and timings, no tenant data)."""
+
+    async def add_run(self, run: MonitoringRun) -> None:
+        """Store a finished run."""
+        ...
+
+    async def last_run(self) -> MonitoringRun | None:
+        """The most recently finished run, if any."""
+        ...
+
+    async def runs(self, limit: int) -> Sequence[MonitoringRun]:
+        """At most ``limit`` runs, most recently finished first."""
         ...
 
 
