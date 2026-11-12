@@ -446,7 +446,7 @@ class PostgresExclusionRecordRepository:
 
         Uses the normalized licence-number index, compared the way matching compares them.
         """
-        if record.license is None:
+        if record.license is None or record.license.number is None:
             return []
         number, state = license_key(record.license.number), record.license.state
         async with (

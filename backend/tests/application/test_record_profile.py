@@ -252,6 +252,18 @@ async def test_a_licence_in_another_state_is_not_the_same_party() -> None:
     assert profile.same_party == ()
 
 
+async def test_a_licence_without_a_number_never_ties_records() -> None:
+    world = _World()
+    subject = exclusion(source_id=STATE, last="Holder", license=License(state="NY"))
+    other = exclusion(source_id=FEDERAL, last="Elsewhere", license=License(state="NY"))
+    await world.load(STATE, subject)
+    await world.load(FEDERAL, other)
+
+    profile = await world.use_case.run(subject.id)
+
+    assert profile.same_party == ()
+
+
 async def test_the_history_follows_rewrites_of_the_row_both_ways() -> None:
     world = _World()
     npi = make_npi("100000006")

@@ -87,8 +87,8 @@ export function AddProviderSheet({
     if (npiMessage) found.npi = npiMessage
     for (const row of licences) {
       const state = stateError(row.state)
+      // A state alone is a known licence state (owner, 2026-11-12); a number alone is not.
       if (state) found[`licence-${row.key}`] = state
-      else if (row.state && !row.number.trim()) found[`licence-${row.key}`] = 'Number needed'
       else if (row.number.trim() && !row.state) found[`licence-${row.key}`] = 'State needed'
     }
     for (const row of addresses) {
@@ -120,7 +120,7 @@ export function AddProviderSheet({
       date_of_birth: kind === 'individual' ? blankToNull(dateOfBirth) : null,
       licenses: licences
         .filter((row) => row.number.trim() || row.state)
-        .map((row) => ({ number: row.number.trim(), state: row.state })),
+        .map((row) => ({ number: blankToNull(row.number), state: row.state })),
       addresses: addresses
         .filter((row) => row.city.trim() || row.state)
         .map((row) => ({ city: blankToNull(row.city), state: row.state || null })),
@@ -310,17 +310,13 @@ export function AddProviderSheet({
                   )
                   clear(`licence-${row.key}`)
                 }}
-                aria-invalid={errors[`licence-${row.key}`] === 'Number needed' ? true : undefined}
                 autoComplete="off"
                 className={`${INPUT} flex-1 font-mono`}
               />
               <StateInput
                 label={`Licence ${index + 1} state`}
                 value={row.state}
-                invalid={
-                  errors[`licence-${row.key}`] !== undefined &&
-                  errors[`licence-${row.key}`] !== 'Number needed'
-                }
+                invalid={errors[`licence-${row.key}`] !== undefined}
                 onChange={(state) => {
                   setLicences((rows) => rows.map((r) => (r.key === row.key ? { ...r, state } : r)))
                   clear(`licence-${row.key}`)

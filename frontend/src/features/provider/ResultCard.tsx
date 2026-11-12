@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { useId, useState, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import { VerdictBlocked, VerdictListed } from '@/components/illustrations'
 import { Icon } from '../../components/Icon.tsx'
 import { settle } from '../../components/motion.ts'
@@ -21,6 +22,7 @@ import {
   registryStatusLabel,
   resultLabel,
 } from '../../lib/labels.ts'
+import { useFrom } from '../shell/back.ts'
 
 const FIELD_WORDS: Record<string, string> = {
   npi: 'NPI',
@@ -90,13 +92,37 @@ function DetailValue({ name, value }: { name: string; value: string }) {
   return value
 }
 
-/** One source's answer: status, source, time, the backend's sentence, and the evidence. */
-export function ResultCard({ result, sourceName }: { result: Verification; sourceName: string }) {
+/** Builds the link that opens a matched exclusion record. */
+type RecordHref = (recordId: string) => string
+
+/**
+ * One source's answer: status, source, time, the backend's sentence, and the evidence. With
+ * `recordHref`, a result that matched records names its list as a link to the first of them
+ * (over the provider's page); with `recordPage`, each matched record under Details has "Open
+ * record", its own full page, which leads back to the page around the card (`useFrom`). Without
+ * a record the name stays text.
+ */
+export function ResultCard({
+  result,
+  sourceName,
+  recordHref,
+  recordPage,
+}: {
+  result: Verification
+  sourceName: string
+  /** The record over the current page: the list name's link. */
+  recordHref?: RecordHref
+  /** The record's own page: "Open record". */
+  recordPage?: RecordHref
+}) {
   const [open, setOpen] = useState(false)
   const panelId = useId()
   const label = resultLabel(result)
   const updated = result.provenance.source_updated_at
   const reason = result.details.latest_fetch_outcome
+  const first = result.matched_records[0]
+  const split = sourceName.lastIndexOf(' ') + 1
+  const [nameHead, nameTail] = [sourceName.slice(0, split), sourceName.slice(split)]
 
   return (
     <article className="rounded-card bg-surface shadow-card">
@@ -122,7 +148,28 @@ export function ResultCard({ result, sourceName }: { result: Verification; sourc
             Checked <Ago at={result.provenance.verified_at} />
           </span>
         </div>
-        <h3 className="text-title">{sourceName}</h3>
+        <h3 className="text-title break-words">
+          {recordHref && first ? (
+            <Link
+              to={recordHref(first.id)}
+              aria-label={`Open the record in ${sourceName}`}
+              className="group rounded-sm underline-offset-4 hover:underline"
+            >
+              {/* The chevron wraps with the last word, never alone on a line. */}
+              {nameHead}
+              <span className="whitespace-nowrap">
+                {nameTail}
+                <Icon
+                  name="chevronRight"
+                  size={18}
+                  className="ml-1 inline-block align-[-0.15em] text-ink-faint transition-[transform,color] group-hover:translate-x-0.5 group-hover:text-ink"
+                />
+              </span>
+            </Link>
+          ) : (
+            sourceName
+          )}
+        </h3>
         <p className="max-w-[72ch] text-body text-ink-muted">{result.summary}</p>
         {result.outcome !== 'completed' && reason && (
           <p className="flex items-center gap-1.5 text-small font-medium text-ink">
@@ -171,7 +218,7 @@ export function ResultCard({ result, sourceName }: { result: Verification; sourc
             transition={settle}
             className="overflow-hidden"
           >
-            <Evidence result={result} />
+            <Evidence result={result} recordPage={recordPage} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -179,8 +226,19 @@ export function ResultCard({ result, sourceName }: { result: Verification; sourc
   )
 }
 
-/** A result's evidence, its matched records and its details; `children` close the panel. */
-export function Evidence({ result, children }: { result: Verification; children?: ReactNode }) {
+/**
+ * A result's evidence, its matched records and its details; `children` close the panel. With
+ * `recordPage` each matched record has "Open record", its own page.
+ */
+export function Evidence({
+  result,
+  recordPage,
+  children,
+}: {
+  result: Verification
+  recordPage?: RecordHref | undefined
+  children?: ReactNode
+}) {
   const details = Object.entries(result.details)
   return (
     <div className="flex flex-col gap-5 border-t border-line px-5 py-5 sm:px-6">
@@ -189,7 +247,11 @@ export function Evidence({ result, children }: { result: Verification; children?
           <h4 className="text-label">Matched records</h4>
           <ul className="mt-2 divide-y divide-line border-y border-line">
             {result.matched_records.map((record) => (
-              <MatchedRecordItem key={record.id} record={record} />
+              <MatchedRecordItem
+                key={record.id}
+                record={record}
+                href={recordPage ? recordPage(record.id) : null}
+              />
             ))}
           </ul>
         </section>
@@ -232,7 +294,12 @@ export function Evidence({ result, children }: { result: Verification; children?
   )
 }
 
-function MatchedRecordItem({ record }: { record: MatchedRecord }) {
+/**
+ * One matched record: its name, status and NPI on one row with "Open record" at its right end
+ * (wrapping under them on a narrow row), then its dates.
+ */
+function MatchedRecordItem({ record, href }: { record: MatchedRecord; href: string | null }) {
+  const from = useFrom()
   return (
     <li className="py-3 text-small">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -242,6 +309,17 @@ function MatchedRecordItem({ record }: { record: MatchedRecord }) {
           {record.action_raw ?? record.action}
         </span>
         {record.npi && <span className="font-mono text-ink-muted">{record.npi}</span>}
+        {href && (
+          <Link
+            to={href}
+            state={from}
+            className="inline-flex items-center gap-1 rounded-full font-medium whitespace-nowrap text-accent-strong underline-offset-4 hover:underline"
+          >
+            Open record
+            <span className="sr-only"> of {displayName(record)}</span>
+            <Icon name="chevronRight" size={13} />
+          </Link>
+        )}
       </div>
       <p className="mt-0.5 text-ink-muted">
         Effective {record.effective_date ? <CalendarDate value={record.effective_date} /> : '—'}

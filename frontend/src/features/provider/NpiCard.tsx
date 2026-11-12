@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'motion/react'
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { Button } from '../../components/Button.tsx'
 import { CopyValue } from '../../components/CopyValue.tsx'
@@ -31,12 +31,14 @@ import { entityKindWord } from '../../lib/provider.ts'
 import { useNpi, useNpiSuggestions, useSetProviderNpi, useVerifyNpi } from '../../lib/queries.ts'
 import {
   evidenceWords,
+  npiPortalUrl,
   registryName,
   registryPlace,
   registrySourceName,
   type EvidenceWords,
 } from '../../lib/registry.ts'
 import { useLookupState } from '../lookup/lookupState.ts'
+import { useFrom } from '../shell/back.ts'
 import {
   candidatesLine,
   lookupDraft,
@@ -136,6 +138,14 @@ function Verified({
   const verify = useVerifyNpi(providerId)
   const [open, setOpen] = useState(false)
   const panelId = useId()
+  const showButton = useRef<HTMLButtonElement>(null)
+  const hideButton = useRef<HTMLButtonElement>(null)
+  const toggled = useRef(false)
+  // The toggle moves when the panel opens or closes; keyboard focus follows it.
+  useEffect(() => {
+    if (!toggled.current) return
+    ;(open ? hideButton : showButton).current?.focus({ preventScroll: true })
+  }, [open])
   const record = lookup.data ? lookup.data.record : undefined
   const live = restsOnLive(result.provenance.source_id)
   const status = result.details.npi_status
@@ -188,28 +198,30 @@ function Verified({
         {verify.isError && <ErrorNote>{verify.error.message}</ErrorNote>}
         <div className={ACTIONS}>
           <RegistryLink npi={npi} className="-ml-2.5" />
-          <button
-            type="button"
-            onClick={() => setOpen((value) => !value)}
-            aria-expanded={open}
-            aria-controls={panelId}
-            className="inline-flex h-8 items-center gap-1 rounded-full px-2 text-sm font-medium text-ink-muted transition-colors hover:text-ink"
-          >
-            {open ? 'Hide details' : 'Details'}
-            <motion.span animate={{ rotate: open ? 180 : 0 }} transition={settle}>
-              <Icon name="chevronDown" size={15} />
-            </motion.span>
-          </button>
           <Button
             variant="secondary"
             icon="bolt"
-            className="ml-auto"
+            className="h-8"
             disabled={verify.isPending}
             aria-busy={verify.isPending}
             onClick={() => verify.mutate({ live: true })}
           >
             {verify.isPending ? 'Checking…' : 'Verify live'}
           </Button>
+          {/* "Details" sits at the row's right end; once open, the toggle moves to the bottom
+              right of the expanded part (owner, 2026-11-12). */}
+          {!open && (
+            <DetailsToggle
+              ref={showButton}
+              open={false}
+              panelId={panelId}
+              className="ml-auto"
+              onClick={() => {
+                toggled.current = true
+                setOpen(true)
+              }}
+            />
+          )}
         </div>
       </div>
       <AnimatePresence initial={false}>
@@ -222,18 +234,31 @@ function Verified({
             transition={settle}
             className="overflow-hidden"
           >
-            <Evidence result={result}>
+            <Evidence result={result} />
+            {/* The public portal's page for this NPI (not the file the answer came from: that is
+                the provenance line's business) and the toggle, on one row (owner, 2026-11-12). */}
+            <div className="flex items-center justify-between gap-4 px-5 pb-4 sm:px-6">
               <a
-                href={result.provenance.source_url}
+                href={npiPortalUrl(npi)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex h-8 items-center gap-1 self-start rounded-full text-small font-medium text-accent-strong underline-offset-4 hover:underline"
+                className="inline-flex h-8 items-center gap-1 rounded-full text-small font-medium text-accent-strong underline-offset-4 hover:underline"
               >
-                {registrySourceName(result.provenance.source_id)}
+                NPPES search portal
                 <Icon name="external" size={14} />
                 <span className="sr-only">(opens in a new tab)</span>
               </a>
-            </Evidence>
+              <DetailsToggle
+                ref={hideButton}
+                open
+                panelId={panelId}
+                className="-mr-2"
+                onClick={() => {
+                  toggled.current = true
+                  setOpen(false)
+                }}
+              />
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -243,6 +268,7 @@ function Verified({
 
 /** "since Mar 1, 2024 · replaced by 1234567893", in ink beside the deactivated mark. */
 function Deactivation({ record }: { record: NpiRecord }) {
+  const from = useFrom()
   const since = record.deactivation_date
   const replacement = record.replacement_npi
   if (!since && !replacement) return null
@@ -259,6 +285,7 @@ function Deactivation({ record }: { record: NpiRecord }) {
           replaced by{' '}
           <Link
             to={`/npi/${replacement}`}
+            state={from}
             className="font-mono text-accent-strong underline-offset-4 hover:underline"
           >
             {replacement}
@@ -266,6 +293,37 @@ function Deactivation({ record }: { record: NpiRecord }) {
         </span>
       )}
     </span>
+  )
+}
+
+/** "Details" with a chevron, or "Hide details" with it turned, for the card's evidence panel. */
+function DetailsToggle({
+  ref,
+  open,
+  panelId,
+  className,
+  onClick,
+}: {
+  ref: Ref<HTMLButtonElement>
+  open: boolean
+  panelId: string
+  className?: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      aria-controls={panelId}
+      className={`inline-flex h-8 items-center gap-1 rounded-full px-2 text-sm font-medium text-ink-muted transition-colors hover:text-ink ${className ?? ''}`}
+    >
+      {open ? 'Hide details' : 'Details'}
+      <motion.span initial={false} animate={{ rotate: open ? 180 : 0 }} transition={settle}>
+        <Icon name="chevronDown" size={15} />
+      </motion.span>
+    </button>
   )
 }
 
@@ -303,7 +361,7 @@ function Unverified({
         <Button
           variant="secondary"
           icon="check"
-          className="ml-auto"
+          className="ml-auto h-8"
           disabled={verify.isPending}
           aria-busy={verify.isPending}
           onClick={() => verify.mutate({ live: false })}
@@ -501,6 +559,7 @@ function SuggestionRow({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const from = useFrom()
   const registry = candidate.registry
   const rowRef = useRef<HTMLLIElement>(null)
   const useButton = useRef<HTMLButtonElement>(null)
@@ -558,6 +617,7 @@ function SuggestionRow({
               />
               <Link
                 to={`/npi/${candidate.npi}`}
+                state={from}
                 className="min-w-0 rounded-sm text-body font-semibold break-words text-ink underline-offset-4 hover:underline"
               >
                 {registry ? (registryName(registry) ?? 'Name not published') : 'Name not published'}

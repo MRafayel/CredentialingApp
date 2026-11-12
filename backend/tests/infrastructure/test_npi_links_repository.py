@@ -32,6 +32,7 @@ from credentialing.domain.models import (
     NpiLink,
     NpiLinkRun,
     NpiRecord,
+    NpiTaxonomy,
     SourceSnapshot,
 )
 from credentialing.domain.names import normalize_name, normalize_organization_name
@@ -399,6 +400,26 @@ async def test_a_zip_or_licence_on_any_address_or_licence_ranks_first(world: _Wo
     assert count == CANDIDATE_CAP + 1
     assert len(found) == CANDIDATE_CAP
     assert found[:2] == [npi(99), npi(98)]  # ZIP and city (second address), then licence
+
+
+async def test_a_licence_state_alone_breaks_ties_below_city_and_state(world: _World) -> None:
+    namesakes = [npi_person(npi(n)) for n in range(1, CANDIDATE_CAP + 5)]
+    licensed = npi_person(npi(97), licenses=(("5", "NJ"),))
+    unnumbered = npi_person(npi(96)).model_copy(
+        update={"taxonomies": (NpiTaxonomy(code="207Q00000X", primary=True, license_state="NJ"),)}
+    )
+    in_town = npi_person(npi(98), practice=Address(city="Sampleville", state="NY"))
+    await world.mirror(*namesakes, unnumbered, licensed, in_town)
+    party = party_of_provider(
+        individual(licenses=(License(state="NJ"),)).model_copy(update={"addresses": (SAMPLEVILLE,)})
+    )
+
+    found, count = await world.found_for(party)
+
+    assert count == CANDIDATE_CAP + 1
+    assert found[:3] == [npi(98), npi(97), npi(1)]  # city and state, licence state, then NPI
+    plain = party.model_copy(update={"licenses": ()})
+    assert (await world.found_for(plain))[0][:2] == [npi(98), npi(1)]
 
 
 async def test_a_party_finds_nothing_without_a_namesake_or_a_first_name(world: _World) -> None:

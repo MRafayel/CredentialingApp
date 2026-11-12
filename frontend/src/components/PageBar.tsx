@@ -5,7 +5,8 @@ import { DESKTOP, useMedia } from '../lib/media.ts'
 import { useBarGlass } from '../lib/scroll.ts'
 import { Icon } from './Icon.tsx'
 
-type Back = { to: string; label: string }
+/** A back link: where it leads, that page's name, and the router state to restore there. */
+type Back = { to: string; label: string; state?: unknown }
 
 /**
  * The top bars' liquid glass: a floating pill behind the bar's content whose opacity follows the
@@ -40,6 +41,7 @@ export function PageBar({ title, back }: { title: string; back?: Back }) {
         {back ? (
           <Link
             to={back.to}
+            state={back.state}
             aria-label={`Back to ${back.label}`}
             className="relative grid size-10 shrink-0 place-items-center rounded-full text-ink transition-colors hover:bg-soft"
           >
@@ -98,6 +100,7 @@ export function PageHeader({
       {back && (
         <Link
           to={back.to}
+          state={back.state}
           className="-ml-1 hidden items-center gap-1 self-start rounded-full px-1 text-small font-medium text-ink-muted transition-colors hover:text-ink lg:inline-flex"
         >
           <Icon name="arrowLeft" size={15} />

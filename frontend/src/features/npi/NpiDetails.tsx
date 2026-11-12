@@ -21,10 +21,11 @@ import { LiveLine } from '../lookup/RegistryParts.tsx'
 import { HeroFigure } from '../provider/VerdictHero.tsx'
 import { AddProviderSheet } from '../providers/AddProviderSheet.tsx'
 import { ProviderMark } from '../providers/ProviderMark.tsx'
+import type { Back } from '../shell/back.ts'
 import { draftFromNpi } from './draft.ts'
 import { NpiLink, RegistryFacts } from './RegistryFacts.tsx'
 
-const BACK = { to: '/lookup', label: 'Lookup' }
+const BACK: Back = { to: '/lookup', label: 'Lookup' }
 /** In a dialog the title keeps clear of its X, which sits over the top right corner. */
 const CLEAR_OF_CLOSE = 'pr-12'
 
@@ -33,22 +34,24 @@ const CLEAR_OF_CLOSE = 'pr-12'
  * registry (and, on the registry page, to track it as a provider), then the exclusion lists that
  * publish this NPI and what NPPES records about it. `embedded` is the registry over a provider's
  * page: no back link, the title names the dialog (`titleId`), and no "Check as provider", since
- * the person is already looking at the provider.
+ * the person is already looking at the provider. `back` is where the page's Back leads.
  */
 export function NpiDetails({
   npi,
   embedded = false,
   titleId,
+  back = BACK,
 }: {
   npi: string
   embedded?: boolean
   titleId?: string
+  back?: Back
 }) {
   const lookup = useNpi(npi)
   if (lookup.isError && !lookup.data) {
     return (
       <div className={`flex flex-col items-start gap-6 ${embedded ? CLEAR_OF_CLOSE : ''}`}>
-        <PageHeader title={`NPI ${npi}`} back={embedded ? undefined : BACK} titleId={titleId} />
+        <PageHeader title={`NPI ${npi}`} back={embedded ? undefined : back} titleId={titleId} />
         <ErrorNote
           action={
             <Button variant="ghost" className="-my-1 h-8" onClick={() => void lookup.refetch()}>
@@ -62,7 +65,7 @@ export function NpiDetails({
     )
   }
   return lookup.data ? (
-    <Loaded npi={npi} lookup={lookup.data} embedded={embedded} titleId={titleId} />
+    <Loaded npi={npi} lookup={lookup.data} embedded={embedded} titleId={titleId} back={back} />
   ) : (
     <NpiSkeleton npi={npi} embedded={embedded} titleId={titleId} />
   )
@@ -73,12 +76,16 @@ function Loaded({
   lookup,
   embedded,
   titleId,
+  back,
 }: {
   npi: string
   lookup: NpiLookup
   embedded: boolean
   titleId: string | undefined
+  back: Back
 }) {
+  // Came from a provider's page (or sits over one): no "Check as provider", it is that provider.
+  const ownProvider = embedded || back.to.startsWith('/providers/')
   const [prefill, setPrefill] = useState<ProviderDraft | null>(null)
   const { record } = lookup
   const name = record && registryName(record)
@@ -87,7 +94,7 @@ function Loaded({
       <div className="flex flex-col gap-10 lg:gap-14">
         <div className={embedded ? CLEAR_OF_CLOSE : undefined}>
           <PageHeader
-            back={embedded ? undefined : BACK}
+            back={embedded ? undefined : back}
             titleId={titleId}
             lead={
               record && (
@@ -121,13 +128,13 @@ function Loaded({
         <StatusHero
           npi={npi}
           lookup={lookup}
-          onCheck={embedded ? null : record ? () => setPrefill(draftFromNpi(record)) : undefined}
+          onCheck={ownProvider ? null : record ? () => setPrefill(draftFromNpi(record)) : undefined}
         />
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
           <div className="min-w-0">
             <ExclusionLists
               npi={npi}
-              onCheck={embedded ? undefined : (found) => setPrefill(draftFromRecord(found))}
+              onCheck={ownProvider ? undefined : (found) => setPrefill(draftFromRecord(found))}
             />
           </div>
           {record && (

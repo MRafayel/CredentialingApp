@@ -23,6 +23,7 @@ import { LOOKUP_LIMIT, useExclusionLookup, useNpi, useNpiSearch } from '../../li
 import { isNpi } from '../../lib/registry.ts'
 import { useRecedingHero } from '../../lib/scroll.ts'
 import { AddProviderSheet } from '../providers/AddProviderSheet.tsx'
+import { Here, useHere } from '../shell/back.ts'
 import { useLookupState } from './lookupState.ts'
 import { LIST, ListsLine, LookupRow, LookupRowSkeleton } from './LookupRow.tsx'
 import { stateName } from './map/mapInfo.ts'
@@ -100,6 +101,8 @@ export function LookupPage() {
   const [focused, setFocused] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const typed = useTypedPlaceholder(EXAMPLES, !focused && draft === '')
+  // Every record and registry page opened from here leads back here.
+  const here = useHere('Lookup')
   const typing = draft.trim() !== ''
   // An emptied field searches nothing, even before the pause that updates `q`.
   const searchable = isSearchable(q) && typing
@@ -156,7 +159,7 @@ export function LookupPage() {
   if (showMap && mapGone) setMapGone(false)
 
   return (
-    <>
+    <Here value={here}>
       <PageBar title="Lookup" />
       <PageBody>
         <motion.div style={hero.title}>
@@ -302,7 +305,7 @@ export function LookupPage() {
       <AnimatePresence>
         {prefill && <AddProviderSheet initial={prefill} onClose={() => setPrefill(null)} />}
       </AnimatePresence>
-    </>
+    </Here>
   )
 }
 

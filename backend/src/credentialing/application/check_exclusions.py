@@ -161,7 +161,8 @@ class CheckExclusions:
             provider.npi,
             provider.person_name.last if provider.person_name else None,
             provider.organization_name,
-            license_numbers=[license.number for license in provider.licenses],
+            # A licence known by its state alone finds nothing on the lists.
+            license_numbers=[item.number for item in provider.licenses if item.number],
         )
         answered = await self._verifications.latest_per_source(
             provider.organization_id, provider.id, CredentialType.EXCLUSION, completed_only=True

@@ -864,7 +864,11 @@ class InMemoryRecords:
             for record in self.latest.values()
             if (npi is not None and npi in (record.npi, *record.related_npis))
             or candidate_keys(record) & keys
-            or (record.license is not None and license_key(record.license.number) in licenses)
+            or (
+                record.license is not None
+                and record.license.number is not None
+                and license_key(record.license.number) in licenses
+            )
         ]
 
     async def search(
@@ -961,8 +965,10 @@ class InMemoryRecords:
             r
             for r in self.latest.values()
             if own is not None
+            and own.number is not None
             and r.id != record.id
             and r.license is not None
+            and r.license.number is not None
             and r.license.state == own.state
             and license_key(r.license.number) == license_key(own.number)
         ]

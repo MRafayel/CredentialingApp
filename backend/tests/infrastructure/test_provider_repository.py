@@ -50,6 +50,24 @@ async def test_add_then_get_round_trips(
     assert await repository.get(provider.organization_id, provider.id) == provider
 
 
+async def test_a_licence_state_without_a_number_round_trips(
+    database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
+) -> None:
+    repository = PostgresProviderRepository(database)
+    organization_id = await _organization(db_connection)
+    licences = (License(state="NJ"), License(number="0012345", state="NY"))
+    one = _provider(organization_id).model_copy(update={"licenses": licences})
+    many = _provider(organization_id, npi=None).model_copy(
+        update={"id": uuid4(), "licenses": licences, "created_at": NOW + timedelta(seconds=1)}
+    )
+
+    await repository.add(one)
+    await repository.add_many(organization_id, [many])
+
+    assert await repository.get(organization_id, one.id) == one
+    assert await repository.get(organization_id, many.id) == many
+
+
 async def test_organization_provider_round_trips(
     database: ConnectionSource, db_connection: AsyncConnection[TupleRow]
 ) -> None:

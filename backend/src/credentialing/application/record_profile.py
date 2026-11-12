@@ -390,6 +390,8 @@ def _same_license(record: ExclusionRecord, other: ExclusionRecord) -> _Link | No
     if (
         own
         and theirs
+        and own.number
+        and theirs.number
         and own.state == theirs.state
         and license_key(own.number) == license_key(theirs.number)
     ):

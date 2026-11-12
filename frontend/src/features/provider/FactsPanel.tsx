@@ -3,11 +3,12 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { CopyValue } from '../../components/CopyValue.tsx'
 import { settle } from '../../components/motion.ts'
-import { SourceLine } from '../../components/Provenance.tsx'
-import { CodePill } from '../../components/Status.tsx'
-import { CalendarDate, DateOf } from '../../components/Time.tsx'
+import { CodePill, Freshness } from '../../components/Status.tsx'
+import { Ago, CalendarDate, DateOf } from '../../components/Time.tsx'
 import type { LiveCheck, MirrorSource, NpiRecord, Provider } from '../../lib/api.ts'
-import { roleWord } from '../../lib/labels.ts'
+import { freshnessLabel, roleWord } from '../../lib/labels.ts'
+import { asOf } from '../../lib/registry.ts'
+import { useFrom } from '../shell/back.ts'
 import {
   addedLicences,
   addedPlace,
@@ -84,16 +85,35 @@ export function FactsPanel({
   const place = record ? addedPlace(provider, record) : null
   const taxonomies = record ? addedTaxonomies(provider, record) : []
   return (
-    <section aria-labelledby="facts-heading">
-      <h2 id="facts-heading" className="text-subheading">
-        Facts
-      </h2>
-      {registry && (
-        <motion.p {...ARRIVE} className="mt-1">
-          <SourceLine block={registry.source} kind={registry.kind} lead="Includes NPPES" />
-        </motion.p>
-      )}
-      <dl className="mt-4 divide-y divide-line rounded-card bg-surface px-5 py-1 shadow-card">
+    // On desktop the heading and the card are two rows of the page's grid, so the card's top
+    // lines up with the NPI card's across the page (owner, 2026-11-12).
+    <section aria-labelledby="facts-heading" className="lg:row-span-2 lg:grid lg:grid-rows-subgrid">
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <h2 id="facts-heading" className="text-subheading">
+          Facts
+        </h2>
+        {registry && (
+          <motion.p
+            {...ARRIVE}
+            className="inline-flex items-center gap-x-1 text-caption whitespace-nowrap text-ink-muted"
+          >
+            {/* One short line beside the title, "with NPPES cached as of Nov 3, 2026": the
+                freshness word keeps its coloured mark; the file itself is named on the NPI
+                card's own line (owner, 2026-11-12). */}
+            <span>with NPPES</span>
+            <Freshness label={freshnessLabel(registry.source.freshness)} className="lowercase" />
+            {registry.kind === 'mirror' ? (
+              <span>
+                as of <DateOf at={asOf(registry.source)} />
+              </span>
+            ) : (
+              <Ago at={registry.source.provenance.verified_at} />
+            )}
+          </motion.p>
+        )}
+      </div>
+      {/* `self-start`: the card ends with its last row, never stretched to the left column. */}
+      <dl className="mt-4 divide-y divide-line rounded-card bg-surface px-5 py-1 shadow-card lg:mt-0 lg:self-start">
         <Fact term="Kind">
           {provider.entity_kind === 'organization' ? 'Organization' : 'Individual'}
         </Fact>
@@ -151,9 +171,16 @@ export function FactsPanel({
           {provider.licenses.length || licences.length ? (
             <ul className="flex flex-col gap-1">
               {provider.licenses.map((licence) => (
-                <li key={`${licence.state}-${licence.number}`} className="flex items-center gap-2">
+                <li
+                  key={`${licence.state}-${licence.number ?? ''}`}
+                  className="flex items-center gap-2"
+                >
                   <CodePill>{licence.state}</CodePill>
-                  <span className="font-mono text-small">{licence.number}</span>
+                  {licence.number ? (
+                    <span className="font-mono text-small">{licence.number}</span>
+                  ) : (
+                    <span className="text-small text-ink-muted">state only</span>
+                  )}
                   {licence.kind && <span className="text-ink-muted">{licence.kind}</span>}
                 </li>
               ))}
@@ -244,6 +271,7 @@ function TaxonomyValue({ taxonomy }: { taxonomy: RegistryTaxonomy }) {
  * only when a full file dropped the NPI, "Currently in NPI registry · No" (never a "Yes" row).
  */
 function RegistryRows({ record }: { record: NpiRecord }) {
+  const from = useFrom()
   const official = record.authorized_official
   const dates: { term: string; value: string | null }[] = [
     { term: 'Enumerated', value: record.enumeration_date },
@@ -282,6 +310,7 @@ function RegistryRows({ record }: { record: NpiRecord }) {
           ) : (
             <Link
               to={`/npi/${record.replacement_npi}`}
+              state={from}
               className="rounded-sm font-mono font-medium text-accent-strong underline-offset-4 hover:underline"
             >
               {record.replacement_npi}

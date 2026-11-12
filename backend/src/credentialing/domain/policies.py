@@ -312,6 +312,9 @@ def match_provider_to_record(provider: Provider, record: ExclusionRecord) -> Mat
     middle name or licence raises it, because those belong to the listed party. Such a match
     carries ``MatchRelation.RELATED_PARTY``; every other match is ``PARTY``.
 
+    A licence known by its state alone never equals a listed licence, so it neither raises
+    nor lowers a list match (the lists' licence states travel with their numbers).
+
     A name-only match is never EXACT.
     """
     if provider.npi and provider.npi == record.npi:
@@ -577,6 +580,20 @@ def _match_organization(
     return _license_only(provider, record, [], MatchField.ORGANIZATION_NAME)
 
 
+SAME_LICENSE: Final = "same state and number"
+"""Licence evidence: a numbered licence equal by :func:`license_key` in the same state."""
+
+SAME_LICENSE_STATE: Final = "same licence state"
+"""NPI licence evidence: a licence known by its state alone, and the candidate reports a
+taxonomy licence in that state. Evidence that orders candidates, never a match level."""
+
+OTHER_LICENSE_NUMBER: Final = "another number in {state}"
+"""NPI licence evidence (a template): the candidate's licence in the state has another
+number."""
+
+NO_LICENSE_IN_STATE: Final = "no licence in {state} in the registry"
+"""NPI licence evidence (a template): the candidate reports licences in other states only."""
+
 _LICENSE_ONLY_NOTE: Final = (
     "licence numbers are unique only within a profession, so a person must confirm"
 )
@@ -597,7 +614,7 @@ def _license_only(
     if listed is None or not any(_same_license(own, listed) for own in provider.licenses):
         return _result(MatchLevel.NONE, tuple(name_evidence))
     evidence = [
-        MatchEvidence(field=MatchField.LICENSE, matched=True, detail="same state and number"),
+        MatchEvidence(field=MatchField.LICENSE, matched=True, detail=SAME_LICENSE),
         *(name_evidence or [MatchEvidence(field=name_field, matched=False)]),
     ]
     if provider.date_of_birth and record.date_of_birth:
@@ -619,6 +636,10 @@ def license_key(number: str) -> str:
 
 
 def _same_license(own: License, other: License) -> bool:
+    """The same licence: both numbered, in the same state, equal by :func:`license_key`. A
+    licence without a number (a state alone) never equals another."""
+    if own.number is None or other.number is None:
+        return False
     return own.state == other.state and license_key(own.number) == license_key(other.number)
 
 
@@ -746,6 +767,10 @@ def match_party_to_npi(party: LinkParty, candidate: NpiRecord, *, candidates: in
       licence or ZIP matched.
       AMBIGUOUS otherwise: several namesakes, or a contradiction (middle name, licence or
       address differs).
+      A licence known by its state alone (owner, 2026-11-12) is compared with the states of
+      the candidate's licences only when no numbered licence could be compared ("same
+      licence state", or "no licence in NY in the registry"); it never changes the level,
+      neither confirming nor contradicting, and only orders candidates (:func:`suggest_npis`).
     - Organizations: the names without legal designators must match (own name or an alias,
       against the candidate's name or one of its other names). HIGH with the ZIP matched;
       POTENTIAL with the same city or as the only candidate, the address not contradicting;
@@ -795,18 +820,32 @@ def suggest_npis(
     dropped too: the strongest are scored first, and an ambiguous one among so many says
     nothing a person could act on. A party left without a link gets one ``(None, NONE)``
     pair whose explanation says why, so "not linked" never reads as "never checked".
+
+    Order: the level, then a candidate with a licence in one of the party's licence states
+    known without a number (:data:`SAME_LICENSE_STATE`, a tie-breaker only), then the NPI.
     """
     scored = [(c.npi, match_party_to_npi(party, c, candidates=found)) for c in candidates]
     kept = [(npi, match) for npi, match in scored if match.level is not MatchLevel.NONE]
     if found > CANDIDATE_CAP:
         kept = [(npi, match) for npi, match in kept if match.level in _CONFIRMED]
     if kept:
-        ordered = sorted(kept, key=lambda pair: (level_rank(pair[1].level), pair[0] or ""))
+        ordered = sorted(
+            kept,
+            key=lambda pair: (
+                level_rank(pair[1].level),
+                not _has_evidence(pair[1], MatchField.LICENSE, SAME_LICENSE_STATE),
+                pair[0] or "",
+            ),
+        )
         return tuple((npi, match) for npi, match in ordered)
     reason = _link_gap(party, found, scored=bool(scored))
     return (
         (None, MatchResult(level=MatchLevel.NONE, evidence=(), explanation=f"No match: {reason}.")),
     )
+
+
+def _has_evidence(match: MatchResult, field: MatchField, detail: str) -> bool:
+    return any(e.field is field and e.matched and e.detail == detail for e in match.evidence)
 
 
 def _link_gap(party: LinkParty, found: int, *, scored: bool) -> str:
@@ -1057,15 +1096,18 @@ def _link_individual(party: LinkParty, candidate: NpiRecord, candidates: int) ->
     names = _person_names(party, candidate)
     if names is None:
         return _result(MatchLevel.NONE, ())
-    license = _license_evidence(party.licenses, candidate)
+    numbered = _numbered_license_evidence(party.licenses, candidate)
+    license = numbered or _license_state_evidence(party.licenses, candidate)
     address = _address_evidence(party.addresses, candidate)
     evidence = (*names.evidence, *(item for item in (license, address) if item))
     middle = names.middle
     middle_differs = middle is not None and not middle.matched
+    # Only a numbered licence decides the level: a licence state alone orders candidates
+    # (suggest_npis, the discovery's ranking) and never confirms or contradicts.
     contradiction = any(
-        item is not None and not item.matched for item in (middle, license, address)
+        item is not None and not item.matched for item in (middle, numbered, address)
     )
-    strong = (license is not None and license.matched) or _same(address, SAME_ZIP)
+    strong = _same(license, SAME_LICENSE) or _same(address, SAME_ZIP)
     if strong and not middle_differs:
         level = MatchLevel.HIGH if names.full_first else MatchLevel.POTENTIAL
     elif (
@@ -1098,32 +1140,61 @@ def _link_organization(party: LinkParty, candidate: NpiRecord, candidates: int) 
     return _result(level, evidence)
 
 
-def _same(address: MatchEvidence | None, *details: str) -> bool:
-    return address is not None and address.matched and address.detail in details
+def _same(evidence: MatchEvidence | None, *details: str) -> bool:
+    return evidence is not None and evidence.matched and evidence.detail in details
 
 
 def _license_evidence(own: Sequence[License], candidate: NpiRecord) -> MatchEvidence | None:
-    """The party's licences against the candidate's taxonomy licences; None when either side
-    has none. Matched when any one agrees, else the first licence's difference. A licence
-    only in other states is "not matched" too, the detail says so."""
+    """The party's licences against the candidate's taxonomy licences; None when nothing
+    could be compared. The numbered licences speak first
+    (:func:`_numbered_license_evidence`); only when none could be compared, the licences
+    known by their state alone (:func:`_license_state_evidence`)."""
+    return _numbered_license_evidence(own, candidate) or _license_state_evidence(own, candidate)
+
+
+def _numbered_license_evidence(
+    own: Sequence[License], candidate: NpiRecord
+) -> MatchEvidence | None:
+    """The party's numbered licences against the candidate's numbered taxonomy licences;
+    None when either side has none. Matched (:data:`SAME_LICENSE`) when any one agrees, else
+    the first licence's difference: :data:`OTHER_LICENSE_NUMBER` in the same state, or
+    :data:`NO_LICENSE_IN_STATE` when the candidate's licences are all in other states."""
+    numbered = [licence for licence in own if licence.number is not None]
     theirs = [t for t in candidate.taxonomies if t.license_number]
-    if not own or not theirs:
+    if not numbered or not theirs:
         return None
-    compared = [_one_license(licence, theirs) for licence in own]
+    compared = [_one_license(licence, theirs) for licence in numbered]
     return next((item for item in compared if item.matched), compared[0])
 
 
 def _one_license(own: License, theirs: Sequence[NpiTaxonomy]) -> MatchEvidence:
-    number = license_key(own.number)
+    number = license_key(own.number or "")
     if any(
         t.license_state == own.state and license_key(t.license_number or "") == number
         for t in theirs
     ):
-        return MatchEvidence(field=MatchField.LICENSE, matched=True, detail="same state and number")
+        return MatchEvidence(field=MatchField.LICENSE, matched=True, detail=SAME_LICENSE)
     if any(t.license_state == own.state for t in theirs):
-        detail = f"another number in {own.state}"
+        detail = OTHER_LICENSE_NUMBER.format(state=own.state)
     else:
-        detail = f"no licence in {own.state} in the registry"
+        detail = NO_LICENSE_IN_STATE.format(state=own.state)
+    return MatchEvidence(field=MatchField.LICENSE, matched=False, detail=detail)
+
+
+def _license_state_evidence(own: Sequence[License], candidate: NpiRecord) -> MatchEvidence | None:
+    """The party's licences known by their state alone against the states of the
+    candidate's taxonomy licences (numbered, as :func:`_numbered_license_evidence` counts
+    them); None when either side has none. Matched (:data:`SAME_LICENSE_STATE`) when the
+    candidate has a licence in one of those states, else :data:`NO_LICENSE_IN_STATE` for the
+    first. Never "the same licence": the caller lets it order candidates, not decide a
+    level."""
+    states = [licence.state for licence in own if licence.number is None]
+    theirs = {t.license_state for t in candidate.taxonomies if t.license_number and t.license_state}
+    if not states or not theirs:
+        return None
+    if any(state in theirs for state in states):
+        return MatchEvidence(field=MatchField.LICENSE, matched=True, detail=SAME_LICENSE_STATE)
+    detail = NO_LICENSE_IN_STATE.format(state=states[0])
     return MatchEvidence(field=MatchField.LICENSE, matched=False, detail=detail)
 
 

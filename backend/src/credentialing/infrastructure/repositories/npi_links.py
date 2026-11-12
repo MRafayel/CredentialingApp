@@ -88,8 +88,14 @@ def _discovery(recs: Template) -> Template:
     """The discovery statement over ``recs``, the parties to find: one row per party with
     ``id``, ``entity_kind``, ``npi``, ``aliases``, the name keys (``last_key``, ``first_key``,
     ``middle_key``, ``org_key``) and arrays of its places and licences (``zips``, ``cities``
-    with ``states`` pairwise, ``licenses`` with ``license_states`` pairwise). Records and
-    roster providers go through this one statement, so their discovery cannot drift."""
+    with ``states`` pairwise, ``licenses`` with ``license_states`` pairwise for the numbered
+    licences, ``licensed_states`` for every licence state, numbered or not). Records and
+    roster providers go through this one statement, so their discovery cannot drift.
+
+    Candidates are ranked by cheap evidence, highest score first, then by NPI: the same
+    5-digit ZIP 4, the same licence (number and state) 4, the same city and state 2, a
+    numbered taxonomy licence in one of the party's licence states 1 (below city and state,
+    so a licence state alone only breaks ties), the same middle initial 1, an active NPI 1."""
     return t"""
         with recs as ({recs:q}),
         people as (
@@ -183,6 +189,11 @@ def _discovery(recs: Template) -> Template:
                             where t->>'license_state' = l.state
                               and license_key(t->>'license_number') = l.license
                         )::int * 4
+                        + exists (
+                            select 1 from jsonb_array_elements(n.taxonomies) as t
+                            where t->>'license_state' = any(r.licensed_states)
+                              and t->>'license_number' is not null
+                        )::int
                         + exists (
                             select 1 from unnest(r.cities, r.states) as a (city, state)
                             where (n.practice_address->>'state' = a.state
@@ -307,7 +318,8 @@ class PostgresNpiLinkRepository:
                 array[name_key(e.address->>'city')] as cities,
                 array[e.address->>'state'] as states,
                 array[license_key(e.license_number)] as licenses,
-                array[e.license_state] as license_states
+                array[e.license_state] as license_states,
+                array[e.license_state] as licensed_states
             from exclusion_records e
             where e.id = any({ids}::uuid[])
         """
@@ -329,6 +341,7 @@ class PostgresNpiLinkRepository:
         party's kind, the count found and the time, never a name."""
         name = party.person_name
         places = party.addresses
+        numbered = [item for item in party.licenses if item.number is not None]
         recs = t"""
             select {_PARTY_ID}::uuid as id, {party.entity_kind.value}::text as entity_kind,
                 {party.npi}::char(10) as npi, {list(party.aliases)}::text[] as aliases,
@@ -348,11 +361,12 @@ class PostgresNpiLinkRepository:
                 {[a.state for a in places]}::text[] as states,
                 array(
                     select license_key(l)
-                    from unnest({[item.number for item in party.licenses]}::text[])
+                    from unnest({[item.number for item in numbered]}::text[])
                         with ordinality as u (l, i)
                     order by i
                 ) as licenses,
-                {[item.state for item in party.licenses]}::text[] as license_states
+                {[item.state for item in numbered]}::text[] as license_states,
+                {[item.state for item in party.licenses]}::text[] as licensed_states
         """
         started = time.perf_counter()
         rows = await self._discover(recs)

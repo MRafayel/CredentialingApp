@@ -187,7 +187,7 @@ export function draftFromRecord(record: LookupRecord): ProviderDraft {
     organization: organization ? (record.organization_name ?? '') : '',
     npi: record.npi ?? '',
     licences: record.license
-      ? [{ number: record.license.number, state: record.license.state }]
+      ? [{ number: record.license.number ?? '', state: record.license.state }]
       : [],
   }
 }

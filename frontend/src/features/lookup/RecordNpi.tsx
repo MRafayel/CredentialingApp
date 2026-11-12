@@ -11,6 +11,7 @@ import { TONES } from '../../components/tones.ts'
 import type { MatchEvidence, RecordProfile } from '../../lib/api.ts'
 import { matchLevelLabel, npiStatusLabel, registryStatusLabel } from '../../lib/labels.ts'
 import { evidenceWords, registryName, registryPlace } from '../../lib/registry.ts'
+import { useFrom } from '../shell/back.ts'
 import { linkReason } from './npiSearch.ts'
 import { recordNpi, type RegistryLinkRow } from './recordNpi.ts'
 import { RegistryLink } from './RegistryParts.tsx'
@@ -154,6 +155,7 @@ function Candidates({ best, others }: { best: RegistryLinkRow; others: RegistryL
 
 /** One linked NPI: its level, the registry's name (to its page), the NPI, place and evidence. */
 function LinkRow({ link }: { link: RegistryLinkRow }) {
+  const from = useFrom()
   const { registry } = link
   const name = registryName(registry)
   const place = registryPlace(registry)
@@ -167,6 +169,7 @@ function LinkRow({ link }: { link: RegistryLinkRow }) {
       </span>
       <Link
         to={`/npi/${link.npi}`}
+        state={from}
         className="self-start rounded-sm font-medium break-words text-ink underline-offset-4 hover:underline"
       >
         {name ?? 'Name not published'}

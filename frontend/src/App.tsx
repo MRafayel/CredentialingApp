@@ -10,6 +10,7 @@ import { ProviderPage } from './features/provider/ProviderPage.tsx'
 import { ListStateProvider } from './features/providers/ListStateProvider.tsx'
 import { ProvidersPage } from './features/providers/ProvidersPage.tsx'
 import { Atmosphere } from './features/shell/Atmosphere.tsx'
+import { pageKey } from './features/shell/pageKey.ts'
 import { TabBar } from './features/shell/TabBar.tsx'
 import { TopBar } from './features/shell/TopBar.tsx'
 import { NpiPage } from './features/npi/NpiPage.tsx'
@@ -32,16 +33,6 @@ function ScrollToTop() {
     return () => cancelMicrotask(reset)
   }, [])
   return null
-}
-
-/**
- * Pages that share a key do not transition: the add and import sheets open over the list, and
- * the registry dialog over a provider's page.
- */
-function pageKey(pathname: string): string {
-  if (pathname === '/providers/new' || pathname === '/providers/import') return '/providers'
-  const registry = /^(\/providers\/[^/]+)\/registry\/?$/.exec(pathname)
-  return registry?.[1] ?? pathname
 }
 
 export default function App() {
@@ -82,6 +73,7 @@ export default function App() {
                     <Route path="/providers/import" element={<ProvidersPage />} />
                     <Route path="/providers/:id" element={<ProviderPage />} />
                     <Route path="/providers/:id/registry" element={<ProviderPage />} />
+                    <Route path="/providers/:id/record/:recordId" element={<ProviderPage />} />
                     <Route path="/sources" element={<SourcesPage />} />
                     <Route path="*" element={<NotFoundPage />} />
                   </Routes>

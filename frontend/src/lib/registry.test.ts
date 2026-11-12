@@ -6,6 +6,7 @@ import {
   evidenceWords,
   factsSource,
   isNpi,
+  npiPortalUrl,
   registryName,
   registryPlace,
   registrySourceName,
@@ -127,5 +128,13 @@ describe('bestLink', () => {
     const high: NpiLink = { ...none, npi: '1234567893', level: 'high', candidates: 3 }
     expect(bestLink([none])).toBeNull()
     expect(bestLink([high, { ...high, npi: '1234567801', level: 'potential' }])).toBe(high)
+  })
+})
+
+describe('npiPortalUrl', () => {
+  it("is the portal's provider page for the NPI", () => {
+    expect(npiPortalUrl('1234567893')).toBe(
+      'https://npiregistry.cms.hhs.gov/provider-view/1234567893',
+    )
   })
 })

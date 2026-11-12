@@ -792,15 +792,29 @@ export interface components {
     ImportSeverity: 'error' | 'warning'
     /**
      * LicenseBody
-     * @description A professional license.
+     * @description A professional license: its state, and its number when known (omitted or null: the
+     *     provider is licensed in the state, number unknown).
      */
     LicenseBody: {
       /** Number */
-      number: string
+      number?: string | null
       /** State */
       state: string
       /** Kind */
       kind?: string | null
+    }
+    /**
+     * LicenseResponse
+     * @description A professional license as the API returns it; ``number`` is null for a licence state
+     *     alone.
+     */
+    LicenseResponse: {
+      /** Number */
+      number: string | null
+      /** State */
+      state: string
+      /** Kind */
+      kind: string | null
     }
     /**
      * LinkedRecordResponse
@@ -1392,7 +1406,7 @@ export interface components {
       /** Has Date Of Birth */
       has_date_of_birth: boolean
       /** Licenses */
-      licenses: components['schemas']['LicenseBody'][]
+      licenses: components['schemas']['LicenseResponse'][]
       /** Addresses */
       addresses: components['schemas']['AddressBody'][]
       /** Taxonomy Codes */
@@ -1456,7 +1470,7 @@ export interface components {
       /** Has Date Of Birth */
       has_date_of_birth: boolean
       /** Licenses */
-      licenses: components['schemas']['LicenseBody'][]
+      licenses: components['schemas']['LicenseResponse'][]
       /** Addresses */
       addresses: components['schemas']['AddressBody'][]
       /** Taxonomy Codes */

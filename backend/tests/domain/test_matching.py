@@ -721,3 +721,41 @@ def test_the_first_npi_of_a_shared_row_named_as_a_related_party_is_a_related_par
 
     assert (business.level, business.relation) == (MatchLevel.HIGH, RELATED)
     assert (person.level, person.relation) == (MatchLevel.HIGH, RELATED)
+
+
+# --- A licence known by its state alone ------------------------------------------------------
+
+STATE_ONLY = License(state="NY")
+
+
+def test_a_licence_may_be_a_state_alone_but_never_a_number_alone() -> None:
+    assert (STATE_ONLY.number, STATE_ONLY.state) == (None, "NY")
+    with pytest.raises(ValueError, match="state"):
+        License.model_validate({"number": "0012345"})
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        exclusion(),
+        exclusion(license=License(number="0012345", state="NY")),
+        exclusion(last="Othername", first="Blake", license=License(number="0012345", state="NY")),
+        exclusion(middle="Jordan", license=License(number="0012345", state="NJ")),
+        exclusion(first="A.", license=License(number="0012345", state="NY")),
+    ],
+)
+def test_a_state_only_licence_never_changes_a_list_match(record: ExclusionRecord) -> None:
+    alone = match_provider_to_record(individual(middle="Jordan"), record)
+    with_state = match_provider_to_record(
+        individual(middle="Jordan", licenses=(STATE_ONLY,)), record
+    )
+
+    assert with_state == alone
+
+
+def test_a_state_only_licence_is_not_a_licence_only_candidate() -> None:
+    record = exclusion(last="Othername", first="Blake", license=License(number="1", state="NY"))
+
+    result = match_provider_to_record(individual(licenses=(STATE_ONLY,)), record)
+
+    assert result.level is MatchLevel.NONE

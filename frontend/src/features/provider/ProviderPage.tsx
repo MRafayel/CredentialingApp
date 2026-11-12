@@ -11,7 +11,7 @@ import { useNow } from '../../components/useNow.ts'
 import { StatusLabel } from '../../components/Status.tsx'
 import { ApiError, type Provider, type SourceStatus } from '../../lib/api.ts'
 import { plural } from '../../lib/format.ts'
-import { resultLabel } from '../../lib/labels.ts'
+import { identityLabel, resultLabel } from '../../lib/labels.ts'
 import { providerSteps, type StepAction } from '../../lib/monitoring.ts'
 import { displayName } from '../../lib/provider.ts'
 import { factsSource } from '../../lib/registry.ts'
@@ -28,8 +28,10 @@ import {
   useSources,
   useVerdict,
 } from '../../lib/queries.ts'
+import { RecordDetails } from '../lookup/RecordDetails.tsx'
 import { NpiDetails } from '../npi/NpiDetails.tsx'
 import { ProviderMark } from '../providers/ProviderMark.tsx'
+import { Here, type Back } from '../shell/back.ts'
 import { FactsPanel } from './FactsPanel.tsx'
 import { npiShape } from './npi.ts'
 import { NpiCard, NpiCardSkeleton } from './NpiCard.tsx'
@@ -39,7 +41,12 @@ import { Timeline } from './Timeline.tsx'
 import { timelineEntries } from './timeline.ts'
 import { VerdictHero } from './VerdictHero.tsx'
 
-const BACK = { to: '/providers', label: 'Providers' }
+const BACK: Back = { to: '/providers', label: 'Providers' }
+/** An exclusion record over a provider's page. */
+const recordPath = (providerId: string, recordId: string) =>
+  `/providers/${providerId}/record/${recordId}`
+/** The exclusion record's own page, as the Lookup opens it. */
+const recordPage = (recordId: string) => `/lookup/${recordId}`
 /** The NPI card, where every Identity action leads. */
 const NPI_CARD_ID = 'npi-card'
 const CARD_STAGGER = 0.08
@@ -72,7 +79,15 @@ export function ProviderPage() {
     <>
       <PageBar title="Provider" back={BACK} />
       <PageBody>
-        {provider.data ? <Loaded provider={provider.data} /> : <HeaderSkeleton />}
+        {provider.data ? (
+          // Every record or registry page opened from here, or from a dialog over it, leads back
+          // here, never to a dialog's own address (owner, 2026-11-12).
+          <Here value={{ to: `/providers/${provider.data.id}`, label: displayName(provider.data) }}>
+            <Loaded provider={provider.data} />
+          </Here>
+        ) : (
+          <HeaderSkeleton />
+        )}
       </PageBody>
     </>
   )
@@ -102,6 +117,7 @@ function Loaded({ provider }: { provider: Provider }) {
   const changedOnOpen = useSeenOnOpen(provider.id, status)
   const changedAt = changedOnOpen ? (status.data?.changed_at ?? null) : null
   const reduced = useReducedMotion() ?? false
+  const recordHref = (recordId: string) => recordPath(provider.id, recordId)
 
   // Every step action is the NPI card's: find, verify or review the NPI there.
   function act(_action: StepAction) {
@@ -187,84 +203,105 @@ function Loaded({ provider }: { provider: Provider }) {
         </div>
       </div>
 
-      <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
+      {/* On desktop both columns span two rows, a heading row and a content row, so the NPI
+          card and the Facts card start on the same line (the left heading cell is empty). */}
+      <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_320px] lg:grid-rows-[auto_1fr] lg:gap-x-10 lg:gap-y-4">
         <LayoutGroup>
-          <div className="flex min-w-0 flex-col gap-12 lg:gap-14">
-            {provider.npi && latestNpi.data === undefined ? (
-              latestNpi.isError ? (
-                <ErrorNote>{latestNpi.error.message}</ErrorNote>
-              ) : (
-                <NpiCardSkeleton />
-              )
-            ) : (
-              <NpiCard id={NPI_CARD_ID} provider={provider} latest={latestNpi.data ?? null} />
-            )}
-            <motion.section
-              layout="position"
-              transition={FOLLOW}
-              aria-labelledby="results-heading"
-              aria-live="polite"
-              aria-busy={running}
-              className="flex flex-col gap-3"
-            >
-              <h2 id="results-heading" className="mb-2 text-subheading">
-                Results
-              </h2>
-              <AnimatePresence mode="popLayout" initial={false}>
-                {running
-                  ? (expected.length ? expected : [null]).map((source, index) => (
-                      <motion.div
-                        key={`checking-${source?.source_id ?? index}`}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                      >
-                        <ResultCardSkeleton sourceName={source?.display_name ?? 'Checking…'} />
-                      </motion.div>
-                    ))
-                  : shown.map((result, index) => (
-                      <motion.div
-                        key={result.id}
-                        layout="position"
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0 }}
-                        transition={{
-                          duration: 0.26,
-                          ease: [0.22, 1, 0.36, 1],
-                          delay: index * CARD_STAGGER,
-                        }}
-                      >
-                        <ResultCard result={result} sourceName={sourceName(result.source_id)} />
-                      </motion.div>
-                    ))}
-              </AnimatePresence>
-              {!running && verdict.data && shown.length === 0 && (
-                <p className="rounded-card border border-line px-5 py-6 text-body text-ink-muted">
-                  {latest.length
-                    ? `No record in ${plural(latest.length, 'list')}. Each list's answer is under What happened.`
-                    : expected.length
-                      ? `A check covers ${plural(expected.length, 'list')}.`
-                      : 'Run a check to see results here.'}
-                </p>
+          <div className="min-w-0 lg:row-span-2 lg:grid lg:grid-rows-subgrid">
+            {/* The section's heading, level with "Facts" on desktop: the identity in a word
+                and a line, as the step above says it, so the card reads on its own. */}
+            <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 lg:mb-0">
+              <h2 className="text-subheading">Identity</h2>
+              {status.data && (
+                <StatusLabel
+                  label={identityLabel(status.data.identity)}
+                  size={14}
+                  className="text-small"
+                />
               )}
-            </motion.section>
+            </div>
+            <div className="flex min-w-0 flex-col gap-10 lg:gap-12">
+              {provider.npi && latestNpi.data === undefined ? (
+                latestNpi.isError ? (
+                  <ErrorNote>{latestNpi.error.message}</ErrorNote>
+                ) : (
+                  <NpiCardSkeleton />
+                )
+              ) : (
+                <NpiCard id={NPI_CARD_ID} provider={provider} latest={latestNpi.data ?? null} />
+              )}
+              <motion.section
+                layout="position"
+                transition={FOLLOW}
+                aria-labelledby="results-heading"
+                aria-live="polite"
+                aria-busy={running}
+                className="flex flex-col gap-3"
+              >
+                <h2 id="results-heading" className="mb-2 text-subheading">
+                  Results
+                </h2>
+                <AnimatePresence mode="popLayout" initial={false}>
+                  {running
+                    ? (expected.length ? expected : [null]).map((source, index) => (
+                        <motion.div
+                          key={`checking-${source?.source_id ?? index}`}
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                        >
+                          <ResultCardSkeleton sourceName={source?.display_name ?? 'Checking…'} />
+                        </motion.div>
+                      ))
+                    : shown.map((result, index) => (
+                        <motion.div
+                          key={result.id}
+                          layout="position"
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0 }}
+                          transition={{
+                            duration: 0.26,
+                            ease: [0.22, 1, 0.36, 1],
+                            delay: index * CARD_STAGGER,
+                          }}
+                        >
+                          <ResultCard
+                            result={result}
+                            sourceName={sourceName(result.source_id)}
+                            recordHref={recordHref}
+                            recordPage={recordPage}
+                          />
+                        </motion.div>
+                      ))}
+                </AnimatePresence>
+                {!running && verdict.data && shown.length === 0 && (
+                  <p className="rounded-card border border-line px-5 py-6 text-body text-ink-muted">
+                    {latest.length
+                      ? `No record in ${plural(latest.length, 'list')}. Each list's answer is under What happened.`
+                      : expected.length
+                        ? `A check covers ${plural(expected.length, 'list')}.`
+                        : 'Run a check to see results here.'}
+                  </p>
+                )}
+              </motion.section>
 
-            <motion.div layout="position" transition={FOLLOW} className="flex flex-col gap-3">
-              {history.isError && <ErrorNote>{history.error.message}</ErrorNote>}
-              <Timeline
-                entries={timelineEntries(history.data?.pages.flatMap((page) => page.items) ?? [])}
-                provider={provider}
-                sourceName={sourceName}
-                older={{
-                  more: history.hasNextPage,
-                  loading: history.isFetchingNextPage,
-                  load: () => void history.fetchNextPage(),
-                  retentionDays: history.data?.pages[0]?.retention_days ?? null,
-                }}
-              />
-            </motion.div>
+              <motion.div layout="position" transition={FOLLOW} className="flex flex-col gap-3">
+                {history.isError && <ErrorNote>{history.error.message}</ErrorNote>}
+                <Timeline
+                  entries={timelineEntries(history.data?.pages.flatMap((page) => page.items) ?? [])}
+                  provider={provider}
+                  sourceName={sourceName}
+                  older={{
+                    more: history.hasNextPage,
+                    loading: history.isFetchingNextPage,
+                    load: () => void history.fetchNextPage(),
+                    retentionDays: history.data?.pages[0]?.retention_days ?? null,
+                  }}
+                />
+              </motion.div>
+            </div>
           </div>
         </LayoutGroup>
 
@@ -272,6 +309,7 @@ function Loaded({ provider }: { provider: Provider }) {
       </div>
 
       <RegistryModal provider={provider} />
+      <RecordModal provider={provider} />
     </div>
   )
 }
@@ -289,7 +327,9 @@ function FactsColumn({ provider }: { provider: Provider }) {
   const source = lookup.data ? factsSource(lookup.data) : null
   const registry = record && source ? { record, source: source.block, kind: source.kind } : null
   return (
-    <div className={registry ? '' : 'lg:sticky lg:top-28 lg:self-start'}>
+    <div
+      className={`lg:row-span-2 lg:grid lg:grid-rows-subgrid ${registry ? '' : 'lg:sticky lg:top-28 lg:self-start'}`}
+    >
       <FactsPanel provider={provider} registry={registry} />
     </div>
   )
@@ -315,6 +355,38 @@ function RegistryModal({ provider }: { provider: Provider }) {
       {open && provider.npi && (
         <Modal labelledBy={titleId} onClose={close}>
           <NpiDetails npi={provider.npi} embedded titleId={titleId} />
+        </Modal>
+      )}
+    </AnimatePresence>
+  )
+}
+
+/**
+ * An exclusion record over the provider's page at `/providers/:id/record/:recordId`, opened by a
+ * result card's list name: the whole record (`RecordDetails embedded`, without "Check as
+ * provider") in a dialog, closed like the registry's. A record linked from inside opens in the
+ * same dialog (`recordHref`); the route shares the page's key, so nothing transitions.
+ */
+function RecordModal({ provider }: { provider: Provider }) {
+  const recordId = useMatch('/providers/:id/record/:recordId')?.params.recordId
+  const navigate = useNavigate()
+  const titleId = useId()
+  const close = useCallback(
+    () => navigate(`/providers/${provider.id}`, { replace: true }),
+    [navigate, provider.id],
+  )
+  const recordHref = (otherId: string) => recordPath(provider.id, otherId)
+  return (
+    <AnimatePresence>
+      {recordId && (
+        <Modal labelledBy={titleId} onClose={close} contentKey={recordId}>
+          <RecordDetails
+            key={recordId}
+            recordId={recordId}
+            embedded
+            titleId={titleId}
+            recordHref={recordHref}
+          />
         </Modal>
       )}
     </AnimatePresence>

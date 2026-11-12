@@ -15,6 +15,7 @@ import type { MirrorSource } from '../../lib/api.ts'
 import { registryStatusLabel } from '../../lib/labels.ts'
 import { useNpi, type useNpiSearch } from '../../lib/queries.ts'
 import { registryName } from '../../lib/registry.ts'
+import { useFrom } from '../shell/back.ts'
 import { CARD, CARD_LINK } from './cards.ts'
 import { NpiSearchSheet } from './NpiSearchSheet.tsx'
 import { NAME_LIMIT, summaryFacts } from './npiSearch.ts'
@@ -31,6 +32,7 @@ const CAPTION =
  */
 export function RegistryCard({ npi }: { npi: string }) {
   const lookup = useNpi(npi)
+  const from = useFrom()
   if (lookup.isError && !lookup.data) {
     return (
       <ErrorNote
@@ -60,7 +62,7 @@ export function RegistryCard({ npi }: { npi: string }) {
         <div className="min-w-0">
           <p className={CAPTION}>NPI registry</p>
           <h3 className="mt-1.5 text-[17px] leading-snug font-semibold break-words text-ink">
-            <Link to={`/npi/${npi}`} className={CARD_LINK}>
+            <Link to={`/npi/${npi}`} state={from} className={CARD_LINK}>
               {name ?? (record ? 'Name not published' : `NPI ${npi}`)}
             </Link>
           </h3>

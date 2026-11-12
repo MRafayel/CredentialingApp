@@ -286,6 +286,24 @@ async def test_records_with_the_providers_licence_number_are_compared() -> None:
     assert result.summary == "Possible match in Fake New York List: review required"
 
 
+async def test_a_state_only_licence_finds_and_changes_nothing_on_the_lists() -> None:
+    world = _World(individual(licenses=(License(state="NY"),)))
+    listed = exclusion(source_id=STATE, license=License(number="123456", state="NY"))
+    other = exclusion(
+        source_id=STATE, last="Othername", license=License(number="123456", state="NY")
+    )
+    await world.load(FEDERAL)
+    await world.load(STATE, listed, other)
+
+    result = (await world.check())[STATE]
+
+    # The namesake is found by name, as without the licence; the other row is not a candidate.
+    assert result.details["candidates_compared"] == "1"
+    assert result.match is not None
+    assert result.match.level is MatchLevel.POTENTIAL
+    assert result.matched_record_ids == (listed.id,)
+
+
 async def test_a_list_never_loaded_cannot_be_checked() -> None:
     world = _World(_ny_provider())
     await world.load(FEDERAL)

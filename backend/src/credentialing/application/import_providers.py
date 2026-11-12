@@ -98,7 +98,8 @@ class ImportProblemCode(StrEnum):
     LICENSE_STATE_INVALID = "license_state_invalid"
     """The licence state is not two letters: imported without the licence."""
     LICENSE_INCOMPLETE = "license_incomplete"
-    """A licence number without a state, or a state without a number: imported without it."""
+    """A licence number without a state: imported without the licence. A state without a
+    number is a licence state and imported as one (owner, 2026-11-12)."""
     ROLE_UNRECOGNIZED = "role_unrecognized"
     """A role nobody knows: imported with the role a blank cell gets."""
 
@@ -144,6 +145,10 @@ HEADER_SYNONYMS: Final[Mapping[str, ImportColumn]] = {
     **{header_key(column.value): column for column in ImportColumn},
 }
 """Recognized headers (as :func:`header_key` reduces them) and the column each one is."""
+
+_BARE_STATE: Final = header_key("state")
+"""The one licence-state header that may name an address's state: ignored without a licence
+number column."""
 
 
 _PRACTITIONER: Final = ("practitioner", "provider", "clinician", "doctor", "md", "np", "pa")
@@ -397,8 +402,11 @@ def _layout(header: Sequence[str], records: Sequence[tuple[int, list[str]]]) -> 
         columns.append(None if column in columns else column)
     if any(column is not None for column in columns):
         if ImportColumn.LICENSE_STATE in columns and ImportColumn.LICENSE_NUMBER not in columns:
-            # A state without a licence number column is an address's, not a licence's.
-            columns[columns.index(ImportColumn.LICENSE_STATE)] = None
+            index = columns.index(ImportColumn.LICENSE_STATE)
+            if header_key(header[index]) == _BARE_STATE:
+                # A bare "State" without a licence number column is an address's, not a
+                # licence's; a column named for the licence state holds licence states alone.
+                columns[index] = None
         ignored = tuple(
             cell for cell, column in zip(header, columns, strict=True) if column is None and cell
         )
@@ -540,16 +548,15 @@ def _date_of_birth(cell: str | None, now: datetime, draft: _Draft) -> date | Non
 
 
 def _license(number: str | None, state: str | None, draft: _Draft) -> tuple[License, ...]:
-    """The licence when both its number and a two-letter state are given; a warning when
-    only one part is, or the state is not two letters."""
+    """The licence when a two-letter state is given, with its number or as a state alone; a
+    warning when the state is not two letters, or a number has no state."""
     if number is None and state is None:
         return ()
     if state is not None and not _STATE.match(state):
         draft.problem(ImportProblemCode.LICENSE_STATE_INVALID)
         return ()
-    if number is None or state is None:
-        missing = "state" if state is None else "number"
-        draft.problem(ImportProblemCode.LICENSE_INCOMPLETE, f"no licence {missing}")
+    if state is None:
+        draft.problem(ImportProblemCode.LICENSE_INCOMPLETE, "no licence state")
         return ()
     return (License(number=number, state=state.upper()),)
 

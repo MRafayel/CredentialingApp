@@ -17,7 +17,11 @@ from credentialing.domain.models import (
 )
 from credentialing.domain.policies import (
     CANDIDATE_CAP,
+    NO_LICENSE_IN_STATE,
+    OTHER_LICENSE_NUMBER,
     SAME_CITY,
+    SAME_LICENSE,
+    SAME_LICENSE_STATE,
     SAME_STATE,
     SAME_ZIP,
     link_record_to_npis,
@@ -251,3 +255,135 @@ def test_a_provider_without_a_first_name_says_so() -> None:
     )
 
     assert _gap(party, [], 0) == "No match: no first name to search with."
+
+
+# --- A licence known by its state alone (owner, 2026-11-12) ----------------------------------
+
+STATE_ONLY_NY = License(state="NY")
+
+
+def _party(*licenses: License, first: str = "Avery") -> LinkParty:
+    return party_of_provider(individual(first=first, licenses=licenses))
+
+
+def test_a_state_only_licence_matches_a_candidate_licensed_in_that_state() -> None:
+    party = _party(STATE_ONLY_NY)
+    candidate = npi_person(NPI, licenses=(("88-1", "NJ"), ("0012345", "NY")))
+
+    assert evidence(party, candidate)[MatchField.LICENSE] == MatchEvidence(
+        field=MatchField.LICENSE, matched=True, detail=SAME_LICENSE_STATE
+    )
+
+
+def test_a_state_only_licence_against_other_states_says_so() -> None:
+    party = _party(STATE_ONLY_NY)
+    candidate = npi_person(NPI, licenses=(("88-1", "NJ"),))
+
+    assert evidence(party, candidate)[MatchField.LICENSE] == MatchEvidence(
+        field=MatchField.LICENSE,
+        matched=False,
+        detail=NO_LICENSE_IN_STATE.format(state="NY"),
+    )
+    assert NO_LICENSE_IN_STATE.format(state="NY") == "no licence in NY in the registry"
+
+
+def test_a_state_only_licence_without_registry_licences_gives_no_evidence() -> None:
+    assert MatchField.LICENSE not in evidence(_party(STATE_ONLY_NY), npi_person(NPI))
+
+
+@pytest.mark.parametrize("first", ["Avery", "A"])
+@pytest.mark.parametrize("candidates", [1, 3])
+@pytest.mark.parametrize("licensed_in", ["NY", "NJ"])
+def test_a_state_only_licence_never_changes_the_level(
+    first: str, candidates: int, licensed_in: str
+) -> None:
+    candidate = npi_person(NPI, licenses=(("0012345", licensed_in),))
+
+    alone = match_party_to_npi(_party(first=first), candidate, candidates=candidates)
+    with_state = match_party_to_npi(
+        _party(STATE_ONLY_NY, first=first), candidate, candidates=candidates
+    )
+
+    assert with_state.level is alone.level
+    assert MatchField.LICENSE in {item.field for item in with_state.evidence}
+
+
+def test_a_name_only_match_with_a_matching_state_stays_potential() -> None:
+    candidate = npi_person(NPI, licenses=(("0012345", "NY"),))
+
+    result = match_party_to_npi(_party(STATE_ONLY_NY), candidate, candidates=1)
+
+    assert result.level is MatchLevel.POTENTIAL
+
+
+def test_only_the_same_number_is_strong() -> None:
+    candidate = npi_person(NPI, licenses=(("0012345", "NY"),))
+
+    numbered = match_party_to_npi(
+        _party(License(number="001-2345", state="NY"), first="A"), candidate, candidates=3
+    )
+    state_only = match_party_to_npi(_party(STATE_ONLY_NY, first="A"), candidate, candidates=3)
+
+    assert (
+        evidence(_party(License(number="0012345", state="NY")), candidate)[
+            MatchField.LICENSE
+        ].detail
+        == SAME_LICENSE
+    )
+    assert (numbered.level, state_only.level) == (MatchLevel.POTENTIAL, MatchLevel.AMBIGUOUS)
+
+
+def test_a_numbered_licence_speaks_before_a_state_alone() -> None:
+    party = _party(License(number="111", state="NY"), License(state="NJ"))
+    candidate = npi_person(NPI, licenses=(("999", "NY"), ("5", "NJ")))
+
+    assert evidence(party, candidate)[MatchField.LICENSE].detail == (
+        OTHER_LICENSE_NUMBER.format(state="NY")
+    )
+    assert match_party_to_npi(party, candidate, candidates=1).level is MatchLevel.AMBIGUOUS
+
+
+def test_a_state_alone_never_hides_a_numbered_difference() -> None:
+    numbered = License(number="111", state="NY")
+    candidate = npi_person(NPI, licenses=(("5", "NJ"),))
+
+    with_state = match_party_to_npi(_party(numbered, License(state="NJ")), candidate, candidates=1)
+
+    assert with_state == match_party_to_npi(_party(numbered), candidate, candidates=1)
+    assert with_state.level is MatchLevel.AMBIGUOUS
+    assert evidence(_party(License(state="NJ")), candidate)[MatchField.LICENSE].detail == (
+        SAME_LICENSE_STATE
+    )
+
+
+def test_a_matching_licence_state_breaks_a_tie_between_suggestions() -> None:
+    first, second = make_npi("131000011"), make_npi("131000012")
+    candidates = [
+        npi_person(first, licenses=(("5", "NJ"),)),
+        npi_person(second, licenses=(("6", "NY"),)),
+    ]
+
+    plain = suggest_npis(_party(), candidates, 2)
+    licensed = suggest_npis(_party(STATE_ONLY_NY), candidates, 2)
+
+    assert [(npi, match.level) for npi, match in plain] == [
+        (first, MatchLevel.AMBIGUOUS),
+        (second, MatchLevel.AMBIGUOUS),
+    ]
+    assert [(npi, match.level) for npi, match in licensed] == [
+        (second, MatchLevel.AMBIGUOUS),
+        (first, MatchLevel.AMBIGUOUS),
+    ]
+
+
+def test_a_matching_licence_state_never_outranks_a_better_level() -> None:
+    best, other = make_npi("131000021"), make_npi("131000022")
+    candidates = [
+        npi_person(best, practice=SAMPLEVILLE),
+        npi_person(other, licenses=(("6", "NY"),)),
+    ]
+    party = party_of_provider(
+        individual(licenses=(STATE_ONLY_NY,)).model_copy(update={"addresses": (SAMPLEVILLE,)})
+    )
+
+    assert [npi for npi, _ in suggest_npis(party, candidates, 2)] == [best, other]

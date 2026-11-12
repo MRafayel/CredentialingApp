@@ -9,12 +9,15 @@ import type { NpiRecord } from '../../lib/api.ts'
 import { entityKindWord } from '../../lib/provider.ts'
 import { registryPlace, type FactsSource } from '../../lib/registry.ts'
 import { Fact } from '../provider/FactsPanel.tsx'
+import { useFrom } from '../shell/back.ts'
 
-/** An NPI as a link to its registry page. */
+/** An NPI as a link to its registry page, leading back to the page around it. */
 export function NpiLink({ npi }: { npi: string }) {
+  const from = useFrom()
   return (
     <Link
       to={`/npi/${npi}`}
+      state={from}
       className="rounded-sm font-mono font-medium text-accent-strong underline-offset-4 hover:underline"
     >
       {npi}

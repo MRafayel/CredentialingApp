@@ -39,8 +39,11 @@ export function addedLicences(
   provider: Pick<Provider, 'licenses'>,
   record: Pick<NpiRecord, 'taxonomies'>,
 ): RegistryLicence[] {
+  // A state-only roster licence covers no numbered registry licence: that one is still added.
   const seen = new Set(
-    provider.licenses.map((licence) => licenceKey(licence.state, licence.number)),
+    provider.licenses
+      .filter((licence) => licence.number)
+      .map((licence) => licenceKey(licence.state, licence.number ?? '')),
   )
   const added: RegistryLicence[] = []
   for (const taxonomy of primaryFirst(record.taxonomies)) {

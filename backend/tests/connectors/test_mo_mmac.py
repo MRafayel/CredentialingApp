@@ -53,7 +53,7 @@ def test_rows_differing_only_in_provider_type_are_one_record(parsed: ParsedList)
 def test_rows_with_a_licence_per_type_stay_separate(parsed: ParsedList) -> None:
     records = _record(parsed, "MOCKVILLE ADULT DAY CENTER")
 
-    assert sorted(r.license.number for r in records if r.license) == ["532", "756"]
+    assert sorted(r.license.number or "" for r in records if r.license) == ["532", "756"]
 
 
 def test_a_person_with_a_text_date_and_another_states_licence(parsed: ParsedList) -> None:

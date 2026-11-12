@@ -82,6 +82,14 @@ describe('addedLicences', () => {
     expect(added).toEqual([{ state: 'CT', number: '012345' }])
     expect(addedLicences({ licenses: [] }, { taxonomies: [] })).toEqual([])
   })
+
+  it('still adds a numbered registry licence when the roster has only the state', () => {
+    const added = addedLicences(
+      { licenses: [{ state: 'NY', number: null, kind: null }] },
+      { taxonomies: [taxonomy({ license_state: 'NY', license_number: '012345', primary: true })] },
+    )
+    expect(added).toEqual([{ state: 'NY', number: '012345' }])
+  })
 })
 
 describe('addedPlace', () => {

@@ -36,6 +36,9 @@ export function registryPlace(
   return parts.length ? parts.join(', ') : null
 }
 
+/** The NPPES search portal's own page for an NPI, where a person can see the official record. */
+export const npiPortalUrl = (npi: string) => `https://npiregistry.cms.hhs.gov/provider-view/${npi}`
+
 /** The source behind a mirror or live block, named for people. */
 export function registrySourceName(sourceId: string): string {
   switch (sourceId) {

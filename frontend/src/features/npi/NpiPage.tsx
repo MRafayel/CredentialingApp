@@ -1,20 +1,24 @@
 import { motion } from 'motion/react'
 import type { ReactNode } from 'react'
-import { useParams } from 'react-router'
+import { useLocation, useParams } from 'react-router'
 import { ButtonLink } from '../../components/Button.tsx'
 import { Icon } from '../../components/Icon.tsx'
 import { rise, stagger } from '../../components/motion.ts'
 import { PageBar, PageBody } from '../../components/PageBar.tsx'
 import { TONES } from '../../components/tones.ts'
-import { isNpi } from '../../lib/registry.ts'
+import { useNpi } from '../../lib/queries.ts'
+import { isNpi, registryName } from '../../lib/registry.ts'
+import { backFrom, Here, useHere, type Back } from '../shell/back.ts'
 import { NpiDetails } from './NpiDetails.tsx'
 
-const BACK = { to: '/lookup', label: 'Lookup' }
+/** A registry page's one natural parent. */
+const BACK: Back = { to: '/lookup', label: 'Lookup' }
 
 /**
  * One NPI as the registry knows it: the backend's status first, with the way to track it as a
  * provider and to ask the live registry, then the exclusion lists that publish this NPI and
- * what NPPES records about it. A path that is not ten digits is not an NPI.
+ * what NPPES records about it. A path that is not ten digits is not an NPI. Back leads to the
+ * page that opened it (`state.from`), else the Lookup; the links inside lead back here.
  */
 export function NpiPage() {
   const { npi = '' } = useParams()
@@ -22,13 +26,17 @@ export function NpiPage() {
 }
 
 function Registered({ npi }: { npi: string }) {
+  const back = backFrom(useLocation().state, BACK)
+  // The same query `NpiDetails` reads (one request): links inside name the page by its title.
+  const record = useNpi(npi).data?.record
+  const here = useHere((record && registryName(record)) ?? `NPI ${npi}`)
   return (
-    <>
-      <PageBar title="NPI" back={BACK} />
+    <Here value={here}>
+      <PageBar title="NPI" back={back} />
       <PageBody>
-        <NpiDetails npi={npi} />
+        <NpiDetails npi={npi} back={back} />
       </PageBody>
-    </>
+    </Here>
   )
 }
 

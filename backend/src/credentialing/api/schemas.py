@@ -95,11 +95,21 @@ class PersonNameResponse(Schema):
 
 
 class LicenseBody(Schema):
-    """A professional license."""
+    """A professional license: its state, and its number when known (omitted or null: the
+    provider is licensed in the state, number unknown)."""
 
-    number: str = Field(min_length=1)
+    number: str | None = Field(default=None, min_length=1)
     state: str = Field(pattern=r"^[A-Z]{2}$")
     kind: str | None = None
+
+
+class LicenseResponse(Schema):
+    """A professional license as the API returns it; ``number`` is null for a licence state
+    alone."""
+
+    number: str | None
+    state: str
+    kind: str | None
 
 
 class AddressBody(Schema):
@@ -142,7 +152,7 @@ class ProviderResponse(Schema):
     organization_name: str | None
     npi: str | None
     has_date_of_birth: bool
-    licenses: list[LicenseBody]
+    licenses: list[LicenseResponse]
     addresses: list[AddressBody]
     taxonomy_codes: list[str]
     created_at: datetime
@@ -159,7 +169,9 @@ class ProviderResponse(Schema):
             organization_name=provider.organization_name,
             npi=provider.npi,
             has_date_of_birth=provider.date_of_birth is not None,
-            licenses=[LicenseBody.model_validate(item.model_dump()) for item in provider.licenses],
+            licenses=[
+                LicenseResponse.model_validate(item.model_dump()) for item in provider.licenses
+            ],
             addresses=[
                 # A roster address never has a country (customers enter U.S. addresses).
                 AddressBody.model_validate(item.model_dump(exclude={"country"}))

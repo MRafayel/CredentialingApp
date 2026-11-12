@@ -17,6 +17,7 @@ import {
   searchedScope,
 } from '../../lib/lookup.ts'
 import { displayName } from '../../lib/provider.ts'
+import { useFrom } from '../shell/back.ts'
 import { CARD, CARD_LINK } from './cards.ts'
 import { stateName } from './map/mapInfo.ts'
 
@@ -88,6 +89,7 @@ export function LookupRow({
   /** "Check as provider"; left out where the person already looks at the provider. */
   onCheck?: () => void
 }) {
+  const from = useFrom()
   const label = recordLabel(record)
   const place = placeText(record)
   const extras: { key: string; node: ReactNode }[] = []
@@ -107,7 +109,7 @@ export function LookupRow({
             {sourceName}
           </p>
           <h3 className="mt-1.5 text-[17px] leading-snug font-semibold break-words text-ink">
-            <Link to={`/lookup/${record.id}`} className={CARD_LINK}>
+            <Link to={`/lookup/${record.id}`} state={from} className={CARD_LINK}>
               {displayName(record)}
             </Link>
           </h3>
@@ -156,7 +158,7 @@ export function LookupRow({
           )}
           {record.license && (
             <span>
-              Licence <span className="font-mono">{record.license.number}</span> ·{' '}
+              Licence <span className="font-mono">{record.license.number ?? '—'}</span> ·{' '}
               {record.license.state}
             </span>
           )}

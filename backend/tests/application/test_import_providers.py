@@ -538,23 +538,34 @@ async def test_an_npi_cell_without_digits_is_blank(cell: str) -> None:
     assert (row.npi, row.problems) == (None, ())
 
 
-async def test_a_licence_needs_its_number_and_a_two_letter_state() -> None:
+async def test_a_licence_needs_a_two_letter_state_and_may_have_no_number() -> None:
     report = await _preview(
         "Last,First,License Number,License State\n"
         "Testperson,Avery,0012345,ny\n"
         "Sampleperson,Blake,0012346,New York\n"
         "Exampleperson,Casey,0012347,\n"
-        "Otherperson,Dana,,NJ\n"
+        "Otherperson,Dana,,nj\n"
     )
 
-    full, long_state, no_state, no_number = report.rows
+    full, long_state, no_state, state_only = report.rows
     assert _input(full).licenses == (License(number="0012345", state="NY"),)
     assert _codes(long_state) == [ImportProblemCode.LICENSE_STATE_INVALID]
     assert _codes(no_state) == [ImportProblemCode.LICENSE_INCOMPLETE]
-    assert _codes(no_number) == [ImportProblemCode.LICENSE_INCOMPLETE]
-    for row in (long_state, no_state, no_number):
+    assert [problem.detail for problem in no_state.problems] == ["no licence state"]
+    for row in (long_state, no_state):
         assert _input(row).licenses == ()
-    assert (report.importable, report.with_warnings, report.rejected) == (4, 3, 0)
+    assert (_codes(state_only), _input(state_only).licenses) == ([], (License(state="NJ"),))
+    assert (report.importable, report.with_warnings, report.rejected) == (4, 2, 0)
+
+
+async def test_a_licence_state_column_alone_holds_licence_states() -> None:
+    report = await _preview("Last,First,License State\nTestperson,Avery,NY\nSampleperson,Blake,\n")
+
+    assert report.columns == (ImportColumn.LAST, ImportColumn.FIRST, ImportColumn.LICENSE_STATE)
+    assert report.ignored_columns == ()
+    licensed, unlicensed = report.rows
+    assert (_codes(licensed), _input(licensed).licenses) == ([], (License(state="NY"),))
+    assert (_codes(unlicensed), _input(unlicensed).licenses) == ([], ())
 
 
 # --- Duplicates ----------------------------------------------------------------------------

@@ -8,15 +8,20 @@ import { SourceLine } from '../../components/Provenance.tsx'
 import { Skeleton } from '../../components/Skeleton.tsx'
 import { StatusLabel } from '../../components/Status.tsx'
 import { Ago } from '../../components/Time.tsx'
+import { RegistryLink as SharedRegistryLink } from '../../components/RegistryLink.tsx'
 import type { LiveCheck, NpiSummary } from '../../lib/api.ts'
 import { npiStatusLabel, outcomeWord } from '../../lib/labels.ts'
 import { registryName, registrySourceName } from '../../lib/registry.ts'
+import { useFrom } from '../shell/back.ts'
 import { CARD, CARD_LINK } from './cards.ts'
 import { summaryFacts } from './npiSearch.ts'
 
 /* The registry's small pieces, shared by the lookup, the live search and the registry page. */
 
-export { RegistryLink } from '../../components/RegistryLink.tsx'
+/** The shared "Registry" link, leading back to the page around it. */
+export function RegistryLink({ npi, className }: { npi: string; className?: string }) {
+  return <SharedRegistryLink npi={npi} className={className} state={useFrom()} />
+}
 
 /**
  * Where a live registry answer comes from. A request the registry answered reads as the shared
@@ -49,6 +54,7 @@ export function LiveLine({ live, className }: { live: LiveCheck; className?: str
  * registered, what the row says about the party, the NPI and the row's own status.
  */
 export function RegistryRow({ record }: { record: NpiSummary }) {
+  const from = useFrom()
   const name = registryName(record)
   const facts = summaryFacts(record)
   return (
@@ -56,7 +62,7 @@ export function RegistryRow({ record }: { record: NpiSummary }) {
       <div className="flex flex-col gap-2 px-5 py-4 @xl:flex-row @xl:items-center @xl:gap-6">
         <div className="min-w-0 flex-1">
           <h3 className="text-title break-words text-ink">
-            <Link to={`/npi/${record.npi}`} className={CARD_LINK}>
+            <Link to={`/npi/${record.npi}`} state={from} className={CARD_LINK}>
               {name ?? 'Name not published'}
             </Link>
           </h3>

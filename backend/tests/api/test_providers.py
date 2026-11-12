@@ -172,6 +172,47 @@ async def test_register_then_get(client: httpx2.AsyncClient) -> None:
     assert fetched.json() == payload
 
 
+async def test_a_licence_may_be_a_state_alone(client: httpx2.AsyncClient) -> None:
+    body = {
+        "entity_kind": "individual",
+        "person_name": {"last": "Testperson", "first": "Avery"},
+        "licenses": [
+            {"state": "NY"},
+            {"number": None, "state": "NJ"},
+            {"number": "1", "state": "CT"},
+        ],
+    }
+
+    created = await client.post("/providers", json=body, headers=HEADERS)
+
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["licenses"] == [
+        {"number": None, "state": "NY", "kind": None},
+        {"number": None, "state": "NJ", "kind": None},
+        {"number": "1", "state": "CT", "kind": None},
+    ]
+    fetched = await client.get(f"/providers/{payload['id']}", headers=HEADERS)
+    assert fetched.json() == payload
+
+
+@pytest.mark.parametrize(
+    "licence", [{"number": "123456"}, {"number": "", "state": "NY"}, {"state": "New York"}]
+)
+async def test_a_licence_number_needs_its_state(
+    client: httpx2.AsyncClient, licence: dict[str, object]
+) -> None:
+    body = {
+        "entity_kind": "individual",
+        "person_name": {"last": "Testperson", "first": "Avery"},
+        "licenses": [licence],
+    }
+
+    response = await client.post("/providers", json=body, headers=HEADERS)
+
+    assert response.status_code == 422
+
+
 async def test_a_new_provider_is_not_checked(client: httpx2.AsyncClient) -> None:
     body = {"entity_kind": "individual", "person_name": {"last": "Testperson", "first": "Avery"}}
     created = (await client.post("/providers", json=body, headers=HEADERS)).json()

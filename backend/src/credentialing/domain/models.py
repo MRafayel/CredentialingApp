@@ -69,9 +69,15 @@ class Address(DomainModel):
 
 
 class License(DomainModel):
-    """A professional license: its number and the issuing state."""
+    """A professional license: its number and the issuing state.
 
-    number: str
+    ``number`` is None when only the state is known ("licensed in NY", owner, 2026-11-12): a
+    known licence state, used as evidence only (it helps find the provider in the NPI
+    registry, against the registry's taxonomy licence states). A licence without a number
+    never equals another licence, and a number is never known without its state.
+    """
+
+    number: str | None = None
     state: StateCode
     kind: str | None = None
 

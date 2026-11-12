@@ -7,20 +7,25 @@ import { settle } from './motion.ts'
  * A large modal on the native <dialog>, for a whole page's content over the current one: inset
  * 4 % on desktop, the full width from 6 % down on a phone, its own scroll, and an X that stays in
  * view while it scrolls. Escape, the X and a click on the scrim close it. Render it inside
- * AnimatePresence so it fades out. `labelledBy` is the id of the content's title.
+ * AnimatePresence so it fades out. `labelledBy` is the id of the content's title. A new
+ * `contentKey` (another page opened inside the dialog) starts the content over: scrolled to its
+ * top, with focus on the panel, since the link that opened it is gone.
  */
 export function Modal({
   labelledBy,
   onClose,
+  contentKey,
   children,
 }: {
   labelledBy: string
   onClose: () => void
+  contentKey?: string
   children: ReactNode
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
+  const shownKey = useRef(contentKey)
 
   useEffect(() => {
     closeRef.current = onClose
@@ -47,6 +52,13 @@ export function Modal({
       element.close()
     }
   }, [])
+
+  useEffect(() => {
+    if (shownKey.current === contentKey) return
+    shownKey.current = contentKey
+    panel.current?.scrollTo({ top: 0 })
+    panel.current?.focus({ preventScroll: true })
+  }, [contentKey])
 
   return (
     <dialog
