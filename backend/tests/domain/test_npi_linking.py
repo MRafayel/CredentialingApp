@@ -145,6 +145,43 @@ def test_the_same_licence_number_and_state_is_high() -> None:
     assert evidence(record, candidate)[MatchField.LICENSE].detail == "same state and number"
 
 
+def test_a_licence_the_same_by_its_digits_is_high_and_shows_both_texts() -> None:
+    # New York pads to eight digits; the registry writes six, or a profession's letter first.
+    record = exclusion(license=License(number="00000551", state="NY"))
+    padded = npi_person(NPI, licenses=(("000551", "NY"),))
+    prefixed = npi_person(NPI, licenses=(("F000551", "NY"),))
+
+    assert level(record, padded, candidates=7) is MatchLevel.HIGH
+    assert evidence(record, padded)[MatchField.LICENSE] == MatchEvidence(
+        field=MatchField.LICENSE, matched=True, detail="same number 551: 00000551 and 000551"
+    )
+    # Three digits are too few to stand alone against a letter on one side.
+    assert level(record, prefixed, candidates=1) is MatchLevel.AMBIGUOUS
+    assert evidence(record, prefixed)[MatchField.LICENSE].detail == "another number in NY"
+
+
+def test_the_same_digits_with_differing_parts_around_them_contradict() -> None:
+    record = exclusion(license=License(number="RN123456", state="NY"))
+    candidate = npi_person(NPI, licenses=(("LPN123456", "NY"), ("123456", "NJ")))
+
+    assert level(record, candidate, candidates=1) is MatchLevel.AMBIGUOUS
+    assert evidence(record, candidate)[MatchField.LICENSE] == MatchEvidence(
+        field=MatchField.LICENSE,
+        matched=False,
+        detail="same digits 123456, but RN123456 and LPN123456 differ around them",
+    )
+
+
+def test_the_best_licence_comparison_speaks() -> None:
+    record = exclusion(license=License(number="RN123456", state="NY"))
+    candidate = npi_person(NPI, licenses=(("LPN123456", "NY"), ("000123456", "NY")))
+
+    assert level(record, candidate, candidates=7) is MatchLevel.HIGH
+    assert evidence(record, candidate)[MatchField.LICENSE].detail == (
+        "same number 123456: RN123456 and 000123456"
+    )
+
+
 def test_a_licence_that_differs_is_a_contradiction_and_says_how() -> None:
     record = exclusion(license=License(number="123456", state="NY"))
 

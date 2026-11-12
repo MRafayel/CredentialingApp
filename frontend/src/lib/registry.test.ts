@@ -112,6 +112,18 @@ describe('evidenceWords', () => {
       differs: ['licence: another number in NY', 'middle name'],
     })
   })
+
+  it('keeps how a licence agreed, so what was set aside is seen', () => {
+    expect(
+      evidenceWords([
+        { field: 'license', matched: true, detail: 'same number 10213: 10213 and PSY10213' },
+        { field: 'license', matched: true, detail: null },
+      ]),
+    ).toEqual({
+      matched: ['licence: same number 10213: 10213 and PSY10213', 'licence'],
+      differs: [],
+    })
+  })
 })
 
 describe('bestLink', () => {

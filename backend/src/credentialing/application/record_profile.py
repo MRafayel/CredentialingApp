@@ -29,8 +29,8 @@ from credentialing.domain.models import ConnectorCapabilities, ExclusionRecord, 
 from credentialing.domain.policies import (
     FreshnessPolicyTable,
     level_rank,
-    license_key,
     record_status,
+    same_license,
     shares_party_name,
 )
 from credentialing.domain.ports import (
@@ -387,14 +387,7 @@ def _same_npi(record: ExclusionRecord, other: ExclusionRecord) -> _Link | None:
 
 def _same_license(record: ExclusionRecord, other: ExclusionRecord) -> _Link | None:
     own, theirs = record.license, other.license
-    if (
-        own
-        and theirs
-        and own.number
-        and theirs.number
-        and own.state == theirs.state
-        and license_key(own.number) == license_key(theirs.number)
-    ):
+    if own and theirs and same_license(own, theirs):
         return RecordLink.BY_LICENSE, None
     return None
 

@@ -88,12 +88,14 @@ def _discovery(recs: Template) -> Template:
     """The discovery statement over ``recs``, the parties to find: one row per party with
     ``id``, ``entity_kind``, ``npi``, ``aliases``, the name keys (``last_key``, ``first_key``,
     ``middle_key``, ``org_key``) and arrays of its places and licences (``zips``, ``cities``
-    with ``states`` pairwise, ``licenses`` with ``license_states`` pairwise for the numbered
-    licences, ``licensed_states`` for every licence state, numbered or not). Records and
+    with ``states`` pairwise, ``licenses`` (by ``license_key``), ``license_digits`` (by
+    ``license_digits``) and ``license_states`` pairwise for the numbered licences,
+    ``licensed_states`` for every licence state, numbered or not). Records and
     roster providers go through this one statement, so their discovery cannot drift.
 
     Candidates are ranked by cheap evidence, highest score first, then by NPI: the same
-    5-digit ZIP 4, the same licence (number and state) 4, the same city and state 2, a
+    5-digit ZIP 4, the same licence (as written or by its digits, in the state) 4, the same
+    city and state 2, a
     numbered taxonomy licence in one of the party's licence states 1 (below city and state,
     so a licence state alone only breaks ties), the same middle initial 1, an active NPI 1."""
     return t"""
@@ -184,10 +186,12 @@ def _discovery(recs: Template) -> Template:
                         ], false)::int * 4
                         + exists (
                             select 1 from jsonb_array_elements(n.taxonomies) as t
-                                cross join unnest(r.licenses, r.license_states)
-                                    as l (license, state)
+                                cross join unnest(
+                                    r.licenses, r.license_digits, r.license_states
+                                ) as l (license, digits, state)
                             where t->>'license_state' = l.state
-                              and license_key(t->>'license_number') = l.license
+                              and (license_key(t->>'license_number') = l.license
+                                   or license_digits(t->>'license_number') = l.digits)
                         )::int * 4
                         + exists (
                             select 1 from jsonb_array_elements(n.taxonomies) as t
@@ -318,6 +322,7 @@ class PostgresNpiLinkRepository:
                 array[name_key(e.address->>'city')] as cities,
                 array[e.address->>'state'] as states,
                 array[license_key(e.license_number)] as licenses,
+                array[license_digits(e.license_number)] as license_digits,
                 array[e.license_state] as license_states,
                 array[e.license_state] as licensed_states
             from exclusion_records e
@@ -365,6 +370,12 @@ class PostgresNpiLinkRepository:
                         with ordinality as u (l, i)
                     order by i
                 ) as licenses,
+                array(
+                    select license_digits(l)
+                    from unnest({[item.number for item in numbered]}::text[])
+                        with ordinality as u (l, i)
+                    order by i
+                ) as license_digits,
                 {[item.state for item in numbered]}::text[] as license_states,
                 {[item.state for item in party.licenses]}::text[] as licensed_states
         """

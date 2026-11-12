@@ -9,6 +9,7 @@ is decided here once, so no screen ever derives a status of its own.
 import re
 from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime, timedelta
+from enum import Enum
 from typing import Final, NamedTuple, Self
 
 from pydantic import Field, model_validator
@@ -483,19 +484,16 @@ def _match_individual(provider: Provider, name: PersonName, record: ExclusionRec
         if not same_birth_date:
             return _result(MatchLevel.NONE, tuple(evidence))
 
-    listed = record.license
-    same_license = listed is not None and any(
-        _same_license(own, listed) for own in provider.licenses
-    )
-    if same_license:
-        evidence.append(MatchEvidence(field=MatchField.LICENSE, matched=True))
+    licence = _listed_license_evidence(provider.licenses, record.license)
+    if licence:
+        evidence.append(licence)
 
     if level is MatchLevel.POTENTIAL:
         if same_birth_date:
             level = MatchLevel.HIGH
-        elif middle and not middle.matched:
+        elif (middle and not middle.matched) or (licence and not licence.matched):
             level = MatchLevel.AMBIGUOUS
-        elif (middle and middle.matched) or same_license:
+        elif (middle and middle.matched) or licence:
             level = MatchLevel.HIGH
     return _result(level, tuple(evidence))
 
@@ -583,6 +581,15 @@ def _match_organization(
 SAME_LICENSE: Final = "same state and number"
 """Licence evidence: a numbered licence equal by :func:`license_key` in the same state."""
 
+SAME_LICENSE_NUMBER: Final = "same number {digits}: {own} and {theirs}"
+"""Licence evidence (a template): the same number in the same state once padding and a part
+written on one side only are set aside (:func:`compare_license_numbers`), both texts shown so
+a person sees what was set aside."""
+
+LICENSE_AFFIX_DIFFERS: Final = "same digits {digits}, but {own} and {theirs} differ around them"
+"""Licence evidence (a template, never matched): the same digits in the same state, but both
+sides carry other parts and they differ ("RN" against "LPN"): a person decides."""
+
 SAME_LICENSE_STATE: Final = "same licence state"
 """NPI licence evidence: a licence known by its state alone, and the candidate reports a
 taxonomy licence in that state. Evidence that orders candidates, never a match level."""
@@ -610,13 +617,10 @@ def _license_only(
     ``name_evidence`` is what the name comparison found; when it found nothing, the evidence
     records ``name_field`` as not matched so the explanation says why a person must look.
     """
-    listed = record.license
-    if listed is None or not any(_same_license(own, listed) for own in provider.licenses):
+    licence = _listed_license_evidence(provider.licenses, record.license)
+    if licence is None:
         return _result(MatchLevel.NONE, tuple(name_evidence))
-    evidence = [
-        MatchEvidence(field=MatchField.LICENSE, matched=True, detail=SAME_LICENSE),
-        *(name_evidence or [MatchEvidence(field=name_field, matched=False)]),
-    ]
+    evidence = [licence, *(name_evidence or [MatchEvidence(field=name_field, matched=False)])]
     if provider.date_of_birth and record.date_of_birth:
         same_birth_date = provider.date_of_birth == record.date_of_birth
         evidence.append(MatchEvidence(field=MatchField.DATE_OF_BIRTH, matched=same_birth_date))
@@ -635,12 +639,129 @@ def license_key(number: str) -> str:
     return "".join(char for char in number if char.isalnum()).upper()
 
 
-def _same_license(own: License, other: License) -> bool:
-    """The same licence: both numbered, in the same state, equal by :func:`license_key`. A
-    licence without a number (a state alone) never equals another."""
-    if own.number is None or other.number is None:
+MIN_LICENSE_DIGITS: Final = 4
+"""The fewest digits a licence number needs before its digits alone, a part written on one
+side set aside, say "the same number" (owner, 2026-11-12). A shorter number is the same only
+as written, or padded with zeros."""
+
+_DIGIT_RUN: Final = re.compile(r"[0-9]+")
+
+
+class LicenseMatch(Enum):
+    """How two licence numbers of one state compare (:func:`compare_license_numbers`)."""
+
+    SAME = "same"
+    """Equal by :func:`license_key`: the same text but for punctuation and case."""
+    SAME_NUMBER = "same_number"
+    """The same digits, differing only by zero padding, or by a part (a profession's letters,
+    a code, a suffix) that one side writes and the other leaves out."""
+    AFFIX_DIFFERS = "affix_differs"
+    """The same digits, but both sides write a part around them and the parts differ: as
+    likely two licences of two boards as one licence. A person decides."""
+    DIFFERENT = "different"
+
+
+_LICENSE_RANK: Final = {match: rank for rank, match in enumerate(LicenseMatch)}
+
+
+def license_digits(number: str) -> str:
+    """A licence number as its digits say it: the longest run of digits (the first of them
+    when several are as long), without leading zeros; "" when it has no digit. The SQL
+    function ``license_digits`` is the same rule, used on the database side of every
+    comparison that finds licences by their digits."""
+    return _license_parts(number)[0]
+
+
+def _license_parts(number: str) -> tuple[str, str]:
+    """``(digits, rest)``: :func:`license_digits` and the letters and digits written around
+    that run, by :func:`license_key`."""
+    runs = list(_DIGIT_RUN.finditer(number))
+    if not runs:
+        return "", license_key(number)
+    longest = max(runs, key=lambda run: len(run.group()))
+    rest = number[: longest.start()] + number[longest.end() :]
+    return longest.group().lstrip("0"), license_key(rest)
+
+
+def compare_license_numbers(own: str, theirs: str) -> LicenseMatch:
+    """How two licence numbers of the same state compare (owner, 2026-11-12: the lists and
+    NPPES pad one licence differently and write a profession's letters or code on one side
+    only, so "as written" alone matched 4 of 1,326 New York pairs).
+
+    ``SAME`` when equal by :func:`license_key`. Otherwise the numbers are read by their
+    digits (:func:`license_digits`, the longest run without leading zeros) and the rest
+    written around them: ``SAME_NUMBER`` when the digits agree and the rests are equal (zero
+    padding only, whatever the length), or the digits have at least
+    :data:`MIN_LICENSE_DIGITS` and only one side writes a rest ("PSY10213" and "10213",
+    "18-000869" and "00000869"); ``AFFIX_DIFFERS`` when the digits agree, are long enough,
+    and both rests are written but differ ("RN123456" and "LPN123456", "036-123456" and
+    "043-123456"); ``DIFFERENT`` otherwise, including digits too short to stand alone. The
+    state is the caller's to check: a number never matches across states.
+    """
+    own_key, their_key = license_key(own), license_key(theirs)
+    if not own_key or not their_key:
+        return LicenseMatch.DIFFERENT
+    if own_key == their_key:
+        return LicenseMatch.SAME
+    own_digits, own_rest = _license_parts(own)
+    their_digits, their_rest = _license_parts(theirs)
+    if not own_digits or own_digits != their_digits:
+        return LicenseMatch.DIFFERENT
+    if own_rest == their_rest:
+        return LicenseMatch.SAME_NUMBER
+    if len(own_digits) < MIN_LICENSE_DIGITS:
+        return LicenseMatch.DIFFERENT
+    if own_rest and their_rest:
+        return LicenseMatch.AFFIX_DIFFERS
+    return LicenseMatch.SAME_NUMBER
+
+
+def same_license(own: License, other: License) -> bool:
+    """The same licence: both numbered, in the same state, ``SAME`` or ``SAME_NUMBER`` by
+    :func:`compare_license_numbers`. A licence without a number (a state alone) never equals
+    another, and ``AFFIX_DIFFERS`` is not "the same"."""
+    if own.number is None or other.number is None or own.state != other.state:
         return False
-    return own.state == other.state and license_key(own.number) == license_key(other.number)
+    return compare_license_numbers(own.number, other.number) in _SAME_LICENSES
+
+
+_SAME_LICENSES: Final = frozenset({LicenseMatch.SAME, LicenseMatch.SAME_NUMBER})
+
+
+def _license_number_evidence(own: str, theirs: str, match: LicenseMatch) -> MatchEvidence | None:
+    """The evidence one comparison of two numbers gives: matched for ``SAME`` (as written)
+    and ``SAME_NUMBER`` (both texts shown), not matched for ``AFFIX_DIFFERS`` (both texts
+    shown), None for ``DIFFERENT`` (the caller says how the licences differ, if at all)."""
+    if match is LicenseMatch.DIFFERENT:
+        return None
+    if match is LicenseMatch.SAME:
+        return MatchEvidence(field=MatchField.LICENSE, matched=True, detail=SAME_LICENSE)
+    words = {"digits": license_digits(own), "own": own.strip(), "theirs": theirs.strip()}
+    if match is LicenseMatch.SAME_NUMBER:
+        detail = SAME_LICENSE_NUMBER.format(**words)
+        return MatchEvidence(field=MatchField.LICENSE, matched=True, detail=detail)
+    detail = LICENSE_AFFIX_DIFFERS.format(**words)
+    return MatchEvidence(field=MatchField.LICENSE, matched=False, detail=detail)
+
+
+def _listed_license_evidence(
+    own: Sequence[License], listed: License | None
+) -> MatchEvidence | None:
+    """A provider's licences against a record's one licence: the best comparison in the
+    listed licence's state (``SAME``, then ``SAME_NUMBER``, then ``AFFIX_DIFFERS``), or None
+    when no licence can be compared or every one is simply different. The lists' licences are
+    rarely the roster's, so a different number is no evidence against a person here."""
+    if listed is None or listed.number is None:
+        return None
+    compared = [
+        (compare_license_numbers(licence.number, listed.number), licence.number)
+        for licence in own
+        if licence.number is not None and licence.state == listed.state
+    ]
+    if not compared:
+        return None
+    match, number = min(compared, key=lambda item: _LICENSE_RANK[item[0]])
+    return _license_number_evidence(number, listed.number, match)
 
 
 def _result(
@@ -757,7 +878,9 @@ def match_party_to_npi(party: LinkParty, candidate: NpiRecord, *, candidates: in
     - Individuals: the last name and the first name must match (on the party's own name, or
       every word of the candidate's in one of its aliases); a single initial starting the
       other counts as "initial only". The middle name (own name only), the licence (number by
-      :func:`license_key` in the same state, against the candidate's taxonomy licences) and
+      :func:`compare_license_numbers` in the same state, against the candidate's taxonomy
+      licences: the same as written or by its digits confirms, the same digits with parts
+      differing around them contradicts) and
       the address (5-digit ZIP, else city and state, else state, against the practice and
       mailing addresses) add evidence. With several licences or addresses each is compared
       and the best kept: a match over a difference, the strongest match (ZIP, city, state),
@@ -1107,7 +1230,7 @@ def _link_individual(party: LinkParty, candidate: NpiRecord, candidates: int) ->
     contradiction = any(
         item is not None and not item.matched for item in (middle, numbered, address)
     )
-    strong = _same(license, SAME_LICENSE) or _same(address, SAME_ZIP)
+    strong = (numbered is not None and numbered.matched) or _same(address, SAME_ZIP)
     if strong and not middle_differs:
         level = MatchLevel.HIGH if names.full_first else MatchLevel.POTENTIAL
     elif (
@@ -1156,29 +1279,34 @@ def _numbered_license_evidence(
     own: Sequence[License], candidate: NpiRecord
 ) -> MatchEvidence | None:
     """The party's numbered licences against the candidate's numbered taxonomy licences;
-    None when either side has none. Matched (:data:`SAME_LICENSE`) when any one agrees, else
-    the first licence's difference: :data:`OTHER_LICENSE_NUMBER` in the same state, or
+    None when either side has none. The best comparison speaks: matched
+    (:data:`SAME_LICENSE`, :data:`SAME_LICENSE_NUMBER`) when any one agrees, else
+    :data:`LICENSE_AFFIX_DIFFERS` when one shares its digits, else the first licence's
+    difference: :data:`OTHER_LICENSE_NUMBER` in the same state, or
     :data:`NO_LICENSE_IN_STATE` when the candidate's licences are all in other states."""
     numbered = [licence for licence in own if licence.number is not None]
     theirs = [t for t in candidate.taxonomies if t.license_number]
     if not numbered or not theirs:
         return None
     compared = [_one_license(licence, theirs) for licence in numbered]
-    return next((item for item in compared if item.matched), compared[0])
+    return min(compared, key=lambda item: item[0])[1]
 
 
-def _one_license(own: License, theirs: Sequence[NpiTaxonomy]) -> MatchEvidence:
-    number = license_key(own.number or "")
-    if any(
-        t.license_state == own.state and license_key(t.license_number or "") == number
-        for t in theirs
-    ):
-        return MatchEvidence(field=MatchField.LICENSE, matched=True, detail=SAME_LICENSE)
-    if any(t.license_state == own.state for t in theirs):
+def _one_license(own: License, theirs: Sequence[NpiTaxonomy]) -> tuple[int, MatchEvidence]:
+    """One licence against the candidate's, with its rank among the party's (best first)."""
+    number = own.number or ""
+    in_state = [t.license_number or "" for t in theirs if t.license_state == own.state]
+    compared = [(compare_license_numbers(number, t), t) for t in in_state]
+    if compared:
+        match, published = min(compared, key=lambda item: _LICENSE_RANK[item[0]])
+        evidence = _license_number_evidence(number, published, match)
+        if evidence is not None:
+            return _LICENSE_RANK[match], evidence
         detail = OTHER_LICENSE_NUMBER.format(state=own.state)
     else:
         detail = NO_LICENSE_IN_STATE.format(state=own.state)
-    return MatchEvidence(field=MatchField.LICENSE, matched=False, detail=detail)
+    rank = _LICENSE_RANK[LicenseMatch.DIFFERENT]
+    return rank, MatchEvidence(field=MatchField.LICENSE, matched=False, detail=detail)
 
 
 def _license_state_evidence(own: Sequence[License], candidate: NpiRecord) -> MatchEvidence | None:

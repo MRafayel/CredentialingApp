@@ -61,10 +61,12 @@ from credentialing.domain.policies import (
     attention_rank,
     candidate_keys,
     level_rank,
+    license_digits,
     license_key,
     pair_rewritten_rows,
     party_key,
     party_of_record,
+    same_license,
 )
 from credentialing.domain.ports import Dataset, DatasetFetch, LinkCandidates, NpiQuery
 from credentialing.domain.types import Npi, SourceId, StateCode
@@ -859,6 +861,7 @@ class InMemoryRecords:
             keys.add(normalize_organization_name(organization_name))
         keys.discard("")
         licenses = {license_key(number) for number in license_numbers} - {""}
+        digits = {license_digits(number) for number in license_numbers} - {""}
         return [
             record
             for record in self.latest.values()
@@ -867,7 +870,10 @@ class InMemoryRecords:
             or (
                 record.license is not None
                 and record.license.number is not None
-                and license_key(record.license.number) in licenses
+                and (
+                    license_key(record.license.number) in licenses
+                    or license_digits(record.license.number) in digits
+                )
             )
         ]
 
@@ -965,12 +971,9 @@ class InMemoryRecords:
             r
             for r in self.latest.values()
             if own is not None
-            and own.number is not None
             and r.id != record.id
             and r.license is not None
-            and r.license.number is not None
-            and r.license.state == own.state
-            and license_key(r.license.number) == license_key(own.number)
+            and same_license(own, r.license)
         ]
         return sorted(found, key=lambda r: (r.source_id, str(r.id)))[: max(limit, 0)]
 

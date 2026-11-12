@@ -94,7 +94,9 @@ export type EvidenceWords = { matched: string[]; differs: string[] }
 /**
  * Match evidence as a few words: what agreed ("same ZIP", "first name") and what did not
  * ("licence: another number in NY"). The address detail already says how it matched, so it
- * stands alone; the other fields are named.
+ * stands alone; a matched licence keeps its detail too, since the backend says there how
+ * the numbers agreed ("same number 10213: 10213 and PSY10213", "same licence state") and a
+ * person must see what was set aside (owner, 2026-11-12); the other fields are named.
  */
 export function evidenceWords(evidence: readonly MatchEvidence[]): EvidenceWords {
   const matched: string[] = []
@@ -102,7 +104,9 @@ export function evidenceWords(evidence: readonly MatchEvidence[]): EvidenceWords
   for (const item of evidence) {
     const word = FIELD_WORDS[item.field]
     if (item.matched) {
-      matched.push(item.field === 'address' && item.detail ? item.detail : word)
+      if (item.field === 'address' && item.detail) matched.push(item.detail)
+      else if (item.field === 'license' && item.detail) matched.push(`${word}: ${item.detail}`)
+      else matched.push(word)
     } else {
       differs.push(item.detail ? `${word}: ${item.detail}` : word)
     }

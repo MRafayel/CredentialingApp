@@ -29,6 +29,7 @@ from credentialing.domain.names import normalize_name, normalize_organization_na
 from credentialing.domain.policies import (
     RewriteKey,
     candidate_keys,
+    license_digits,
     license_key,
     pair_rewritten_rows,
     party_key,
@@ -291,8 +292,10 @@ class PostgresExclusionRecordRepository:
 
         Names are compared after the domain's normalization (organization names without their
         legal designators), against the record's names, alias and related-party words, so
-        every record the matcher could match by name is returned. Licence numbers are compared
-        without whitespace and case, in any state; the matcher checks the state.
+        every record the matcher could match by name is returned. Licence numbers are found
+        as written (``license_key``) and by their digits (``license_digits``: zero padding and
+        a part written on one side only set aside), in any state; the matcher checks the
+        state and decides whether the digits alone are enough.
         """
         keys = {normalize_name(last_name)} if last_name else set()
         if organization_name:
@@ -300,6 +303,7 @@ class PostgresExclusionRecordRepository:
         names = sorted(keys - {""})
         npis = [npi] if npi else []
         licenses = sorted({license_key(number) for number in license_numbers} - {""})
+        digits = sorted({license_digits(number) for number in license_numbers} - {""})
         if npi is None and not names and not licenses:
             return []
         async with (
@@ -315,6 +319,8 @@ class PostgresExclusionRecordRepository:
                     or name_keys && {names}::text[]
                     or license_key(license_number)
                         = any({licenses}::text[])
+                    or license_digits(license_number)
+                        = any({digits}::text[])
                 )
                 order by source_id, id
                 """
@@ -444,11 +450,13 @@ class PostgresExclusionRecordRepository:
     ) -> Sequence[ExclusionRecord]:
         """At most ``limit`` latest rows other than ``record`` with its licence and state.
 
-        Uses the normalized licence-number index, compared the way matching compares them.
+        Found through the licence indexes as written and by digits, the way matching finds
+        them (``find_candidates``); the caller keeps those the domain calls the same.
         """
         if record.license is None or record.license.number is None:
             return []
         number, state = license_key(record.license.number), record.license.state
+        digits = license_digits(record.license.number) or None
         async with (
             self._database.connection() as connection,
             connection.cursor(row_factory=class_row(_ExclusionRow)) as cursor,
@@ -457,7 +465,8 @@ class PostgresExclusionRecordRepository:
                 t"""
                 {_SELECT:q}
                 where latest and id <> {record.id}
-                  and license_key(license_number) = {number}
+                  and (license_key(license_number) = {number}
+                       or license_digits(license_number) = {digits})
                   and license_state = {state}
                 order by source_id, id
                 limit {max(limit, 0)}

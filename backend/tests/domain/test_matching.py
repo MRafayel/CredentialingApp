@@ -68,7 +68,9 @@ def test_name_and_license_are_high() -> None:
     result = match_provider_to_record(individual(licenses=(own,)), exclusion(license=listed))
 
     assert result.level is MatchLevel.HIGH
-    assert result.evidence[-1] == MatchEvidence(field=MatchField.LICENSE, matched=True)
+    assert result.evidence[-1] == MatchEvidence(
+        field=MatchField.LICENSE, matched=True, detail="same state and number"
+    )
 
 
 def test_same_license_number_in_another_state_does_not_raise_the_level() -> None:
@@ -78,6 +80,80 @@ def test_same_license_number_in_another_state_does_not_raise_the_level() -> None
     result = match_provider_to_record(individual(licenses=(own,)), exclusion(license=listed))
 
     assert result.level is MatchLevel.POTENTIAL
+    assert MatchField.LICENSE not in {item.field for item in result.evidence}
+
+
+def test_a_padded_or_prefixed_licence_is_the_same_number_and_says_what_was_set_aside() -> None:
+    # New York pads to eight digits where NPPES and the roster write six; California writes
+    # the profession before the number on one side only (owner, 2026-11-12).
+    padded = match_provider_to_record(
+        individual(licenses=(License(number="000551", state="NY"),)),
+        exclusion(license=License(number="00000551", state="NY")),
+    )
+    prefixed = match_provider_to_record(
+        individual(licenses=(License(number="10213", state="CA"),)),
+        exclusion(license=License(number="PSY10213", state="CA")),
+    )
+
+    assert padded.level is MatchLevel.HIGH
+    assert padded.evidence[-1] == MatchEvidence(
+        field=MatchField.LICENSE, matched=True, detail="same number 551: 000551 and 00000551"
+    )
+    assert prefixed.level is MatchLevel.HIGH
+    assert prefixed.explanation == (
+        "High-confidence match: last name matches, first name matches, "
+        "license matches (same number 10213: 10213 and PSY10213)."
+    )
+
+
+def test_the_same_digits_with_differing_parts_around_them_is_ambiguous() -> None:
+    result = match_provider_to_record(
+        individual(licenses=(License(number="RN123456", state="NY"),)),
+        exclusion(license=License(number="LPN123456", state="NY")),
+    )
+
+    assert result.level is MatchLevel.AMBIGUOUS
+    assert result.evidence[-1] == MatchEvidence(
+        field=MatchField.LICENSE,
+        matched=False,
+        detail="same digits 123456, but RN123456 and LPN123456 differ around them",
+    )
+
+
+def test_a_date_of_birth_outweighs_differing_parts_around_the_digits() -> None:
+    result = match_provider_to_record(
+        individual(date_of_birth=BIRTH, licenses=(License(number="RN123456", state="NY"),)),
+        exclusion(date_of_birth=BIRTH, license=License(number="LPN123456", state="NY")),
+    )
+
+    assert result.level is MatchLevel.HIGH
+
+
+def test_too_few_digits_need_the_number_as_written() -> None:
+    result = match_provider_to_record(
+        individual(licenses=(License(number="367", state="NY"),)),
+        exclusion(license=License(number="F000367", state="NY")),
+    )
+
+    assert result.level is MatchLevel.POTENTIAL
+    assert MatchField.LICENSE not in {item.field for item in result.evidence}
+
+
+def test_the_best_of_several_licences_speaks() -> None:
+    provider = individual(
+        licenses=(
+            License(number="RN123456", state="NY"),
+            License(number="000123456", state="NY"),
+            License(number="123456", state="NJ"),
+        )
+    )
+
+    result = match_provider_to_record(
+        provider, exclusion(license=License(number="LPN123456", state="NY"))
+    )
+
+    assert result.level is MatchLevel.HIGH
+    assert result.evidence[-1].detail == "same number 123456: 000123456 and LPN123456"
 
 
 LICENSE_ONLY_NOTE = "licence numbers are unique only within a profession, so a person must confirm"
@@ -100,6 +176,42 @@ def test_a_licence_without_a_matching_name_is_ambiguous_never_none() -> None:
     assert result.explanation == (
         "Ambiguous match: license matches (same state and number), last name differs; "
         f"{LICENSE_ONLY_NOTE}."
+    )
+
+
+def test_a_licence_by_its_digits_without_a_matching_name_is_ambiguous_too() -> None:
+    provider = individual(
+        last="Testperson", first="Avery", licenses=(License(number="10213", state="CA"),)
+    )
+    same_number = exclusion(
+        last="Othername", first="Blake", license=License(number="PSY10213", state="CA")
+    )
+    parts_differ = exclusion(
+        last="Othername", first="Blake", license=License(number="LCSW10213", state="CA")
+    )
+    too_short = exclusion(
+        last="Othername", first="Blake", license=License(number="PSY102", state="CA")
+    )
+
+    assert match_provider_to_record(provider, same_number).level is MatchLevel.AMBIGUOUS
+    with_parts = match_provider_to_record(
+        individual(
+            last="Testperson", first="Avery", licenses=(License(number="MFT10213", state="CA"),)
+        ),
+        parts_differ,
+    )
+    assert with_parts.level is MatchLevel.AMBIGUOUS
+    assert with_parts.evidence[0] == MatchEvidence(
+        field=MatchField.LICENSE,
+        matched=False,
+        detail="same digits 10213, but MFT10213 and LCSW10213 differ around them",
+    )
+    assert with_parts.explanation.endswith(f"; {LICENSE_ONLY_NOTE}.")
+    assert (
+        match_provider_to_record(
+            individual(licenses=(License(number="102", state="CA"),)), too_short
+        ).level
+        is MatchLevel.NONE
     )
 
 

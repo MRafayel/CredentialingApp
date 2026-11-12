@@ -12,6 +12,7 @@ from credentialing.domain.models import (
     SnapshotDiff,
     SourceSnapshot,
 )
+from credentialing.domain.policies import license_digits, license_key
 from credentialing.infrastructure.database import ConnectionSource
 from credentialing.infrastructure.repositories.exclusion_records import (
     PostgresExclusionRecordRepository,
@@ -235,6 +236,57 @@ async def test_find_candidates_by_licence_number(database: ConnectionSource) -> 
 
     assert _ours(found) == {listed.id}
     assert await repository.find_candidates(None, None, None, license_numbers=[" "]) == []
+
+
+async def test_find_candidates_by_licence_digits(database: ConnectionSource) -> None:
+    repository = PostgresExclusionRecordRepository(database)
+    snapshot_id = await _snapshot(database)
+    padded = exclusion(
+        snapshot_id=snapshot_id, last="Qzxpadded", license=License(number="00000551", state="NY")
+    )
+    prefixed = exclusion(
+        snapshot_id=snapshot_id, last="Qzxprefixed", license=License(number="PSY10213", state="CA")
+    )
+    other = exclusion(
+        snapshot_id=snapshot_id, last="Qzxother", license=License(number="PSY10214", state="CA")
+    )
+    await repository.replace_current(
+        SOURCE, snapshot_id, [padded, prefixed, other], NOW, source_changed=True
+    )
+
+    # Found by digits whatever the padding or the part on one side; the matcher decides.
+    found = await repository.find_candidates(None, None, None, license_numbers=["551", "10213"])
+
+    assert _ours(found) == {padded.id, prefixed.id}
+
+
+LICENSE_CASES = [
+    "00000551",
+    "PSY10213",
+    "18-000869",
+    "036-123456",
+    "12345-67890",
+    "036123456",
+    "qzx-00.12345",
+    "ABC",
+    "0000",
+    "",
+    "  ",
+]
+
+
+async def test_sql_licence_functions_equal_the_python_rules(database: ConnectionSource) -> None:
+    async with database.connection() as connection:
+        cursor = await connection.execute(
+            t"""
+            select t, license_key(t), license_digits(t) from unnest({LICENSE_CASES}::text[]) as t
+            """
+        )
+        rows = await cursor.fetchall()
+
+    assert [(text, key or "", digits or "") for text, key, digits in rows] == [
+        (text, license_key(text), license_digits(text)) for text in LICENSE_CASES
+    ]
 
 
 async def test_replace_current_refreshes_outdated_name_keys(database: ConnectionSource) -> None:
@@ -773,10 +825,13 @@ async def test_same_license_compares_number_and_state(database: ConnectionSource
     other_state = exclusion(
         snapshot_id=snapshot_id, last="Qzxthird", license=License(number="QZX0098765", state="NJ")
     )
+    padded = exclusion(
+        snapshot_id=snapshot_id, last="Qzxpadded", license=License(number="QZX00098765", state="NY")
+    )
     await repository.replace_current(
-        SOURCE, snapshot_id, [subject, same, other_state], NOW, source_changed=True
+        SOURCE, snapshot_id, [subject, same, other_state, padded], NOW, source_changed=True
     )
 
-    assert _ours(await repository.same_license(subject, limit=10)) == {same.id}
+    assert _ours(await repository.same_license(subject, limit=10)) == {same.id, padded.id}
     assert await repository.same_license(subject, limit=0) == []
     assert await repository.same_license(exclusion(snapshot_id=snapshot_id), limit=10) == []
