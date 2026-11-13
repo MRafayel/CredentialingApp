@@ -167,9 +167,15 @@ type VerdictFigures = Pick<
   'verdict' | 'sources_checked' | 'listed_in' | 'flagged_in' | 'review_in' | 'unchecked'
 >
 
-/** The screening step only reads the verdict: "Run check" and "Check again" are the hero's. */
-function screeningStep(verdict: VerdictFigures): Step {
+/**
+ * The screening step only reads the verdict: "Run check" and "Check again" are the hero's. A
+ * first check under way (`checking`) waits: its results land on their own.
+ */
+function screeningStep(verdict: VerdictFigures, checking: boolean): Step {
   const step = { key: 'screening', title: 'Screening', action: null } as const
+  if (checking && verdict.verdict === 'not_checked') {
+    return { ...step, state: 'waiting', tone: 'neutral', line: 'Checking every list now' }
+  }
   switch (verdict.verdict) {
     case 'no_records':
       return {
@@ -242,13 +248,14 @@ export type StepTiming = FormatOptions & { now: Date; intervalDays: number }
 
 /** Identity, Screening and Monitoring, in that order, from the backend's status and verdict. */
 export function providerSteps(
-  status: Pick<ProviderStatus, 'identity' | 'last_checked_at' | 'next_check_at'>,
+  status: Pick<ProviderStatus, 'identity' | 'last_checked_at' | 'next_check_at'> &
+    Partial<Pick<ProviderStatus, 'checking'>>,
   verdict: VerdictFigures,
   timing: StepTiming,
 ): Step[] {
   return [
     identityStep(status.identity),
-    screeningStep(verdict),
+    screeningStep(verdict, status.checking ?? false),
     monitoringStep(status, verdict, timing),
   ]
 }

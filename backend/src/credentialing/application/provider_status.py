@@ -8,6 +8,12 @@ state: :class:`ProviderStatusKeeper` writes it after every check that appends re
 the provider is opened, and for any provider whose row is missing or was derived by an older
 version of the rules (:data:`~credentialing.domain.policies.STATUS_RULES_VERSION`) before a
 roster read. Every call is scoped to one organization.
+
+A status read while the provider's first check after an import is under way and none of its
+results has landed is marked ``checking`` (:func:`with_checking`): the mark is never stored,
+the reader asks the process running the checks (:class:`CheckTracking`) which providers are
+still waiting. The roster's counts leave those providers out of their attention reason and
+count them in ``checking`` instead, so "N need you" never counts a check that is running.
 """
 
 from collections.abc import Mapping, Sequence
@@ -38,6 +44,33 @@ class StatusRefreshing(Protocol):
     async def refresh(self, provider: Provider) -> ProviderStatus:
         """Derive the provider's status from its latest results and store it."""
         ...
+
+
+class CheckTracking(Protocol):
+    """Who knows which providers' first check after an import is still under way (the
+    process running it: :class:`~credentialing.application.first_checks.FirstChecks`)."""
+
+    def waiting(self, organization_id: UUID) -> frozenset[UUID]:
+        """The organization's providers whose scheduled first check has not finished."""
+        ...
+
+
+def with_checking(status: ProviderStatus, waiting: frozenset[UUID]) -> ProviderStatus:
+    """The status marked ``checking`` when the provider is waiting for its first check and no
+    result has landed yet; a result that has landed shows at once, whole run finished or not."""
+    if status.provider_id in waiting and status.last_checked_at is None:
+        return status.model_copy(update={"checking": True})
+    return status
+
+
+def waiting_in(tracking: CheckTracking | None, organization_id: UUID) -> frozenset[UUID]:
+    """The providers waiting for their first check; none without a tracker (tools, tests).
+
+    Always read *before* the statuses: a provider that leaves the set while the read is under
+    way is then still marked checking (its row has no result yet) and read again, whereas a
+    status read first and marked afterwards would settle as "not checked" for good.
+    """
+    return tracking.waiting(organization_id) if tracking is not None else frozenset()
 
 
 class ProviderStatusKeeper:
@@ -132,7 +165,11 @@ class StatusSummary(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     counts: Mapping[Attention | None, int]
+    """Per attention reason, without the providers whose first check is under way."""
     total: int
+    """Every provider on the roster, those being checked included."""
+    checking: int = 0
+    """Providers whose first check after an import is under way with no result yet."""
     recheck_interval: timedelta = MONITORING_INTERVAL
     """How often every provider is rechecked (the monitoring policy)."""
 
@@ -140,9 +177,16 @@ class StatusSummary(BaseModel):
 class ProviderStatusQuery:
     """One provider's status, derived from its latest results now (and stored)."""
 
-    def __init__(self, providers: ProviderRepository, keeper: ProviderStatusKeeper) -> None:
+    def __init__(
+        self,
+        providers: ProviderRepository,
+        keeper: ProviderStatusKeeper,
+        *,
+        checks: CheckTracking | None = None,
+    ) -> None:
         self._providers = providers
         self._keeper = keeper
+        self._checks = checks
 
     async def run(self, organization_id: UUID, provider_id: UUID) -> ProviderStatus:
         """The provider's status.
@@ -150,38 +194,62 @@ class ProviderStatusQuery:
         Raises:
             ProviderNotFoundError: The organization has no provider with this id.
         """
+        waiting = waiting_in(self._checks, organization_id)
         provider = await self._providers.get(organization_id, provider_id)
         if provider is None:
             raise ProviderNotFoundError(provider_id)
-        return await self._keeper.refresh(provider)
+        status = await self._keeper.refresh(provider)
+        return with_checking(status, waiting)
 
 
 class ProviderStatusSummary:
     """The roster's counts by attention reason, for the roster's filter chips."""
 
-    def __init__(self, providers: ProviderRepository, keeper: ProviderStatusKeeper) -> None:
+    def __init__(
+        self,
+        providers: ProviderRepository,
+        keeper: ProviderStatusKeeper,
+        *,
+        checks: CheckTracking | None = None,
+    ) -> None:
         self._providers = providers
         self._keeper = keeper
+        self._checks = checks
 
     async def run(self, organization_id: UUID) -> StatusSummary:
         """Counts for every reason (zero included) and None, after deriving any missing or
-        outdated status."""
+        outdated status; providers whose first check is under way are counted in ``checking``
+        and left out of their reason."""
+        waiting = waiting_in(self._checks, organization_id)
         await self._keeper.refresh_stale(organization_id)
         stored = await self._providers.status_counts(organization_id)
         reasons: list[Attention | None] = [*Attention, None]
         counts = {reason: stored.get(reason, 0) for reason in reasons}
-        return StatusSummary(counts=counts, total=sum(counts.values()))
+        total = sum(counts.values())
+        checking = 0
+        if waiting:
+            under_way = await self._providers.unchecked_counts(organization_id, sorted(waiting))
+            for reason, count in under_way.items():
+                counts[reason] = max(counts[reason] - count, 0)
+                checking += count
+        return StatusSummary(counts=counts, total=total, checking=checking)
 
 
 class MarkViewed:
     """Records that someone opened the provider, which clears "changed" for what they saw."""
 
     def __init__(
-        self, providers: ProviderRepository, keeper: ProviderStatusKeeper, clock: Clock
+        self,
+        providers: ProviderRepository,
+        keeper: ProviderStatusKeeper,
+        clock: Clock,
+        *,
+        checks: CheckTracking | None = None,
     ) -> None:
         self._providers = providers
         self._keeper = keeper
         self._clock = clock
+        self._checks = checks
 
     async def run(self, organization_id: UUID, provider_id: UUID) -> ProviderStatus:
         """Set the provider's ``last_viewed_at`` to now and return its status as now derived.
@@ -189,9 +257,11 @@ class MarkViewed:
         Raises:
             ProviderNotFoundError: The organization has no provider with this id.
         """
+        waiting = waiting_in(self._checks, organization_id)
         provider = await self._providers.mark_viewed(
             organization_id, provider_id, self._clock.now()
         )
         if provider is None:
             raise ProviderNotFoundError(provider_id)
-        return await self._keeper.refresh(provider)
+        status = await self._keeper.refresh(provider)
+        return with_checking(status, waiting)

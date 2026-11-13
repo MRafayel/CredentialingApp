@@ -5,14 +5,14 @@ import type { RosterOrder } from '../../lib/api.ts'
 import { ButtonLink, Button } from '../../components/Button.tsx'
 import { SEARCH_INPUT } from '../../components/Field.tsx'
 import { Icon } from '../../components/Icon.tsx'
-import { EmptyDrawer, EmptyProviders } from '@/components/illustrations'
+import { EmptyDrawer, EmptyProviders, ScanningDocument } from '@/components/illustrations'
 import { stagger } from '../../components/motion.ts'
 import { ErrorNote } from '../../components/Note.tsx'
 import { TONES } from '../../components/tones.ts'
 import { PageBar, PageBody, PageHeader } from '../../components/PageBar.tsx'
 import { TypedPlaceholder } from '../../components/TypedPlaceholder.tsx'
 import { useTypedPlaceholder } from '../../components/useTypedPlaceholder.ts'
-import { importedLine } from '../../lib/importing.ts'
+import { addedLine, importedLine } from '../../lib/importing.ts'
 import { attentionWord } from '../../lib/labels.ts'
 import {
   filterAttention,
@@ -129,11 +129,13 @@ export function ProvidersPage() {
           // The tools row, receding under the nav with the header: on desktop four equal columns,
           // the search centred over the middle two (half the column, under the centred header).
           // On phone the search spans the column. The field sits 32 px (desktop 52 px) under the
-          // header and the first row 20 px under it.
+          // header and the first row 20 px under it. The row's scroll transform makes it a
+          // stacking context, as the results' does: raised above the results so the filter
+          // menu hangs over the rows, under the fixed top bar (z-30).
           <motion.div
             ref={heroAnchor}
             style={hero.field}
-            className="mt-8 mb-5 flex items-center gap-3 lg:mt-[52px] lg:grid lg:grid-cols-4 lg:gap-0"
+            className="relative z-20 mt-8 mb-5 flex items-center gap-3 lg:mt-[52px] lg:grid lg:grid-cols-4 lg:gap-0"
           >
             <search className="relative block w-full min-w-0 flex-1 lg:col-span-2 lg:col-start-2">
               <Icon
@@ -276,12 +278,14 @@ function importedNote(state: unknown): ImportedNoteData | null {
 }
 
 /**
- * What the import just did, over the roster it changed: how many were added and that their
- * first check ran; a provider whose check failed is named with the blocked mark, never quiet.
+ * "120 of 2,000 providers added" while the first check runs, a scanning document beside it,
+ * following the roster's summary (read again while a check runs) until nobody is waiting; then
+ * "2,000 providers added" with the clear mark.
  */
 function ImportedNote({ note, onDismiss }: { note: ImportedNoteData; onDismiss: () => void }) {
   const Done = TONES.clear.Mark
-  const Blocked = TONES.blocked.Mark
+  const waiting = Math.min(useProviderSummary().data?.checking ?? note.checking, note.checking)
+  const checking = waiting > 0
   return (
     <motion.div
       initial={{ opacity: 0, y: -6, height: 0 }}
@@ -291,19 +295,32 @@ function ImportedNote({ note, onDismiss }: { note: ImportedNoteData; onDismiss: 
       className="overflow-hidden"
     >
       <div className="mx-auto mb-5 flex max-w-2xl items-start gap-3 rounded-card border border-line bg-surface py-2 pr-2 pl-4 text-body">
-        <Done size={18} className={`mt-2 shrink-0 ${TONES.clear.text}`} />
-        <output className="block min-w-0 flex-1 py-1.5">
-          <span className="font-medium">{note.added}</span>
-          {note.check && <span className="text-ink-muted"> · {note.check}</span>}
-          {note.failures > 0 && (
-            <span className="ml-1 inline-flex items-center gap-1 font-medium">
-              <span aria-hidden="true" className="font-normal text-ink-muted">
-                ·
-              </span>
-              <Blocked size={15} className={TONES.blocked.text} />
-              {note.failures} could not be checked
-            </span>
-          )}
+        <span className="relative mt-[7px] size-5 shrink-0">
+          <AnimatePresence initial={false}>
+            {checking ? (
+              <motion.span
+                key="scanning"
+                exit={{ opacity: 0, scale: 0.85 }}
+                transition={{ duration: 0.2 }}
+                className="absolute inset-0 text-ink-muted"
+              >
+                <ScanningDocument size={20} />
+              </motion.span>
+            ) : (
+              <motion.span
+                key="done"
+                initial={{ opacity: 0, scale: 0.85 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.2 }}
+                className={`absolute inset-0 ${TONES.clear.text}`}
+              >
+                <Done size={20} />
+              </motion.span>
+            )}
+          </AnimatePresence>
+        </span>
+        <output className="block min-w-0 flex-1 py-1.5 font-medium tabular-nums">
+          {addedLine(note.added, waiting)}
         </output>
         <button
           type="button"

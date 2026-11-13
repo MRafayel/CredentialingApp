@@ -255,7 +255,11 @@ export function listNames(ids: readonly string[], name: (id: string) => string):
 type StatusFigures = Pick<
   ProviderStatus,
   'attention' | 'listed_in' | 'flagged_in' | 'review_in' | 'unchecked'
->
+> &
+  Partial<Pick<ProviderStatus, 'checking'>>
+
+/** A row whose first check is running: one word, no reason yet (the reason lands with it). */
+export const CHECKING: Label = { tone: 'neutral', word: 'Checking…' }
 
 /**
  * A roster row's one word and its line, from the backend's one reason for attention: what is so
@@ -264,6 +268,7 @@ type StatusFigures = Pick<
  * adds when it was checked.
  */
 export function attentionLabel(status: StatusFigures, name: (id: string) => string): Label {
+  if (status.checking) return CHECKING
   if (status.attention === null) return { tone: 'clear', word: 'No records' }
   const label = ATTENTION_WORDS[status.attention]
   switch (status.attention) {

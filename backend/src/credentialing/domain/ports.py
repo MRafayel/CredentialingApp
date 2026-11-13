@@ -125,6 +125,13 @@ class ProviderRepository(Protocol):
         counts those needing nobody (and any whose status was never stored)."""
         ...
 
+    async def unchecked_counts(
+        self, organization_id: UUID, provider_ids: Sequence[UUID]
+    ) -> Mapping[Attention | None, int]:
+        """Of these providers of the organization, those whose stored status has no result
+        yet (``last_checked_at`` None), per stored attention reason."""
+        ...
+
     async def save_statuses(
         self, organization_id: UUID, statuses: Sequence[ProviderStatus], *, rules_version: int
     ) -> None:

@@ -61,7 +61,6 @@ from credentialing.domain.enums import (
 )
 from credentialing.domain.models import (
     ExclusionRecord,
-    MonitoringRun,
     NpiRecord,
     Provider,
     ProviderStatus,
@@ -204,6 +203,9 @@ class ProviderStatusResponse(Schema):
     flagged_in: list[str]
     review_in: list[str]
     unchecked: list[str]
+    checking: bool
+    """The first check after an import is under way and no result has landed yet; the row
+    is read again until it is false."""
 
     @classmethod
     def from_status(cls, status: ProviderStatus) -> ProviderStatusResponse:
@@ -287,7 +289,11 @@ class StatusSummaryResponse(Schema):
     ``none`` for those needing nobody), the roster's total and the recheck interval."""
 
     counts: dict[str, int]
+    """Per reason, without the providers whose first check is under way."""
     total: int
+    checking: int
+    """Providers whose first check after an import is under way with no result yet; the
+    summary is read again until it is zero."""
     recheck_interval_days: int
     """How often every provider is rechecked, in days (the monitoring policy)."""
 
@@ -300,6 +306,7 @@ class StatusSummaryResponse(Schema):
                 for reason, count in summary.counts.items()
             },
             total=summary.total,
+            checking=summary.checking,
             recheck_interval_days=summary.recheck_interval.days,
         )
 
@@ -1138,36 +1145,12 @@ class ImportRowResponse(Schema):
         )
 
 
-class ImportCheckResponse(Schema):
-    """The first check of the providers an import stored: how many were checked, the results
-    appended, those that differ from a previous result, and the providers whose check
-    failed."""
-
-    started_at: datetime
-    finished_at: datetime
-    providers: int
-    results: int
-    changed: int
-    failures: int
-
-    @classmethod
-    def from_run(cls, run: MonitoringRun) -> ImportCheckResponse:
-        """Map a monitoring run into its HTTP shape."""
-        return cls(
-            started_at=run.started_at,
-            finished_at=run.finished_at,
-            providers=run.providers,
-            results=run.results,
-            changed=run.changed,
-            failures=run.failures,
-        )
-
-
 class ImportReportResponse(Schema):
     """Body of ``POST /providers/import``: every row with its problems, the columns read and
-    ignored, the counts, and on a commit the stored provider ids and their first check.
-    ``no_header``: no header was recognized and the rows did not read as a list of names
-    and NPIs, so nothing was read."""
+    ignored, the counts, and on a commit the stored provider ids and how many of them are
+    checked after this answer (``checking``: their rows read "checking" on the roster until
+    their results land). ``no_header``: no header was recognized and the rows did not read as
+    a list of names and NPIs, so nothing was read."""
 
     rows: list[ImportRowResponse]
     columns: list[ImportColumn]
@@ -1178,7 +1161,7 @@ class ImportReportResponse(Schema):
     rejected: int
     dry_run: bool
     imported: list[UUID]
-    recheck: ImportCheckResponse | None
+    checking: int
 
     @classmethod
     def from_report(cls, report: ImportReport, *, dry_run: bool) -> ImportReportResponse:
@@ -1193,7 +1176,7 @@ class ImportReportResponse(Schema):
             rejected=report.rejected,
             dry_run=dry_run,
             imported=list(report.imported),
-            recheck=ImportCheckResponse.from_run(report.recheck) if report.recheck else None,
+            checking=report.checking,
         )
 
 

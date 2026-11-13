@@ -148,18 +148,24 @@ export function pageAfterRemoval(page: number, remaining: number, pageSize: numb
   return Math.min(page, Math.max(1, Math.ceil(remaining / pageSize)))
 }
 
-/** What the roster says after a commit: "42 added · first check done", failures named. */
-export function importedLine(report: Pick<ImportReport, 'imported' | 'recheck'>): {
-  added: string
-  check: string | null
-  failures: number
+/**
+ * What the roster's note needs after a commit: how many were added, and how many are being
+ * checked after the answer (the note follows the roster's summary until none is left).
+ */
+export function importedLine(report: Pick<ImportReport, 'imported' | 'checking'>): {
+  added: number
+  checking: number
 } {
-  const added = `${plural(report.imported.length, 'provider')} added`
-  const check = report.recheck
-  if (!check) return { added, check: null, failures: 0 }
-  return {
-    added,
-    check: `first check of ${plural(check.providers, 'provider')} done`,
-    failures: check.failures,
-  }
+  return { added: report.imported.length, checking: report.checking }
+}
+
+/**
+ * The note's one line: "3,760 of 5,000 providers added" while the first check runs (those
+ * checked so far count as added, owner, 2026-11-13), "5,000 providers added" once nobody is
+ * waiting, and never over-counts.
+ */
+export function addedLine(added: number, waiting: number): string {
+  const total = `${plural(added, 'provider')} added`
+  const left = Math.min(Math.max(waiting, 0), added)
+  return left === 0 ? total : `${(added - left).toLocaleString()} of ${total}`
 }

@@ -4,8 +4,10 @@ The text is read as CSV, TSV or another delimited export, its columns recognized
 headers (:data:`HEADER_SYNONYMS`), and every row turned into a provider through the rules of
 :meth:`RegisterProvider.build`, with the problems found on the way: an *error* keeps the row
 out, a *warning* drops one value and keeps the row. A dry run returns that preview; a commit
-stores the importable rows at once and runs their first check
-(:meth:`RecheckProviders.run_for`), so the roster answers right away.
+stores the importable rows at once, derives their statuses ("not checked") and schedules their
+first check to run after the answer (:mod:`~credentialing.application.first_checks`), so the
+import answers in about a second whatever its size and the roster shows each row as "checking"
+until its results land (owner, 2026-11-13).
 
 Duplicates are refused: within the text (by NPI, else by name and date of birth) and against
 the caller's own roster, read once; another organization's roster is never read. A roster
@@ -32,10 +34,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from credentialing.application.errors import InvalidProviderInputError
-from credentialing.application.recheck_providers import IMPORT_TRIGGER, FirstChecking
+from credentialing.application.first_checks import FirstCheckScheduling
+from credentialing.application.provider_status import ProviderStatusKeeper
 from credentialing.application.register_provider import ProviderInput, RegisterProvider
 from credentialing.domain.enums import EntityKind, RosterRole
-from credentialing.domain.models import License, MonitoringRun, PersonName, Provider
+from credentialing.domain.models import License, PersonName, Provider
 from credentialing.domain.names import (
     CREDENTIAL_SUFFIXES,
     normalize_name,
@@ -229,9 +232,9 @@ class ImportReport(BaseModel):
     rejected: int = 0
     imported: tuple[UUID, ...] = ()
     """The providers stored, in file order; empty on a dry run."""
-    recheck: MonitoringRun | None = None
-    """The first check of the imported providers; None on a dry run, when nothing was
-    imported, or when the check could not run at all (the import stands)."""
+    checking: int = 0
+    """How many of the stored providers are checked after this answer (every one of them);
+    0 on a dry run or when nothing was imported."""
 
 
 @dataclass(slots=True)
@@ -290,16 +293,25 @@ class _Draft:
 
 
 class ImportProviders:
-    """Reads a roster export, previews it, and on a commit stores it and checks it."""
+    """Reads a roster export, previews it, and on a commit stores it and schedules its
+    first check."""
 
-    def __init__(self, providers: ProviderRepository, recheck: FirstChecking, clock: Clock) -> None:
+    def __init__(
+        self,
+        providers: ProviderRepository,
+        keeper: ProviderStatusKeeper,
+        first_checks: FirstCheckScheduling,
+        clock: Clock,
+    ) -> None:
         self._providers = providers
-        self._recheck = recheck
+        self._keeper = keeper
+        self._first_checks = first_checks
         self._clock = clock
 
     async def run(self, organization_id: UUID, text: str, *, dry_run: bool) -> ImportReport:
         """Read ``text`` into rows for ``organization_id``'s roster; unless ``dry_run``,
-        store the importable rows (all at once) and run their first check.
+        store the importable rows (all at once), derive their statuses and schedule their
+        first check for after this answer.
 
         Raises:
             InvalidProviderInputError: The text is over :data:`MAX_BYTES` or
@@ -344,18 +356,24 @@ class ImportProviders:
             return report
         await self._providers.add_many(organization_id, new)
         ids = tuple(provider.id for provider in new)
-        recheck: MonitoringRun | None = None
+        # Their statuses now ("not checked", due now), so no roster read derives them while
+        # the check writes the real ones; a derivation that fails leaves that to the read.
         try:
-            recheck = await self._recheck.run_for(organization_id, ids, trigger=IMPORT_TRIGGER)
+            await self._keeper.refresh_many(organization_id, new)
         except Exception as error:
             logger.warning(
-                "first check after import failed organization_id=%s providers=%d error=%s",
+                "statuses after import not derived organization_id=%s providers=%d error=%s",
                 organization_id,
                 len(ids),
                 type(error).__name__,
             )
-        logger.info("import stored organization_id=%s providers=%d", organization_id, len(ids))
-        return report.model_copy(update={"imported": ids, "recheck": recheck})
+        self._first_checks.schedule(organization_id, ids)
+        logger.info(
+            "import stored organization_id=%s providers=%d, first check scheduled",
+            organization_id,
+            len(ids),
+        )
+        return report.model_copy(update={"imported": ids, "checking": len(ids)})
 
 
 def _read(text: str) -> list[tuple[int, list[str]]]:

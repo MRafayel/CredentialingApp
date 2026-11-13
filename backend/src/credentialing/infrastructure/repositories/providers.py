@@ -422,6 +422,29 @@ class PostgresProviderRepository:
             counts[key] = counts.get(key, 0) + int(count)
         return counts
 
+    async def unchecked_counts(
+        self, organization_id: UUID, provider_ids: Sequence[UUID]
+    ) -> Mapping[Attention | None, int]:
+        """Of these providers, those with a stored status and no result yet, per attention
+        reason, in one grouped statement scoped to the organization."""
+        if not provider_ids:
+            return {}
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                t"""
+                select s.attention, count(*) from provider_status s
+                where s.organization_id = {organization_id}
+                  and s.provider_id = any({list(provider_ids)}::uuid[])
+                  and s.last_checked_at is null
+                group by s.attention
+                """
+            )
+            rows = await cursor.fetchall()
+        return {
+            (Attention(attention) if attention is not None else None): int(count)
+            for attention, count in rows
+        }
+
     async def save_statuses(
         self, organization_id: UUID, statuses: Sequence[ProviderStatus], *, rules_version: int
     ) -> None:

@@ -86,9 +86,10 @@ export interface paths {
     /**
      * Import Providers
      * @description Read a pasted list or a CSV/TSV export into the organization's roster rows, each with
-     *     its problems; with ``dry_run`` false, store the importable rows and run their first check
-     *     now. 422 when the text is over 2 MB or 5,000 rows or cannot be read as delimited text, 409
-     *     when another commit stored one of its NPIs meanwhile (nothing is stored either way).
+     *     its problems; with ``dry_run`` false, store the importable rows and schedule their first
+     *     check for after this answer (their rows read "checking" until it lands). 422 when the
+     *     text is over 2 MB or 5,000 rows or cannot be read as delimited text, 409 when another
+     *     commit stored one of its NPIs meanwhile (nothing is stored either way).
      */
     post: operations['import_providers_providers_import_post']
     delete?: never
@@ -654,32 +655,6 @@ export interface components {
       | 'npi_uncertain'
       | 'not_expected'
     /**
-     * ImportCheckResponse
-     * @description The first check of the providers an import stored: how many were checked, the results
-     *     appended, those that differ from a previous result, and the providers whose check
-     *     failed.
-     */
-    ImportCheckResponse: {
-      /**
-       * Started At
-       * Format: date-time
-       */
-      started_at: string
-      /**
-       * Finished At
-       * Format: date-time
-       */
-      finished_at: string
-      /** Providers */
-      providers: number
-      /** Results */
-      results: number
-      /** Changed */
-      changed: number
-      /** Failures */
-      failures: number
-    }
-    /**
      * ImportColumn
      * @description A column of an import the rows are read from. ``NAME`` is a whole name in one cell,
      *     split into its parts.
@@ -726,9 +701,10 @@ export interface components {
     /**
      * ImportReportResponse
      * @description Body of ``POST /providers/import``: every row with its problems, the columns read and
-     *     ignored, the counts, and on a commit the stored provider ids and their first check.
-     *     ``no_header``: no header was recognized and the rows did not read as a list of names
-     *     and NPIs, so nothing was read.
+     *     ignored, the counts, and on a commit the stored provider ids and how many of them are
+     *     checked after this answer (``checking``: their rows read "checking" on the roster until
+     *     their results land). ``no_header``: no header was recognized and the rows did not read as
+     *     a list of names and NPIs, so nothing was read.
      */
     ImportReportResponse: {
       /** Rows */
@@ -749,7 +725,8 @@ export interface components {
       dry_run: boolean
       /** Imported */
       imported: string[]
-      recheck: components['schemas']['ImportCheckResponse'] | null
+      /** Checking */
+      checking: number
     }
     /**
      * ImportRowResponse
@@ -1523,6 +1500,8 @@ export interface components {
       review_in: string[]
       /** Unchecked */
       unchecked: string[]
+      /** Checking */
+      checking: boolean
     }
     /**
      * RecordLicenseResponse
@@ -1807,6 +1786,8 @@ export interface components {
       }
       /** Total */
       total: number
+      /** Checking */
+      checking: number
       /** Recheck Interval Days */
       recheck_interval_days: number
     }

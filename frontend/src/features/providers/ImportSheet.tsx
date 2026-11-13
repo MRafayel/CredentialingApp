@@ -193,7 +193,7 @@ export function ImportSheet({
           onClick={() => commit.mutate(settled.text, { onSuccess: onImported })}
         >
           {commit.isPending
-            ? 'Adding and checking…'
+            ? 'Adding…'
             : count > 0
               ? `Add ${plural(count, 'provider')}`
               : 'Add providers'}

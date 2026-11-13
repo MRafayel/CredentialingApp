@@ -6,7 +6,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from credentialing.application.provider_status import ProviderStatusKeeper
+from credentialing.application.provider_status import (
+    CheckTracking,
+    ProviderStatusKeeper,
+    waiting_in,
+    with_checking,
+)
 from credentialing.domain.enums import AttentionSelection, EntityKind, RosterOrder
 from credentialing.domain.models import Provider, ProviderStatus
 from credentialing.domain.ports import ProviderRepository
@@ -40,9 +45,16 @@ class ListProviders:
     """Pages through the roster with each provider's status; a search matches names or the
     exact NPI."""
 
-    def __init__(self, providers: ProviderRepository, keeper: ProviderStatusKeeper) -> None:
+    def __init__(
+        self,
+        providers: ProviderRepository,
+        keeper: ProviderStatusKeeper,
+        *,
+        checks: CheckTracking | None = None,
+    ) -> None:
         self._providers = providers
         self._keeper = keeper
+        self._checks = checks
 
     async def run(
         self,
@@ -67,6 +79,7 @@ class ListProviders:
         page = max(page, 1)
         page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
         term = query.strip() if query else None
+        waiting = waiting_in(self._checks, organization_id)
         await self._keeper.refresh_stale(organization_id)
         rows, total = await self._providers.list_status(
             organization_id,
@@ -80,5 +93,7 @@ class ListProviders:
         items: list[ProviderWithStatus] = []
         for provider, status in rows:
             current = status if status is not None else await self._keeper.refresh(provider)
-            items.append(ProviderWithStatus(provider=provider, status=current))
+            items.append(
+                ProviderWithStatus(provider=provider, status=with_checking(current, waiting))
+            )
         return ProviderPage(items=tuple(items), total=total, page=page, page_size=page_size)

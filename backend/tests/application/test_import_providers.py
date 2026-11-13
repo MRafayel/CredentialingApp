@@ -10,6 +10,7 @@ import pytest
 
 from credentialing.application.check_exclusions import CheckExclusions
 from credentialing.application.errors import InvalidProviderInputError
+from credentialing.application.first_checks import FirstChecks
 from credentialing.application.import_providers import (
     HEADER_SYNONYMS,
     MAX_ROWS,
@@ -118,7 +119,8 @@ class _World:
             self.clock,
             verifications=self.verifications,
         )
-        self.importer = ImportProviders(self.providers, recheck, self.clock)
+        self.first_checks = FirstChecks(recheck)
+        self.importer = ImportProviders(self.providers, keeper, self.first_checks, self.clock)
 
     async def preview(self, text: str, organization_id: UUID = ORG_A) -> ImportReport:
         return await self.importer.run(organization_id, text, dry_run=True)
@@ -691,15 +693,16 @@ async def test_a_dry_run_stores_nothing_and_checks_nothing() -> None:
 
     report = await world.preview(TEXT)
 
-    assert (report.importable, report.rejected, report.imported, report.recheck) == (
+    assert (report.importable, report.rejected, report.imported, report.checking) == (
         2,
         1,
         (),
-        None,
+        0,
     )
     assert world.providers.stored == {}
     assert world.runs.stored == []
     assert world.verifications.stored == []
+    assert world.first_checks.running == 0
 
 
 async def test_a_commit_stores_the_importable_rows_and_checks_exactly_them() -> None:
@@ -714,11 +717,17 @@ async def test_a_commit_stores_the_importable_rows_and_checks_exactly_them() -> 
     assert stored[0].created_at < stored[1].created_at  # file order is kept
     assert stored[0].role is RosterRole.PRACTITIONER
     assert stored[1].role is RosterRole.WORKFORCE
-    run = report.recheck
-    assert run is not None
+    assert report.checking == 2
+    # The answer came before the check: statuses stored, nothing checked, the check waiting.
+    statuses = [status for _, status in await world.providers.list_all(ORG_A)]
+    assert all(status is not None and status.last_checked_at is None for status in statuses)
+    assert world.verifications.stored == []
+    assert world.first_checks.waiting(ORG_A) == set(report.imported)
+    await world.first_checks.wait()
+    (run,) = world.runs.stored
     assert (run.trigger, run.organizations, run.providers, run.failures) == ("import", 1, 2, 0)
     assert run.results == 3  # the list for both, the NPI for the one with an NPI
-    assert world.runs.stored == [run]
+    assert world.first_checks.waiting(ORG_A) == frozenset()
     checked = {(r.provider_id, r.credential_type) for r in world.verifications.stored}
     assert checked == {
         (stored[0].id, CredentialType.EXCLUSION),
@@ -735,6 +744,7 @@ async def test_another_organization_is_never_consulted_or_touched() -> None:
     world = _World(theirs, twin)
 
     report = await world.commit(TEXT)
+    await world.first_checks.wait()
 
     assert [row.existing_provider_id for row in report.rows] == [None, None, None]
     assert len(report.imported) == 2
@@ -749,16 +759,18 @@ async def test_a_commit_with_nothing_importable_stores_and_checks_nothing() -> N
 
     report = await world.commit(f"Last,First,NPI\nTestperson,Avery,{WRONG_CHECK_DIGIT}\n")
 
-    assert (report.imported, report.recheck) == ((), None)
+    assert (report.imported, report.checking) == ((), 0)
     assert world.providers.stored == {}
     assert world.runs.stored == []
+    assert world.first_checks.running == 0
 
 
 async def test_the_import_stands_when_the_first_check_cannot_run() -> None:
     world = _World(runs=_FailingRuns())
 
     report = await world.commit(TEXT)
+    await world.first_checks.wait()
 
-    assert len(report.imported) == 2
-    assert report.recheck is None
+    assert (len(report.imported), report.checking) == (2, 2)
     assert set(world.providers.stored) == set(report.imported)
+    assert world.first_checks.waiting(ORG_A) == frozenset()  # the import stands, unchecked

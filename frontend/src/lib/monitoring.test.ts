@@ -30,6 +30,7 @@ const summary = (counts: Record<string, number>, total: number): StatusSummary =
     ...counts,
   },
   total,
+  checking: 0,
 })
 
 describe('rosterLine', () => {
@@ -144,6 +145,19 @@ describe('providerSteps', () => {
       ['Identity', 'NPI confirmed · active', 'done', null],
       ['Screening', 'No records in 29 lists', 'done', null],
       ['Monitoring', 'Rechecked every 15 days · next Nov 25, 2026', 'done', null],
+    ])
+  })
+
+  it('waits while the first check after an import runs', () => {
+    const steps = providerSteps(
+      { identity: 'npi_missing', last_checked_at: null, next_check_at: null, checking: true },
+      verdict({ verdict: 'not_checked' }),
+      UTC,
+    )
+    expect(steps.map((step) => [step.line, step.state])).toEqual([
+      ['Needs NPI', 'todo'],
+      ['Checking every list now', 'waiting'],
+      ['Starts after the first check', 'waiting'],
     ])
   })
 

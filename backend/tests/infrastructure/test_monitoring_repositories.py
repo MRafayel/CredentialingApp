@@ -246,6 +246,26 @@ async def test_counts_are_one_organizations(tenants: _Tenants) -> None:
     assert await tenants.providers.status_counts(tenants.b) == {Attention.LISTED: 1}
 
 
+async def test_unchecked_counts_are_these_providers_without_a_result_in_one_organization(
+    tenants: _Tenants,
+) -> None:
+    waiting = individual(last="Waitperson", organization_id=tenants.a)
+    await tenants.providers.add(waiting)
+    unchecked = _status(waiting, Attention.NOT_CHECKED).model_copy(
+        update={"last_checked_at": None, "next_check_at": None, "verdict": Verdict.NOT_CHECKED}
+    )
+    await tenants.providers.save_statuses(
+        tenants.a, [unchecked], rules_version=STATUS_RULES_VERSION
+    )
+    everyone = [waiting.id, tenants.a_listed.id, tenants.a_clear.id, tenants.b_listed.id]
+
+    assert await tenants.providers.unchecked_counts(tenants.a, everyone) == {
+        Attention.NOT_CHECKED: 1
+    }
+    assert await tenants.providers.unchecked_counts(tenants.b, everyone) == {}
+    assert await tenants.providers.unchecked_counts(tenants.a, []) == {}
+
+
 async def test_a_status_is_never_written_under_another_organization(
     tenants: _Tenants, db_connection: AsyncConnection[TupleRow]
 ) -> None:
@@ -482,13 +502,29 @@ async def test_an_import_stores_and_first_checks_its_own_organization_only(
     report = await services.import_providers.run(a, text, dry_run=False)
 
     assert [row.existing_provider_id for row in report.rows] == [None, None]
-    assert report.recheck is not None
-    assert (report.recheck.trigger, report.recheck.organizations) == ("import", 1)
-    assert (report.recheck.providers, report.recheck.results, report.recheck.failures) == (
-        2,
-        2,
-        0,
+    assert report.checking == 2
+    # Before the check: every imported row has a stored status without a result, counted as
+    # checking by the summary and marked on the page.
+    page = await services.list_providers.run(a, query=None, page=1, page_size=10)
+    assert [item.status.checking for item in page.items] == [True, True]
+    summary = await services.provider_status_summary.run(a)
+    assert (summary.checking, summary.total, summary.counts[Attention.NOT_CHECKED]) == (2, 2, 0)
+    await services.first_checks.wait()
+    # This test's run: the one started at the fixed clock's instant (the local database holds
+    # real runs too, newer than the synthetic clock).
+    started = NOW + timedelta(hours=1)
+    cursor = await db_connection.execute(
+        t"""
+        select id, organizations, providers, results, failures from monitoring_runs
+        where trigger = 'import' and started_at = {started} order by finished_at desc limit 1
+        """
     )
+    run = await cursor.fetchone()
+    assert run is not None
+    assert run[1:] == (1, 2, 2, 0)
+    page = await services.list_providers.run(a, query=None, page=1, page_size=10)
+    assert [item.status.checking for item in page.items] == [False, False]
+    assert (await services.provider_status_summary.run(a)).checking == 0
     roster = await services.providers.list_all(a)
     assert [provider.id for provider, _ in roster] == list(report.imported)
     assert roster[0][0].role is RosterRole.WORKFORCE
@@ -502,6 +538,6 @@ async def test_an_import_stores_and_first_checks_its_own_organization_only(
     assert await _history(services, b, theirs.id) == ()
     assert await services.providers.list_all(b) == [(theirs, None)]
     cursor = await db_connection.execute(
-        t"select trigger, providers from monitoring_runs where id = {report.recheck.id}"
+        t"select trigger, providers from monitoring_runs where id = {run[0]}"
     )
     assert await cursor.fetchone() == ("import", 2)

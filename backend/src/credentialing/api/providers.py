@@ -83,9 +83,10 @@ async def import_providers(
     body: ProviderImportBody, organization_id: OrganizationId, container: Container
 ) -> ImportReportResponse:
     """Read a pasted list or a CSV/TSV export into the organization's roster rows, each with
-    its problems; with ``dry_run`` false, store the importable rows and run their first check
-    now. 422 when the text is over 2 MB or 5,000 rows or cannot be read as delimited text, 409
-    when another commit stored one of its NPIs meanwhile (nothing is stored either way)."""
+    its problems; with ``dry_run`` false, store the importable rows and schedule their first
+    check for after this answer (their rows read "checking" until it lands). 422 when the
+    text is over 2 MB or 5,000 rows or cannot be read as delimited text, 409 when another
+    commit stored one of its NPIs meanwhile (nothing is stored either way)."""
     report = await container.import_providers.run(organization_id, body.text, dry_run=body.dry_run)
     return ImportReportResponse.from_report(report, dry_run=body.dry_run)
 

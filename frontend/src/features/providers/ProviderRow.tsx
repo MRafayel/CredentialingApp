@@ -31,8 +31,10 @@ export function ProviderRow({
   const states = providerStates(provider)
   const { status } = provider
   const label = attentionLabel(status, sourceName)
-  // The NPI gap shows in its own column only when the line names a more serious reason.
-  const npiGap = status.identity === 'npi_missing' && status.attention !== 'npi_missing'
+  // The NPI gap shows in its own column only when the line names a more serious reason, or
+  // while the line says the first check is running.
+  const npiGap =
+    status.identity === 'npi_missing' && (status.checking || status.attention !== 'npi_missing')
   return (
     <motion.li variants={rise} className="relative">
       <div
@@ -49,7 +51,12 @@ export function ProviderRow({
             </motion.span>
           </Link>
           <p className="mt-1 flex min-w-0 items-center gap-1.5 text-small text-ink-muted">
-            <StatusLabel label={label} chip size={14} />
+            <StatusLabel
+              label={label}
+              chip
+              size={14}
+              className={status.checking ? 'motion-safe:animate-pulse' : undefined}
+            />
             {label.detail && (
               <span className="min-w-0 truncate">
                 <span aria-hidden="true">· </span>
@@ -92,6 +99,8 @@ export function ProviderRow({
               <span className="sr-only">Checked </span>
               <Ago at={status.last_checked_at} />
             </>
+          ) : status.checking ? (
+            'Checking'
           ) : (
             'Never checked'
           )}

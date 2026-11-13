@@ -13,4 +13,5 @@ export {
 } from './Verdicts.tsx'
 export { EmptyProviders, EmptySources } from './Empty.tsx'
 export { EmptyDrawer } from './EmptyDrawer.tsx'
+export { ScanningDocument } from './Scanning.tsx'
 export { Wordmark } from './Wordmark.tsx'

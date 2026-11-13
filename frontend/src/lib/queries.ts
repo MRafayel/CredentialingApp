@@ -1,4 +1,5 @@
 /** Server state: one query key family per resource, and the hooks screens use. */
+import { useEffect, useRef } from 'react'
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -106,6 +107,12 @@ export type RosterNarrowing = {
  * person first unless `order` says newest or oldest); `attention` keeps one reason, `kind`
  * individuals or organizations.
  */
+/**
+ * How often a page, a summary or a status is read again while a first check after an import is
+ * under way: the rows settle as their results land, and the reading stops with the check.
+ */
+export const CHECKING_POLL_MS = 2000
+
 export function useProviderList(q: string, page: number, narrowing: RosterNarrowing = {}) {
   return useQuery({
     queryKey: keys.providerList(q, page, narrowing),
@@ -115,6 +122,8 @@ export function useProviderList(q: string, page: number, narrowing: RosterNarrow
         signal,
       }),
     placeholderData: keepPreviousData,
+    refetchInterval: (query) =>
+      query.state.data?.items.some((item) => item.status.checking) ? CHECKING_POLL_MS : false,
   })
 }
 
@@ -123,6 +132,7 @@ export function useProviderSummary() {
   return useQuery({
     queryKey: keys.summary,
     queryFn: ({ signal }) => get('/providers/summary', { signal }),
+    refetchInterval: (query) => ((query.state.data?.checking ?? 0) > 0 ? CHECKING_POLL_MS : false),
   })
 }
 
@@ -147,7 +157,24 @@ export function useProviderStatus(id: string) {
     queryFn: ({ signal }) =>
       get('/providers/{provider_id}/status', { path: { provider_id: id }, signal }),
     placeholderData: () => cachedListItem(client, id)?.status,
+    refetchInterval: (query) => (query.state.data?.checking ? CHECKING_POLL_MS : false),
   })
+}
+
+/**
+ * Once the provider's first check has landed (its status stops reading "checking"), its
+ * verdict and its history are read again, so the page shows the results without a reload.
+ */
+export function useResultsAfterCheck(id: string, checking: boolean) {
+  const client = useQueryClient()
+  const was = useRef(checking)
+  useEffect(() => {
+    if (was.current && !checking) {
+      void client.invalidateQueries({ queryKey: keys.verdict(id) })
+      void client.invalidateQueries({ queryKey: keys.verifications(id) })
+    }
+    was.current = checking
+  }, [checking, client, id])
 }
 
 /**

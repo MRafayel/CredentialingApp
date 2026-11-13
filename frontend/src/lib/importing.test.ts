@@ -4,6 +4,7 @@ import {
   columnsLine,
   editableRows,
   filledLines,
+  addedLine,
   importedLine,
   importSummary,
   pageAfterRemoval,
@@ -166,35 +167,28 @@ describe('editing the preview', () => {
 })
 
 describe('importedLine', () => {
-  const check = {
-    started_at: '2026-11-11T10:00:00Z',
-    finished_at: '2026-11-11T10:00:05Z',
-    providers: 42,
-    results: 1218,
-    changed: 0,
-    failures: 0,
-  }
-
-  it('says how many were added and that their first check ran', () => {
-    expect(importedLine({ imported: Array(42).fill('id'), recheck: check })).toEqual({
-      added: '42 providers added',
-      check: 'first check of 42 providers done',
-      failures: 0,
+  it('counts how many were added and how many are being checked after the answer', () => {
+    expect(importedLine({ imported: Array(42).fill('id'), checking: 42 })).toEqual({
+      added: 42,
+      checking: 42,
     })
   })
 
-  it('carries the failures so they are never quiet', () => {
-    expect(
-      importedLine({ imported: ['a', 'b'], recheck: { ...check, providers: 2, failures: 1 } })
-        .failures,
-    ).toBe(1)
+  it('counts nobody being checked when nothing was imported', () => {
+    expect(importedLine({ imported: [], checking: 0 })).toEqual({ added: 0, checking: 0 })
+  })
+})
+
+describe('addedLine', () => {
+  it('counts those checked so far against those added while the first check runs', () => {
+    expect(addedLine(5000, 1240)).toBe('3,760 of 5,000 providers added')
+    expect(addedLine(42, 42)).toBe('0 of 42 providers added')
+    expect(addedLine(1, 1)).toBe('0 of 1 provider added')
   })
 
-  it('says nothing about a check that did not run', () => {
-    expect(importedLine({ imported: [], recheck: null })).toEqual({
-      added: '0 providers added',
-      check: null,
-      failures: 0,
-    })
+  it('says how many were added once nobody is waiting, and never over-counts', () => {
+    expect(addedLine(42, 0)).toBe('42 providers added')
+    expect(addedLine(42, 60)).toBe('0 of 42 providers added')
+    expect(addedLine(0, 0)).toBe('0 providers added')
   })
 })

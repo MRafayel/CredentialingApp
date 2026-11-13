@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from credentialing.api.app import create_app
 from credentialing.api.container import AppContainer
 from credentialing.application.check_exclusions import CheckExclusions
+from credentialing.application.first_checks import FirstChecks
 from credentialing.application.import_providers import ImportProviders
 from credentialing.application.link_npis import LinkNpis
 from credentialing.application.list_providers import ListProviders
@@ -139,6 +140,8 @@ class Services:
     suggest_npis: SuggestNpis
     set_provider_npi: SetProviderNpi
     recheck_providers: RecheckProviders
+    first_checks: FirstChecks
+    """The first checks after imports, running in this process; closed with the runtime."""
 
 
 def create_http_client(settings: Settings) -> httpx2.AsyncClient:
@@ -259,6 +262,7 @@ def build_services(
         clock,
         verifications=verifications,
     )
+    first_checks = FirstChecks(recheck_providers)
     return Services(
         registry=registry,
         clock=clock,
@@ -295,19 +299,20 @@ def build_services(
             npi_registry=npi_registry,
         ),
         register_provider=RegisterProvider(providers, clock, first_check=recheck_providers),
-        import_providers=ImportProviders(providers, recheck_providers, clock),
-        list_providers=ListProviders(providers, keeper),
+        import_providers=ImportProviders(providers, keeper, first_checks, clock),
+        list_providers=ListProviders(providers, keeper, checks=first_checks),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),
-        provider_status=ProviderStatusQuery(providers, keeper),
-        provider_status_summary=ProviderStatusSummary(providers, keeper),
-        mark_viewed=MarkViewed(providers, keeper, clock),
+        provider_status=ProviderStatusQuery(providers, keeper, checks=first_checks),
+        provider_status_summary=ProviderStatusSummary(providers, keeper, checks=first_checks),
+        mark_viewed=MarkViewed(providers, keeper, clock, checks=first_checks),
         verify_npi=verify_npi,
         suggest_npis=SuggestNpis(providers, npi_links, npi_lookup, clock),
         set_provider_npi=SetProviderNpi(
             providers, npi_lookup, verify_npi, clock, recheck=recheck_providers
         ),
         recheck_providers=recheck_providers,
+        first_checks=first_checks,
     )
 
 
@@ -341,6 +346,7 @@ async def runtime(settings: Settings) -> AsyncIterator[Services]:
     clock = SystemClock()
     pool = create_pool(settings.database_url.get_secret_value())
     await pool.open()
+    services: Services | None = None
     try:
         async with create_http_client(settings) as client:
             fetcher = HttpFetcher(
@@ -351,8 +357,12 @@ async def runtime(settings: Settings) -> AsyncIterator[Services]:
                 browser=create_browser_fetcher(settings, clock),
                 dataset_dir=settings.dataset_dir,
             )
-            yield build_services(pool, registry, clock)
+            services = build_services(pool, registry, clock)
+            yield services
     finally:
+        # A first check still running at shutdown is cancelled: the next due recheck does it.
+        if services is not None:
+            await services.first_checks.close()
         await pool.close()
 
 

@@ -1136,6 +1136,16 @@ class InMemoryProviders:
                 counts[key] = counts.get(key, 0) + 1
         return counts
 
+    async def unchecked_counts(
+        self, organization_id: UUID, provider_ids: Sequence[UUID]
+    ) -> Mapping[Attention | None, int]:
+        counts: dict[Attention | None, int] = {}
+        for provider_id in provider_ids:
+            status = self._status(organization_id, provider_id)
+            if status is not None and status.last_checked_at is None:
+                counts[status.attention] = counts.get(status.attention, 0) + 1
+        return counts
+
     async def save_statuses(
         self, organization_id: UUID, statuses: Sequence[ProviderStatus], *, rules_version: int
     ) -> None:

@@ -23,6 +23,7 @@ import {
   useProvider,
   useProviderStatus,
   useProviderSummary,
+  useResultsAfterCheck,
   useRunCheck,
   useSources,
   useVerdict,
@@ -112,6 +113,8 @@ function Loaded({ provider }: { provider: Provider }) {
   const running = run.isPending
   const npi = npiShape(provider.npi, latestNpi.data ?? null)
   const status = useProviderStatus(provider.id)
+  const checking = status.data?.checking ?? false
+  useResultsAfterCheck(provider.id, checking)
   // The recheck interval is the backend's policy; the roster's summary carries it.
   const intervalDays = useProviderSummary().data?.recheck_interval_days
   const now = useNow()
@@ -183,7 +186,7 @@ function Loaded({ provider }: { provider: Provider }) {
               verdict={verdict.data}
               expected={expected.length}
               changedAt={changedAt}
-              running={running}
+              running={running || checking}
               onRun={() => run.mutate()}
             />
           ) : (

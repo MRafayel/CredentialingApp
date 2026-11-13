@@ -1,5 +1,6 @@
 """API behaviour over in-memory use cases: fast, no database."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import timedelta
@@ -12,6 +13,7 @@ from credentialing.api.app import create_app
 from credentialing.api.container import AppContainer
 from credentialing.api.schemas import AttentionFilter
 from credentialing.application.check_exclusions import CheckExclusions
+from credentialing.application.first_checks import TASK_NAME, FirstChecks
 from credentialing.application.import_providers import ImportProviders
 from credentialing.application.list_providers import ListProviders
 from credentialing.application.lookup_exclusions import LookupExclusions
@@ -113,19 +115,20 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
         clock,
         verifications=verifications,
     )
+    first_checks = FirstChecks(recheck)
     return AppContainer(
         register_provider=RegisterProvider(providers, clock),
-        import_providers=ImportProviders(providers, recheck, clock),
-        list_providers=ListProviders(providers, keeper),
+        import_providers=ImportProviders(providers, keeper, first_checks, clock),
+        list_providers=ListProviders(providers, keeper, checks=first_checks),
         source_status=SourceStatusReport(registry, snapshots, records, DEFAULT_FRESHNESS, clock),
         check_exclusions=check_exclusions,
         lookup_exclusions=LookupExclusions(records, snapshots, registry, clock),
         record_profile=RecordProfileQuery(records, snapshots, registry, DEFAULT_FRESHNESS, clock),
         verification_history=VerificationHistory(providers, verifications, records),
         provider_verdict=ProviderVerdictQuery(providers, verifications),
-        provider_status=ProviderStatusQuery(providers, keeper),
-        provider_status_summary=ProviderStatusSummary(providers, keeper),
-        mark_viewed=MarkViewed(providers, keeper, clock),
+        provider_status=ProviderStatusQuery(providers, keeper, checks=first_checks),
+        provider_status_summary=ProviderStatusSummary(providers, keeper, checks=first_checks),
+        mark_viewed=MarkViewed(providers, keeper, clock, checks=first_checks),
         npi_lookup=npi_lookup,
         verify_npi=verify_npi,
         suggest_npis=SuggestNpis(
@@ -135,6 +138,12 @@ def _container(*, header_enabled: bool = True) -> AppContainer:
         providers=providers,
         organization_header_enabled=header_enabled,
     )
+
+
+async def _first_checks_done() -> None:
+    """Let the first check an import scheduled on the loop run to its end."""
+    while runs := [task for task in asyncio.all_tasks() if task.get_name() == TASK_NAME]:
+        await asyncio.gather(*runs, return_exceptions=True)
 
 
 async def _client(container: AppContainer) -> AsyncIterator[httpx2.AsyncClient]:
@@ -636,6 +645,7 @@ async def test_the_roster_carries_each_status_and_filters_by_attention(
         "flagged_in": [],
         "review_in": [],
         "unchecked": [],
+        "checking": False,
     }
     assert listed["items"][1]["status"]["identity"] == "not_expected"
     assert [item["id"] for item in filtered["items"]] == [worker["id"]]
@@ -769,7 +779,7 @@ async def test_an_import_preview_shows_every_row_and_stores_nothing(
     assert payload["columns"] == ["last", "first", "npi", "date_of_birth"]
     assert payload["ignored_columns"] == ["Department"]
     assert (payload["importable"], payload["with_warnings"], payload["rejected"]) == (2, 1, 1)
-    assert (payload["dry_run"], payload["imported"], payload["recheck"]) == (True, [], None)
+    assert (payload["dry_run"], payload["imported"], payload["checking"]) == (True, [], 0)
     assert payload["no_header"] is False
     first, second, third = payload["rows"]
     assert first == {
@@ -815,11 +825,15 @@ async def test_an_import_commit_stores_the_rows_for_the_caller_only(
     payload = response.json()
     assert response.status_code == 200
     assert payload["dry_run"] is False
-    assert len(payload["imported"]) == 2
-    recheck = payload["recheck"]
-    assert (recheck["providers"], recheck["failures"]) == (2, 0)
+    assert (len(payload["imported"]), payload["checking"]) == (2, 2)
+    await _first_checks_done()
     roster = (await client.get("/providers", headers=HEADERS)).json()
     assert {item["id"] for item in roster["items"]} == set(payload["imported"])
+    # The run finished: no row reads "checking" (this world's one list answers nothing; the
+    # NPI verification of the first row landed).
+    assert all(item["status"]["checking"] is False for item in roster["items"])
+    by_id = {item["id"]: item["status"] for item in roster["items"]}
+    assert by_id[payload["imported"][0]]["last_checked_at"] is not None
     assert (await client.get("/providers", headers=other)).json()["total"] == 0
     # A second import of the same text finds them on the caller's roster, not on another's.
     assert [row["existing_provider_id"] for row in again.json()["rows"][:2]] == payload["imported"]

@@ -102,3 +102,26 @@
     transform: translate(52px, 30px);
   }
 }
+
+/*
+ * ScanningDocument's loop, the one looping mark for work under way on a person: the accent line
+ * sweeps 10 units down the sheet and back, 1.6 s each way, transform only. Without motion it
+ * rests mid-sheet.
+ */
+.ill-scan {
+  transform: translateY(5px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ill-scan {
+    animation: ill-scan 1.6s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes ill-scan {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(10px);
+  }
+}

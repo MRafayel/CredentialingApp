@@ -565,6 +565,10 @@ class ProviderStatus(DomainModel):
     changed_at: AwareDatetime | None = None
     """When the newest result that differs from the one before it was stored (None: none),
     seen or not; ``changed`` says whether nobody has opened the provider since."""
+    checking: bool = False
+    """The first check after an import is under way and none of its results has landed yet.
+    Never stored: only the process running the check knows, and it marks the status when the
+    status is read."""
 
 
 class HistoryPage(DomainModel):
